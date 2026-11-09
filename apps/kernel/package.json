@@ -1,0 +1,20 @@
+{
+  "name": "@noir/app-kernel",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=node --format=cjs --outfile=dist/index.cjs --external:better-sqlite3 --external:@napi-rs/keyring",
+    "dev": "tsx src/index.ts",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@napi-rs/keyring": "^2.1.2",
+    "@noir/kernel": "workspace:*",
+    "better-sqlite3": "^12.11.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}
