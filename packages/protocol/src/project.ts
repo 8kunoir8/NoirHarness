@@ -37,6 +37,8 @@ export function reduceSession(state: SessionState | undefined, e: AgentEvent): S
       return { ...s, title: payload(e, "session.updated").title };
     case "session.status":
       return { ...s, status: payload(e, "session.status").status };
+    case "session.closed":
+      return { ...s, status: "closed" };
     case "message.delta": {
       const p = payload(e, "message.delta");
       const idx = s.messages.findIndex((m) => m.id === p.messageId);

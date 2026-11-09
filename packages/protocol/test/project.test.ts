@@ -45,6 +45,15 @@ describe("reduceSession", () => {
     expect(once).toEqual(twice);
   });
 
+  it("projects session.closed into closed status", () => {
+    const events = [
+      ev(1, "session.created", { title: "x" }),
+      ev(2, "session.closed", {}),
+    ];
+    const state = events.reduce((acc, e) => reduceSession(acc, e), undefined as SessionState | undefined)!;
+    expect(state.status).toBe("closed");
+  });
+
   it("rejects a payload that does not match its event type", () => {
     const bad = ev(1, "session.status", {status: "nonsense"});
     expect(() => reduceSession(undefined, bad)).toThrow();
