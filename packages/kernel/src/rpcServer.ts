@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
+import { ZodError } from "zod";
 import { ErrorCodes, JsonRpcRequest, RpcFault, toRpcFailure, type AgentEvent } from "@noir/protocol";
 
 export type Handler = (params: unknown) => Promise<unknown>;
@@ -55,7 +56,10 @@ export async function startRpcServer(opts: { token: string; handlers: Record<str
         const result = await handler(parsed.params);
         sendJson(ws, { jsonrpc: "2.0", id, result });
       } catch (error) {
-        sendJson(ws, toRpcFailure(id, error));
+        const fault = error instanceof ZodError
+          ? new RpcFault(ErrorCodes.invalidParams, error.issues.map((issue) => (issue.path.length ? `${issue.path.join(".")}: ${issue.message}` : issue.message)).join("; "))
+          : error;
+        sendJson(ws, toRpcFailure(id, fault));
       }
     });
   });

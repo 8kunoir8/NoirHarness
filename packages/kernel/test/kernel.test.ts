@@ -1,8 +1,10 @@
+import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
+import { ErrorCodes } from "@noir/protocol";
 import { startKernel, type Kernel } from "../src/index.js";
 
 const dirs: string[] = [];
@@ -10,14 +12,17 @@ function tempDir(): string { const d = mkdtempSync(join(tmpdir(), "noir kernel Ã
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
 
 async function call(port: number, token: string, method: string, params?: unknown): Promise<any> {
+  return sendFrame(port, token, { jsonrpc: "2.0", id: 1, method, params });
+}
+
+async function sendFrame(port: number, token: string, frame: unknown): Promise<any> {
   const ws = new WebSocket(`ws://127.0.0.1:${port}/?token=${token}`);
-  await new Promise<void>((resolve, reject) => { ws.once("open", () => resolve()); ws.once("error", reject); });
-  const response = await new Promise<any>((resolve) => {
-    ws.once("message", (data) => resolve(JSON.parse(String(data))));
-    ws.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }));
-  });
+  await once(ws, "open");
+  const reply = once(ws, "message");
+  ws.send(JSON.stringify(frame));
+  const [data] = await reply;
   ws.close();
-  return response;
+  return JSON.parse(String(data));
 }
 
 describe("startKernel", () => {
@@ -37,7 +42,7 @@ describe("startKernel", () => {
   it("persists a provider across restarts", async () => {
     const dir = tempDir();
     const first = await startKernel({ dataDir: dir });
-    await call(first.port, first.token, "provider.create", {
+    const created = await call(first.port, first.token, "provider.create", {
       name: "Local", baseUrl: "http://localhost:11434/v1", apiKind: "openai-completions", apiKey: "k",
     });
     await first.close();
@@ -47,7 +52,23 @@ describe("startKernel", () => {
     expect(res.result.providers).toHaveLength(1);
     expect(res.result.providers[0].hasKey).toBe(true);
     expect(JSON.stringify(res.result)).not.toContain('"k"');
+    const deleted = await call(second.port, second.token, "provider.delete", { id: created.result.id });
+    expect(deleted.error).toBeUndefined();
     await second.close();
+  });
+
+  it("reports invalid params for bad provider input and malformed requests", async () => {
+    const dir = tempDir();
+    const kernel = await startKernel({ dataDir: dir });
+    const badProvider = await call(kernel.port, kernel.token, "provider.create", {
+      name: "Local", baseUrl: "not a url", apiKind: "openai-completions", apiKey: "k",
+    });
+    expect(badProvider.error.code).toBe(ErrorCodes.invalidParams);
+    expect(badProvider.error.message).toContain("baseUrl");
+    const badFrame = await sendFrame(kernel.port, kernel.token, { jsonrpc: "2.0", id: 2 });
+    expect(badFrame.error.code).toBe(ErrorCodes.invalidParams);
+    expect(badFrame.error.message).toContain("method");
+    await kernel.close();
   });
 
   it("refuses a second live instance on the same data dir", async () => {
