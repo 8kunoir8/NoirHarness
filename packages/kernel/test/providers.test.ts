@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { RpcFault } from "@noir/protocol";
+import { ErrorCodes, RpcFault } from "@noir/protocol";
 import { openDb } from "../src/db.js";
 import { ProviderService, type Secrets } from "../src/providers.js";
 
@@ -11,6 +11,18 @@ function memorySecrets(): Secrets & { store: Map<string, string> } {
     get: (id) => store.get(id) ?? null,
     delete: (id) => void store.delete(id),
   };
+}
+
+function expectNotFound(fn: () => unknown, message: RegExp): void {
+  try {
+    fn();
+  } catch (error) {
+    expect(error).toBeInstanceOf(RpcFault);
+    expect((error as RpcFault).code).toBe(ErrorCodes.notFound);
+    expect((error as Error).message).toMatch(message);
+    return;
+  }
+  expect.unreachable("expected RpcFault");
 }
 
 describe("ProviderService", () => {
@@ -47,5 +59,26 @@ describe("ProviderService", () => {
     const service = new ProviderService(db, memorySecrets());
     const p = service.create({ name: "Ünïcode Provider", baseUrl: "http://x/v1", apiKind: "openai-completions", apiKey: "k", enabled: true });
     expect(service.list()[0]!.name).toBe("Ünïcode Provider");
+  });
+
+  it("removes the vault entry when the row insert fails", () => {
+    const db = openDb(":memory:");
+    db.exec("CREATE TRIGGER reject_provider_insert BEFORE INSERT ON providers BEGIN SELECT RAISE(ABORT, 'insert rejected'); END;");
+    const secrets = memorySecrets();
+    const service = new ProviderService(db, secrets);
+    expect(() => service.create({ name: "Fail", baseUrl: "http://x/v1", apiKind: "openai-completions", apiKey: "sk-fail", enabled: true })).toThrow(/insert rejected/);
+    expect(secrets.store.size).toBe(0);
+    expect(service.list()).toEqual([]);
+  });
+
+  it("checks the provider row before reading the key", () => {
+    const db = openDb(":memory:");
+    const secrets = memorySecrets();
+    const service = new ProviderService(db, secrets);
+    expectNotFound(() => service.getKey("missing"), /Provider not found/);
+    const p = service.create({ name: "K", baseUrl: "http://x/v1", apiKind: "openai-completions", apiKey: "sk-live", enabled: true });
+    expect(service.getKey(p.id)).toBe("sk-live");
+    secrets.delete(p.id);
+    expectNotFound(() => service.getKey(p.id), /Provider key not found/);
   });
 });

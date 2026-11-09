@@ -1,11 +1,9 @@
 import type Database from "better-sqlite3";
 import { v7 as uuidv7 } from "uuid";
-import { ErrorCodes, RpcFault, type ApiKind, type ProviderCreateParams } from "@noir/protocol";
+import { z } from "zod";
+import { ErrorCodes, ProviderView as ProviderViewSchema, RpcFault, type ApiKind, type ProviderCreateParams } from "@noir/protocol";
 
-export interface ProviderView {
-  id: string; name: string; baseUrl: string; apiKind: ApiKind;
-  enabled: boolean; hasKey: boolean; createdAt: number;
-}
+export type ProviderView = z.infer<typeof ProviderViewSchema>;
 
 export interface Secrets {
   set(id: string, value: string): void;
@@ -24,9 +22,14 @@ export class ProviderService {
     const id = uuidv7();
     const createdAt = Date.now();
     this.secrets.set(id, params.apiKey);
-    this.db.prepare("INSERT INTO providers (id, name, base_url, api_kind, api_key_ref, enabled, created_at) VALUES (?,?,?,?,?,?,?)").run(
-      id, params.name, params.baseUrl, params.apiKind, id, params.enabled ? 1 : 0, createdAt,
-    );
+    try {
+      this.db.prepare("INSERT INTO providers (id, name, base_url, api_kind, api_key_ref, enabled, created_at) VALUES (?,?,?,?,?,?,?)").run(
+        id, params.name, params.baseUrl, params.apiKind, id, params.enabled ? 1 : 0, createdAt,
+      );
+    } catch (error) {
+      this.secrets.delete(id);
+      throw error;
+    }
     return { id, name: params.name, baseUrl: params.baseUrl, apiKind: params.apiKind, enabled: params.enabled, hasKey: true, createdAt };
   }
 
@@ -38,6 +41,8 @@ export class ProviderService {
   }
 
   getKey(id: string): string {
+    const row = this.db.prepare("SELECT id FROM providers WHERE id = ?").get(id);
+    if (!row) throw new RpcFault(ErrorCodes.notFound, "Provider not found");
     const key = this.secrets.get(id);
     if (!key) throw new RpcFault(ErrorCodes.notFound, "Provider key not found");
     return key;
