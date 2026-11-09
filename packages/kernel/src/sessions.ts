@@ -31,6 +31,7 @@ export class SessionService {
       row.id, row.workspaceId, row.agentId, row.engine, row.status, row.createdAt,
     );
     this.events.append({ sessionId: row.id, agentId, type: "session.created", payload: { title: "" }, provenance: { engine: "acp", engineName: "none", adapterVersion: "0" } });
+    this.events.append({ sessionId: row.id, agentId, type: "session.status", payload: { status: "starting" }, provenance: { engine: "acp", engineName: "none", adapterVersion: "0" } });
     return row;
   }
 
@@ -40,6 +41,10 @@ export class SessionService {
     const from = opts?.from ?? row.status;
     if (from !== row.status) throw new RpcFault(ErrorCodes.conflict, `Session is ${row.status}, not ${from}`);
     assertTransition(from, to);
+    if (to === "closed") {
+      this.events.append({ sessionId, agentId: row.agent_id, type: "session.closed", payload: {}, provenance: { engine: "acp", engineName: "none", adapterVersion: "0" } });
+      return;
+    }
     this.events.append({ sessionId, agentId: row.agent_id, type: "session.status", payload: { status: to }, provenance: { engine: "acp", engineName: "none", adapterVersion: "0" } });
   }
 

@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { RpcFault } from "@noir/protocol";
+import { RpcFault, reduceSession, type SessionState } from "@noir/protocol";
 import { openDb } from "../src/db.js";
 import { EventStore } from "../src/eventStore.js";
 import { ProjectService } from "../src/projects.js";
@@ -74,5 +74,27 @@ describe("SessionService", () => {
     const project = projects.add(tempDir());
     const s = sessions.create(workspaces.createLocal(project.id).id);
     expect(() => sessions.setStatus(s.id, "waiting")).toThrow();
+  });
+
+  it("emits the initial starting status so replay matches the row", () => {
+    const { projects, workspaces, sessions, events } = setup();
+    const project = projects.add(tempDir());
+    const s = sessions.create(workspaces.createLocal(project.id).id);
+    const stream = events.list(s.id);
+    expect(stream.map((e) => e.type)).toEqual(["session.created", "session.status"]);
+    expect(stream[1]!.payload).toEqual({ status: "starting" });
+    const state = stream.reduce<SessionState | undefined>(reduceSession, undefined);
+    expect(state!.status).toBe("starting");
+  });
+
+  it("closes through session.closed and records closed_at", () => {
+    const { db, projects, workspaces, sessions, events } = setup();
+    const project = projects.add(tempDir());
+    const s = sessions.create(workspaces.createLocal(project.id).id);
+    sessions.setStatus(s.id, "closed");
+    const row = db.prepare("SELECT status, closed_at FROM sessions WHERE id = ?").get(s.id) as { status: string; closed_at: number | null };
+    expect(row.status).toBe("closed");
+    expect(row.closed_at).not.toBeNull();
+    expect(events.list(s.id).at(-1)!.type).toBe("session.closed");
   });
 });
