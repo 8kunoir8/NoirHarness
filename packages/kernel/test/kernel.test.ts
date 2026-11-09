@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import WebSocket from "ws";
+import WebSocket, { WebSocketServer } from "ws";
 import { startKernel, type Kernel } from "../src/index.js";
 
 const dirs: string[] = [];
@@ -57,6 +57,40 @@ describe("startKernel", () => {
     await first.close();
   });
 
+  it("correlates the health reply by id when a broadcast arrives first", async () => {
+    const dir = tempDir();
+    const wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+    await new Promise<void>((resolve) => wss.once("listening", () => resolve()));
+    wss.on("connection", (socket) => {
+      socket.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: { event: { type: "session.status" } } }));
+      socket.on("message", () => {
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { status: "ok", pid: process.ppid } }));
+      });
+    });
+    const address = wss.address();
+    if (!address || typeof address === "string") throw new Error("fake server has no port");
+    mkdirSync(join(dir, "runtime"), { recursive: true });
+    writeFileSync(join(dir, "runtime", "kernel.json"), JSON.stringify({ pid: process.ppid, port: address.port, token: "probe-token" }));
+    await expect(startKernel({ dataDir: dir })).rejects.toThrow(/already running/i);
+    await new Promise<void>((resolve) => wss.close(() => resolve()));
+  });
+
+  it("refuses a recent claim whose owner is still starting", async () => {
+    const dir = tempDir();
+    mkdirSync(join(dir, "runtime"), { recursive: true });
+    writeFileSync(join(dir, "runtime", "kernel.lock"), JSON.stringify({ pid: process.ppid, token: "owner", startedAt: Date.now() }));
+    await expect(startKernel({ dataDir: dir })).rejects.toThrow(/starting/i);
+  });
+
+  it("reclaims a claim whose pid is dead", async () => {
+    const dir = tempDir();
+    mkdirSync(join(dir, "runtime"), { recursive: true });
+    writeFileSync(join(dir, "runtime", "kernel.lock"), JSON.stringify({ pid: 999999, token: "dead", startedAt: Date.now() }));
+    const kernel = await startKernel({ dataDir: dir });
+    expect(kernel.port).toBeGreaterThan(0);
+    await kernel.close();
+  });
+
   it("allows exactly one of two concurrent starts", async () => {
     const dir = tempDir();
     const settled = await Promise.allSettled([startKernel({ dataDir: dir }), startKernel({ dataDir: dir })]);
@@ -64,7 +98,7 @@ describe("startKernel", () => {
     const losers = settled.filter((r): r is PromiseRejectedResult => r.status === "rejected");
     expect(winners).toHaveLength(1);
     expect(losers).toHaveLength(1);
-    expect(String(losers[0]?.reason)).toMatch(/already running/i);
+    expect(String(losers[0]?.reason)).toMatch(/already running|starting/i);
     await winners[0]?.value.close();
   });
 

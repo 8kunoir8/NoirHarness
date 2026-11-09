@@ -44,12 +44,21 @@ export interface Kernel {
 }
 
 const ProviderDeleteParams = z.object({ id: z.string().min(1) });
-const HealthResponse = z.object({ result: z.object({ status: z.literal("ok"), pid: z.number().int() }) });
+const ProbeFrame = z.object({
+  id: z.number().int(),
+  result: z.object({ status: z.literal("ok"), pid: z.number().int() }).optional(),
+});
 
+const PROBE_REQUEST_ID = 1;
 const PROBE_TIMEOUT_MS = 750;
+const STARTUP_GRACE_MS = 30_000;
 const CLAIM_ATTEMPTS = 2;
 
-/** Answers true only when the recorded endpoint identifies the same pid and accepts our token. */
+/**
+ * Answers true only when the recorded endpoint identifies the same pid and accepts our token.
+ * Every inbound frame is inspected: notifications (no id) and unrelated replies are ignored so
+ * a broadcast that arrives before the health reply cannot make a serving kernel look stale.
+ */
 function probeKernel(info: RuntimeInfo, timeoutMs: number): Promise<boolean> {
   return new Promise((resolve) => {
     const ws = new WebSocket(`ws://127.0.0.1:${info.port}/?token=${info.token}`);
@@ -63,14 +72,15 @@ function probeKernel(info: RuntimeInfo, timeoutMs: number): Promise<boolean> {
     };
     const timer = setTimeout(() => finish(false), timeoutMs);
     ws.once("open", () => {
-      ws.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: Methods.systemHealth }));
+      ws.send(JSON.stringify({ jsonrpc: "2.0", id: PROBE_REQUEST_ID, method: Methods.systemHealth }));
     });
-    ws.once("message", (data) => {
+    ws.on("message", (data) => {
       try {
-        const parsed = HealthResponse.safeParse(JSON.parse(String(data)));
-        finish(parsed.success && parsed.data.result.pid === info.pid);
+        const parsed = ProbeFrame.safeParse(JSON.parse(String(data)));
+        if (!parsed.success || parsed.data.id !== PROBE_REQUEST_ID) return;
+        finish(parsed.data.result?.status === "ok" && parsed.data.result.pid === info.pid);
       } catch {
-        finish(false);
+        // Undecodable frames are ignored; the timeout decides.
       }
     });
     ws.once("error", () => finish(false));
@@ -78,23 +88,32 @@ function probeKernel(info: RuntimeInfo, timeoutMs: number): Promise<boolean> {
   });
 }
 
-/** A claim holder is live only when its pid is alive and its recorded endpoint answers as that pid. */
-async function claimHolderIsServing(owner: LockInfo, runtimeFile: string): Promise<boolean> {
-  if (!isProcessAlive(owner.pid)) return false;
+type ClaimState = "running" | "starting" | "stale";
+
+/**
+ * Classifies a lock holder. Fail closed: a live pid whose claim is still within the startup
+ * grace is "starting" (refused), and a matching runtime file counts as "running" even when
+ * the health probe times out. Only a dead pid, or a live pid with no handshake and an old
+ * claim, is reclaimable.
+ */
+async function inspectClaim(owner: LockInfo, runtimeFile: string): Promise<ClaimState> {
+  if (!isProcessAlive(owner.pid)) return "stale";
   const deadline = Date.now() + PROBE_TIMEOUT_MS;
   for (;;) {
     const info = readRuntimeFile(runtimeFile);
     if (info && info.pid === owner.pid && info.token === owner.token) {
-      return probeKernel(info, Math.max(50, deadline - Date.now()));
+      await probeKernel(info, Math.max(50, deadline - Date.now()));
+      return "running";
     }
-    if (Date.now() >= deadline) return false;
+    if (Date.now() >= deadline) break;
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
   }
+  return Date.now() - owner.startedAt < STARTUP_GRACE_MS ? "starting" : "stale";
 }
 
 /**
  * Claims exclusive ownership of a data dir. A lock held by a dead or unresponsive
- * process (pid reuse, crash, reboot) is reclaimed; a serving kernel fails loudly.
+ * process (pid reuse, crash, reboot) is reclaimed; a serving or starting kernel fails loudly.
  */
 async function acquireOwnership(lockFile: string, runtimeFile: string, claim: LockInfo): Promise<void> {
   for (let attempt = 0; attempt < CLAIM_ATTEMPTS; attempt += 1) {
@@ -107,9 +126,9 @@ async function acquireOwnership(lockFile: string, runtimeFile: string, claim: Lo
       owner = readLockFile(lockFile);
     }
     if (owner) {
-      if (await claimHolderIsServing(owner, runtimeFile)) {
-        throw new Error(`Kernel already running (pid ${owner.pid})`);
-      }
+      const state = await inspectClaim(owner, runtimeFile);
+      if (state === "running") throw new Error(`Kernel already running (pid ${owner.pid})`);
+      if (state === "starting") throw new Error(`Kernel is starting (pid ${owner.pid})`);
       removeLockIfOwned(lockFile, owner);
     } else {
       removeMalformedLock(lockFile);
