@@ -58,8 +58,8 @@ export class EventStore {
       const p = payload as { turnId: string; index: number };
       this.db.prepare("INSERT INTO turns (id, session_id, idx, status, started_at) VALUES (?,?,?,'running',?)").run(p.turnId, event.sessionId, p.index, event.ts);
     } else if (event.type === "turn.completed" || event.type === "turn.failed") {
-      const p = payload as { turnId: string };
-      const status = event.type === "turn.completed" ? "completed" : "failed";
+      const p = payload as { turnId: string; status?: "completed" | "interrupted" };
+      const status = event.type === "turn.completed" ? (p.status ?? "completed") : "failed";
       this.db.prepare("UPDATE turns SET status = ?, ended_at = ? WHERE id = ?").run(status, event.ts, p.turnId);
     } else if (event.type === "file.changed") {
       const p = payload as { path: string; change: string; add: number; del: number };

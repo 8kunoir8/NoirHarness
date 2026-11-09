@@ -59,13 +59,20 @@ export const SessionPromptParams = z.object({
   requestId: z.string().trim().min(1).max(120),
   content: z.array(ContentBlock).min(1),
 });
+export type SessionPromptParams = z.infer<typeof SessionPromptParams>;
 export const SessionPromptResult = z.object({ turnId: z.string(), queued: z.boolean() });
+export type SessionPromptResult = z.infer<typeof SessionPromptResult>;
 export const SessionInterruptParams = z.object({ sessionId: z.string().min(1) });
+export type SessionInterruptParams = z.infer<typeof SessionInterruptParams>;
 export const SessionInterruptResult = z.object({ interrupted: z.boolean() });
+export type SessionInterruptResult = z.infer<typeof SessionInterruptResult>;
 export const SessionCloseParams = z.object({ sessionId: z.string().min(1) });
+export type SessionCloseParams = z.infer<typeof SessionCloseParams>;
 export const ApprovalRespondParams = z.object({ approvalId: z.string().min(1), decision: PermissionDecision });
+export type ApprovalRespondParams = z.infer<typeof ApprovalRespondParams>;
 
 export const EventNotificationParams = z.object({ event: AgentEvent });
+export type EventNotificationParams = z.infer<typeof EventNotificationParams>;
 
 export const ApiKind = z.enum(["openai-completions", "anthropic-messages", "google-generative-ai"]);
 export type ApiKind = z.infer<typeof ApiKind>;

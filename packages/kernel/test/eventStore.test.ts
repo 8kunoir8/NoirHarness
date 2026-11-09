@@ -49,4 +49,18 @@ describe("EventStore", () => {
     expect(() => store.append({ sessionId: "s1", agentId: "a1", type: "session.status", payload: { status: "bogus" }, provenance })).toThrow();
     expect(store.list("s1")).toHaveLength(0);
   });
+
+  it("projects the turn status from the turn.completed payload", () => {
+    const store = makeStore();
+    store.append({ sessionId: "s1", agentId: "a1", type: "turn.started", payload: { turnId: "t1", index: 0 }, provenance, ts: 10 });
+    store.append({ sessionId: "s1", agentId: "a1", type: "turn.started", payload: { turnId: "t2", index: 1 }, provenance, ts: 11 });
+    store.append({ sessionId: "s1", agentId: "a1", type: "turn.completed", payload: { turnId: "t1", status: "interrupted" }, provenance, ts: 20 });
+    store.append({ sessionId: "s1", agentId: "a1", type: "turn.completed", payload: { turnId: "t2" }, provenance, ts: 21 });
+    const { db } = store as unknown as StoreInternals;
+    const rows = db.prepare("SELECT id, status, ended_at FROM turns ORDER BY id").all();
+    expect(rows).toEqual([
+      { id: "t1", status: "interrupted", ended_at: 20 },
+      { id: "t2", status: "completed", ended_at: 21 },
+    ]);
+  });
 });

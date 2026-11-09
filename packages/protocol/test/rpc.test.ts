@@ -44,10 +44,28 @@ describe("event payload schemas", () => {
     expect(parsed).toEqual({ turnId: "t1", status: "completed" });
   });
 
+  it("accepts turn.completed status interrupted", () => {
+    const parsed = PayloadSchemas["turn.completed"].parse({ turnId: "t1", status: "interrupted", stopReason: "user" });
+    expect(parsed).toEqual({ turnId: "t1", status: "interrupted", stopReason: "user" });
+  });
+
   it("rejects permission.requested without options", () => {
     expect(() =>
       PayloadSchemas["permission.requested"].parse({ approvalId: "a1", category: "shell", title: "Run?", options: [] }),
     ).toThrow();
+  });
+
+  it("rejects a permission option with an invalid kind", () => {
+    expect(() =>
+      PayloadSchemas["permission.requested"].parse({
+        approvalId: "a1", category: "shell", title: "Run?",
+        options: [{ optionId: "o1", name: "Allow", kind: "allow_forever" }],
+      }),
+    ).toThrow();
+  });
+
+  it("rejects permission.resolved with an invalid decision", () => {
+    expect(() => PayloadSchemas["permission.resolved"].parse({ approvalId: "a1", decision: "maybe" })).toThrow();
   });
 });
 
