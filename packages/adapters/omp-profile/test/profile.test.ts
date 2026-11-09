@@ -187,6 +187,44 @@ describe("renderModelsYaml", () => {
     expect(Object.keys(doc.providers)).toEqual(["alt", "mock"]);
   });
 
+  it("keeps input order when a provider name is integer-like", () => {
+    const integerish: ProfileProvider[] = [
+      { name: "b", baseUrl: "https://b.example/v1", apiKind: "openai-completions", apiKey: "k-b" },
+      { name: "123", baseUrl: "https://n.example/v1", apiKind: "openai-completions", apiKey: "k-123" },
+    ];
+    const integerishModels: ProfileModel[] = [
+      { providerName: "123", modelId: "n-z", contextWindow: 1000 },
+      { providerName: "b", modelId: "b-z", contextWindow: 1000 },
+      { providerName: "b", modelId: "b-a", contextWindow: 1000 },
+    ];
+    const text = renderModelsYaml(integerish, integerishModels, { providerName: "b", modelId: "b-z" });
+    const doc = parseModels(text);
+    // Assert on the emitted text: a parsed plain object re-sorts integer-like keys again.
+    const bAt = text.indexOf("\n  b:");
+    const nAt = text.indexOf('\n  "123":');
+    expect(bAt).toBeGreaterThan(-1);
+    expect(nAt).toBeGreaterThan(bAt);
+    expect(text.indexOf("- id: b-z")).toBeLessThan(text.indexOf("- id: n-z"));
+    expect(doc.providers["b"]!.models.map((m) => m.id)).toEqual(["b-z", "b-a"]);
+    expect(doc.providers["123"]!.models.map((m) => m.id)).toEqual(["n-z"]);
+  });
+
+  it("does not promote a same-named model declared by another provider", () => {
+    const two: ProfileProvider[] = [
+      { name: "p1", baseUrl: "https://p1.example/v1", apiKind: "openai-completions", apiKey: "k1" },
+      { name: "p2", baseUrl: "https://p2.example/v1", apiKind: "openai-completions", apiKey: "k2" },
+    ];
+    const shared: ProfileModel[] = [
+      { providerName: "p1", modelId: "shared", contextWindow: 1000 },
+      { providerName: "p2", modelId: "shared", contextWindow: 1000 },
+      { providerName: "p2", modelId: "aaa", contextWindow: 1000 },
+    ];
+    const doc = parseModels(renderModelsYaml(two, shared, { providerName: "p1", modelId: "shared" }));
+    expect(doc.providers["p1"]!.models.map((m) => m.id)).toEqual(["shared"]);
+    // p2 has no default, so its models stay in sorted order.
+    expect(doc.providers["p2"]!.models.map((m) => m.id)).toEqual(["aaa", "shared"]);
+  });
+
   it("omits optional model fields when they are absent", () => {
     const doc = parseModels(
       renderModelsYaml(

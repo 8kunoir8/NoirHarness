@@ -143,21 +143,25 @@ export function renderModelsYaml(
     throw new Error(`default model "${defaultSelector}" is not declared in models`);
   }
 
-  const providersDoc: Record<string, unknown> = {};
+  // A Map, not a plain object: integer-like provider names would be reordered by JS property
+  // enumeration and jump ahead of the declared default model in the file.
+  const providersDoc = new Map<string, unknown>();
   for (const provider of providers) {
     const list = grouped.get(provider.name) ?? [];
     const ordered = [...list].sort((a, b) => {
-      const aDefault = a.modelId === defaultModel.modelId;
-      const bDefault = b.modelId === defaultModel.modelId;
+      const aDefault =
+        a.providerName === defaultModel.providerName && a.modelId === defaultModel.modelId;
+      const bDefault =
+        b.providerName === defaultModel.providerName && b.modelId === defaultModel.modelId;
       if (aDefault !== bDefault) return aDefault ? -1 : 1;
       return compareIds(a, b);
     });
-    providersDoc[provider.name] = {
+    providersDoc.set(provider.name, {
       baseUrl: provider.baseUrl,
       api: API_KIND_TO_OMP[provider.apiKind],
       apiKey: provider.apiKey,
       models: ordered.map(modelDoc),
-    };
+    });
   }
 
   return stringify({ providers: providersDoc }, { lineWidth: 0 });
