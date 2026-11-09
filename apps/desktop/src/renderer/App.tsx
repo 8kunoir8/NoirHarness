@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { connect, request } from "./api.js";
+import { Settings } from "./Settings.js";
 
 export function App() {
   const [status, setStatus] = useState("connecting");
@@ -20,6 +21,7 @@ export function App() {
     <main style={{ fontFamily: "Inter, system-ui, sans-serif", padding: 24 }}>
       <h1>NoirHarness</h1>
       <p data-testid="kernel-status">{status}</p>
+      <Settings request={request} />
     </main>
   );
 }

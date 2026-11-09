@@ -35,6 +35,7 @@ export const ProviderView = z.object({
   id: z.string(), name: z.string(), baseUrl: z.string(), apiKind: ApiKind,
   enabled: z.boolean(), hasKey: z.boolean(), createdAt: z.number().int(),
 });
+export type ProviderView = z.infer<typeof ProviderView>;
 export const ProviderListResult = z.object({ providers: z.array(ProviderView) });
 export const ProjectView = z.object({ id: z.string(), name: z.string(), rootPath: z.string(), createdAt: z.number().int() });
 export const ProjectListResult = z.object({ projects: z.array(ProjectView) });
