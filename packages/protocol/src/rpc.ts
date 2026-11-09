@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AgentEvent, ContentBlock, PermissionDecision, SessionStatus } from "./events.js";
 
 export const Methods = {
   systemHealth: "system.health",
@@ -9,6 +10,13 @@ export const Methods = {
   sessionCreate: "session.create",
   sessionList: "session.list",
   sessionSubscribe: "session.subscribe",
+  modelCreate: "model.create",
+  modelList: "model.list",
+  modelDelete: "model.delete",
+  sessionPrompt: "session.prompt",
+  sessionInterrupt: "session.interrupt",
+  sessionClose: "session.close",
+  approvalRespond: "approval.respond",
   providerCreate: "provider.create",
   providerList: "provider.list",
   providerDelete: "provider.delete",
@@ -16,8 +24,48 @@ export const Methods = {
 
 export const ProjectAddParams = z.object({ path: z.string().min(1) });
 export const WorkspaceCreateParams = z.object({ projectId: z.string().min(1) });
-export const SessionCreateParams = z.object({ workspaceId: z.string().min(1) });
+export const SessionCreateParams = z.object({ workspaceId: z.string().min(1), modelId: z.string().optional() });
 export const SessionSubscribeParams = z.object({ sessionId: z.string().min(1), sinceSeq: z.number().int().nonnegative().default(0) });
+
+export const ModelCreateParams = z.object({
+  providerId: z.string().min(1),
+  modelId: z.string().trim().min(1).max(160),
+  displayName: z.string().trim().min(1).max(120).optional(),
+  contextWindow: z.number().int().positive().default(200_000),
+  maxTokens: z.number().int().positive().optional(),
+  enabled: z.boolean().default(true),
+});
+export type ModelCreateParams = z.infer<typeof ModelCreateParams>;
+
+export const ModelView = z.object({
+  id: z.string(), providerId: z.string(), modelId: z.string(), displayName: z.string(),
+  contextWindow: z.number().int(), maxTokens: z.number().int().nullable(),
+  enabled: z.boolean(), createdAt: z.number().int(),
+});
+export type ModelView = z.infer<typeof ModelView>;
+export const ModelListParams = z.object({ providerId: z.string().optional() });
+export const ModelListResult = z.object({ models: z.array(ModelView) });
+export type ModelListResult = z.infer<typeof ModelListResult>;
+export const ModelDeleteParams = z.object({ id: z.string().min(1) });
+
+export const SessionView = z.object({
+  id: z.string(), workspaceId: z.string(), agentId: z.string(), engine: z.string(),
+  title: z.string(), status: SessionStatus, modelId: z.string().nullable(), createdAt: z.number().int(),
+});
+export type SessionView = z.infer<typeof SessionView>;
+
+export const SessionPromptParams = z.object({
+  sessionId: z.string().min(1),
+  requestId: z.string().trim().min(1).max(120),
+  content: z.array(ContentBlock).min(1),
+});
+export const SessionPromptResult = z.object({ turnId: z.string(), queued: z.boolean() });
+export const SessionInterruptParams = z.object({ sessionId: z.string().min(1) });
+export const SessionInterruptResult = z.object({ interrupted: z.boolean() });
+export const SessionCloseParams = z.object({ sessionId: z.string().min(1) });
+export const ApprovalRespondParams = z.object({ approvalId: z.string().min(1), decision: PermissionDecision });
+
+export const EventNotificationParams = z.object({ event: AgentEvent });
 
 export const ApiKind = z.enum(["openai-completions", "anthropic-messages", "google-generative-ai"]);
 export type ApiKind = z.infer<typeof ApiKind>;
