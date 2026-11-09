@@ -1,12 +1,12 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
-import { startKernel } from "../src/index.js";
+import { startKernel, type Kernel } from "../src/index.js";
 
 const dirs: string[] = [];
-function tempDir(): string { const d = mkdtempSync(join(tmpdir(), "noir-kernel-")); dirs.push(d); return d; }
+function tempDir(): string { const d = mkdtempSync(join(tmpdir(), "noir kernel ünïcode ")); dirs.push(d); return d; }
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
 
 async function call(port: number, token: string, method: string, params?: unknown): Promise<any> {
@@ -21,15 +21,17 @@ async function call(port: number, token: string, method: string, params?: unknow
 }
 
 describe("startKernel", () => {
-  it("writes a runtime file and serves health", async () => {
+  it("writes a runtime file, serves health, and clears the runtime file on close", async () => {
     const dir = tempDir();
     const kernel = await startKernel({ dataDir: dir });
-    const info = JSON.parse(readFileSync(join(dir, "runtime", "kernel.json"), "utf8"));
+    const file = join(dir, "runtime", "kernel.json");
+    const info = JSON.parse(readFileSync(file, "utf8"));
     expect(info.port).toBe(kernel.port);
     expect(info.token).toBe(kernel.token);
     const res = await call(kernel.port, kernel.token, "system.health");
     expect(res.result.status).toBe("ok");
     await kernel.close();
+    expect(existsSync(file)).toBe(false);
   });
 
   it("persists a provider across restarts", async () => {
@@ -53,5 +55,39 @@ describe("startKernel", () => {
     const first = await startKernel({ dataDir: dir });
     await expect(startKernel({ dataDir: dir })).rejects.toThrow(/already running/i);
     await first.close();
+  });
+
+  it("allows exactly one of two concurrent starts", async () => {
+    const dir = tempDir();
+    const settled = await Promise.allSettled([startKernel({ dataDir: dir }), startKernel({ dataDir: dir })]);
+    const winners = settled.filter((r): r is PromiseFulfilledResult<Kernel> => r.status === "fulfilled");
+    const losers = settled.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    expect(winners).toHaveLength(1);
+    expect(losers).toHaveLength(1);
+    expect(String(losers[0]?.reason)).toMatch(/already running/i);
+    await winners[0]?.value.close();
+  });
+
+  it("reclaims a runtime file that names a live but unrelated pid", async () => {
+    const dir = tempDir();
+    mkdirSync(join(dir, "runtime"), { recursive: true });
+    const file = join(dir, "runtime", "kernel.json");
+    writeFileSync(file, JSON.stringify({ pid: process.ppid, port: 1, token: "unrelated" }));
+    const kernel = await startKernel({ dataDir: dir });
+    expect(kernel.port).toBeGreaterThan(0);
+    const info = JSON.parse(readFileSync(file, "utf8"));
+    expect(info.pid).toBe(process.pid);
+    expect(info.token).toBe(kernel.token);
+    await kernel.close();
+  });
+
+  it("leaves a foreign runtime file intact on close", async () => {
+    const dir = tempDir();
+    const kernel = await startKernel({ dataDir: dir });
+    const file = join(dir, "runtime", "kernel.json");
+    const foreign = { pid: process.ppid, port: 1, token: "foreign-token" };
+    writeFileSync(file, JSON.stringify(foreign));
+    await kernel.close();
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(foreign);
   });
 });
