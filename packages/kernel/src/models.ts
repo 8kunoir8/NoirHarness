@@ -38,7 +38,7 @@ export class ModelService {
       providerId: r.provider_id as string,
       modelId: r.model_id as string,
       displayName: r.display_name as string,
-      contextWindow: r.context_window as number,
+      contextWindow: (r.context_window as number | null) ?? 200_000,
       maxTokens: (r.max_tokens as number | null) ?? null,
       enabled: (r.enabled as number) === 1,
       createdAt: r.created_at as number,

@@ -108,9 +108,11 @@ describe("ModelService", () => {
     const { providers, models } = setup();
     const a = addProvider(providers, { name: "A" });
     const b = addProvider(providers, { name: "B" });
-    models.create(modelParams(a.id));
-    expect(models.create(modelParams(b.id)).providerId).toBe(b.id);
+    const modelA = models.create(modelParams(a.id));
+    const modelB = models.create(modelParams(b.id));
     expect(models.list()).toHaveLength(2);
+    expect(models.list(a.id)).toEqual([modelA]);
+    expect(models.list(b.id)).toEqual([modelB]);
   });
 
   it("rejects a model for a missing provider", () => {

@@ -183,7 +183,7 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
         },
         [Methods.sessionList]: async () => ({ sessions: sessions.list() }),
         [Methods.modelCreate]: async (params) => models.create(ModelCreateParams.parse(params)),
-        [Methods.modelList]: async (params) => ({ models: models.list(ModelListParams.parse(params).providerId) }),
+        [Methods.modelList]: async (params) => ({ models: models.list(ModelListParams.parse(params ?? {}).providerId) }),
         [Methods.modelDelete]: async (params) => { models.remove(ModelDeleteParams.parse(params).id); return { ok: true }; },
         [Methods.providerCreate]: async (params) => providers.create(ProviderCreateParams.parse(params)),
         [Methods.providerList]: async () => ({ providers: providers.list() }),

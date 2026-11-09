@@ -57,6 +57,23 @@ describe("startKernel", () => {
     await second.close();
   });
 
+  it("lists every model when model.list is called without params", async () => {
+    const dir = tempDir();
+    const kernel = await startKernel({ dataDir: dir });
+    const provider = await call(kernel.port, kernel.token, "provider.create", {
+      name: "Local", baseUrl: "http://localhost:11434/v1", apiKind: "openai-completions", apiKey: "k",
+    });
+    for (const modelId of ["gpt-a", "gpt-b"]) {
+      const model = await call(kernel.port, kernel.token, "model.create", { providerId: provider.result.id, modelId });
+      expect(model.error).toBeUndefined();
+    }
+    const listed = await call(kernel.port, kernel.token, "model.list");
+    expect(listed.error).toBeUndefined();
+    expect(listed.result.models.map((m: { modelId: string }) => m.modelId)).toEqual(["gpt-a", "gpt-b"]);
+    expect(listed.result.models[0].providerId).toBe(provider.result.id);
+    await kernel.close();
+  });
+
   it("reports invalid params for bad provider input and malformed requests", async () => {
     const dir = tempDir();
     const kernel = await startKernel({ dataDir: dir });
