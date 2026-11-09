@@ -36,12 +36,18 @@ const kernelEntry = process.env.NOIR_KERNEL_ENTRY ?? join(app.getAppPath(), ".."
 
 let kernel: ChildProcess | undefined;
 let info: KernelInfo | undefined;
+let kernelFailure: Error | undefined;
+let kernelReady = false;
 
 async function waitForKernel(file: string, timeoutMs = 20_000): Promise<KernelInfo> {
   const started = Date.now();
   for (;;) {
+    if (kernelFailure) throw kernelFailure;
     const current = readRuntimeFile(file);
-    if (current && isProcessAlive(current.pid)) return { port: current.port, token: current.token };
+    if (current && isProcessAlive(current.pid)) {
+      kernelReady = true;
+      return { port: current.port, token: current.token };
+    }
     if (Date.now() - started > timeoutMs) throw new Error("Kernel did not start");
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
@@ -50,12 +56,22 @@ async function waitForKernel(file: string, timeoutMs = 20_000): Promise<KernelIn
 function startKernel(): Promise<KernelInfo> {
   mkdirSync(dataDir, { recursive: true });
   // The kernel's native modules (better-sqlite3) are built for the installed Node ABI.
-  // Electron 38 embeds a different ABI, so run the daemon with Node; ELECTRON_RUN_AS_NODE
-  // keeps the option open for Electron runtimes rebuilt against Electron's ABI.
+  // Packaging must either supply NOIR_NODE_BIN or rebuild better-sqlite3 for Electron's ABI;
+  // ELECTRON_RUN_AS_NODE stays set so a rebuilt runtime can use process.execPath directly.
   const nodeBin = process.env.NOIR_NODE_BIN ?? process.env.npm_node_execpath ?? "node";
-  kernel = spawn(nodeBin, [kernelEntry], {
+  const child = spawn(nodeBin, [kernelEntry], {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", NOIR_DATA_DIR: dataDir },
     stdio: ["ignore", "inherit", "inherit"],
+  });
+  kernel = child;
+  kernelFailure = undefined;
+  child.once("error", (error) => {
+    kernelFailure = new Error(`Kernel process failed to start: ${error.message}`);
+  });
+  child.once("exit", (code, signal) => {
+    if (!kernelReady) {
+      kernelFailure = new Error(`Kernel exited before it became ready (code ${code ?? "null"}, signal ${signal ?? "null"})`);
+    }
   });
   return waitForKernel(runtimeFilePath(dataDir));
 }
