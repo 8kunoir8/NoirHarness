@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
+import type { AgentEvent } from "@noir/protocol";
 import { startRpcServer, type RpcServer } from "../src/rpcServer.js";
 
 let server: RpcServer | undefined;
@@ -17,6 +18,18 @@ function call(ws: WebSocket, method: string, params?: unknown): Promise<any> {
   return new Promise((resolve) => {
     ws.once("message", (data) => resolve(JSON.parse(String(data))));
     ws.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }));
+  });
+}
+
+function nextMessage(ws: WebSocket): Promise<any> {
+  return new Promise((resolve) => {
+    ws.once("message", (data) => resolve(JSON.parse(String(data))));
+  });
+}
+
+function waitClose(ws: WebSocket): Promise<void> {
+  return new Promise((resolve) => {
+    ws.once("close", () => resolve());
   });
 }
 
@@ -48,5 +61,32 @@ describe("rpc server", () => {
     const res = await call(ws, "boom");
     expect(JSON.stringify(res)).not.toContain("super-secret-token");
     ws.close();
+  });
+
+  it("broadcasts events to every open client", async () => {
+    server = await startRpcServer({ token: "good", handlers: {} });
+    const first = await connect(server.port, "good");
+    const second = await connect(server.port, "good");
+    const event: AgentEvent = {
+      v: 1, id: "evt-1", seq: 1, ts: 0, sessionId: "s1", agentId: "a1",
+      type: "session.created", payload: { title: "t" },
+      provenance: { engine: "native", engineName: "test", adapterVersion: "0" },
+    };
+    const frame = { jsonrpc: "2.0", method: "event", params: { event } };
+
+    const firstGot = nextMessage(first);
+    const secondGot = nextMessage(second);
+    server.broadcast(event);
+    expect(await firstGot).toEqual(frame);
+    expect(await secondGot).toEqual(frame);
+
+    const closed = waitClose(first);
+    first.close();
+    await closed;
+
+    const remainingGot = nextMessage(second);
+    server.broadcast(event);
+    expect(await remainingGot).toEqual(frame);
+    second.close();
   });
 });
