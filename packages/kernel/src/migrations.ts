@@ -58,6 +58,18 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
       CREATE TABLE settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL);
     `,
   },
+  {
+    id: 2,
+    sql: `
+      ALTER TABLE sessions ADD COLUMN model_id TEXT REFERENCES models(id) ON DELETE SET NULL;
+      ALTER TABLE turns ADD COLUMN client_request_id TEXT;
+      CREATE UNIQUE INDEX idx_turns_request
+        ON turns(session_id, client_request_id)
+        WHERE client_request_id IS NOT NULL;
+      ALTER TABLE approvals ADD COLUMN options_json TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE models ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0;
+    `,
+  },
 ];
 
 export function migrate(db: Database.Database): void {

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { openDb } from "../src/db.js";
+import { MIGRATIONS } from "../src/migrations.js";
 
 const dirs: string[] = [];
 function tempDir(): string {
@@ -22,7 +23,7 @@ describe("openDb", () => {
 
     const again = openDb(file);
     const applied = again.prepare("SELECT COUNT(*) FROM schema_migrations").pluck().get() as number;
-    expect(applied).toBe(1);
+    expect(applied).toBe(MIGRATIONS.length);
     again.close();
   });
 });

@@ -6,6 +6,9 @@ import WebSocket from "ws";
 import { z } from "zod";
 import {
   Methods,
+  ModelCreateParams,
+  ModelDeleteParams,
+  ModelListParams,
   ProjectAddParams,
   ProviderCreateParams,
   SessionCreateParams,
@@ -16,6 +19,7 @@ import {
 import { dataDir as defaultDataDir } from "./appdata.js";
 import { openDb } from "./db.js";
 import { EventStore } from "./eventStore.js";
+import { ModelService } from "./models.js";
 import { ProjectService } from "./projects.js";
 import { ProviderService } from "./providers.js";
 import { startRpcServer, type RpcServer } from "./rpcServer.js";
@@ -165,6 +169,7 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
       const workspaces = new WorkspaceService(db, projects);
       const sessions = new SessionService(db, events);
       const providers = new ProviderService(db, new KeyringSecrets());
+      const models = new ModelService(db);
 
       const handlers: Record<string, (params: unknown) => Promise<unknown>> = {
         [Methods.systemHealth]: async () => ({ status: "ok", pid: process.pid }),
@@ -172,8 +177,14 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
         [Methods.projectList]: async () => ({ projects: projects.list() }),
         [Methods.workspaceCreate]: async (params) => workspaces.createLocal(WorkspaceCreateParams.parse(params).projectId),
         [Methods.workspaceList]: async () => ({ workspaces: workspaces.list() }),
-        [Methods.sessionCreate]: async (params) => sessions.create(SessionCreateParams.parse(params).workspaceId),
+        [Methods.sessionCreate]: async (params) => {
+          const { workspaceId, modelId } = SessionCreateParams.parse(params);
+          return sessions.create(workspaceId, modelId);
+        },
         [Methods.sessionList]: async () => ({ sessions: sessions.list() }),
+        [Methods.modelCreate]: async (params) => models.create(ModelCreateParams.parse(params)),
+        [Methods.modelList]: async (params) => ({ models: models.list(ModelListParams.parse(params).providerId) }),
+        [Methods.modelDelete]: async (params) => { models.remove(ModelDeleteParams.parse(params).id); return { ok: true }; },
         [Methods.providerCreate]: async (params) => providers.create(ProviderCreateParams.parse(params)),
         [Methods.providerList]: async () => ({ providers: providers.list() }),
         [Methods.providerDelete]: async (params) => {
