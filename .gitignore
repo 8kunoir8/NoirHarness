@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.noir/
+.env
+
+test-results/
+playwright-report/
