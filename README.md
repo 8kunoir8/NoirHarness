@@ -22,6 +22,7 @@ The renderer runs on `http://127.0.0.1:5173`; Electron spawns the kernel from `a
 pnpm -r typecheck
 pnpm -r test
 pnpm --filter @noir/desktop test
+pnpm --filter @noir/desktop test:e2e
 ```
 
 ## Layout
