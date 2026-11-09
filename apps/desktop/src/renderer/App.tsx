@@ -21,7 +21,7 @@ export function App() {
     <main style={{ fontFamily: "Inter, system-ui, sans-serif", padding: 24 }}>
       <h1>NoirHarness</h1>
       <p data-testid="kernel-status">{status}</p>
-      <Settings request={request} />
+      {status === "kernel ok" ? <Settings request={request} /> : null}
     </main>
   );
 }
