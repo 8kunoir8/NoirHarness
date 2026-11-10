@@ -189,6 +189,19 @@ describe("skill discovery", () => {
     expect(scan.warnings).toHaveLength(1);
     expect(scan.warnings[0]).toContain('duplicate name "DUP"');
   });
+
+  windowsOnly("drops a global skill that differs only by case from a project skill", async () => {
+    const global = root();
+    const upper = skill(global, "upper", "global");
+    writeFileSync(join(upper, "SKILL.md"), "---\nname: DUP\ndescription: global\n---\n");
+    const project = root();
+    const lower = skill(project, "lower", "project");
+    writeFileSync(join(lower, "SKILL.md"), "---\nname: dup\ndescription: project\n---\n");
+    const scan = await discoverSkills(global, project);
+    expect(scan.skills.map((s) => [s.name, s.scope])).toEqual([["dup", "project"]]);
+    expect(scan.shadowed).toEqual(["DUP"]);
+    expect(scan.warnings.join("\n")).toContain("differs only by case");
+  });
 });
 
 function service(): { db: Database.Database; service: SkillService; dataDir: string } {
@@ -357,6 +370,46 @@ describe("skill enabled state and materialization", () => {
       throw error;
     }
     expect([...(await s.manifestFor(project)).keys()]).toEqual([]);
+  });
+
+  it("refuses to scan or read through a symlinked .noir", async (context) => {
+    const { service: s } = service();
+    const project = root();
+    const outside = root();
+    skill(outside, "leaked", "outside");
+    writeFileSync(
+      join(outside, "skills-engine.json"),
+      JSON.stringify({
+        version: 1,
+        skills: [{ name: "hidden", scope: "project", hash: "h".repeat(64), description: "outside" }],
+      } satisfies SkillManifest),
+    );
+    try {
+      linkDirectory(outside, join(project, ".noir"));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EPERM") return context.skip();
+      throw error;
+    }
+    const listed = await s.list("ws-1", project);
+    expect(listed.skills).toEqual([]);
+    expect(listed.warnings.join("\n")).toContain(".noir is not a directory");
+    await expect(s.read("ws-1", project, "project", "leaked")).rejects.toThrow(/not found/i);
+    expect([...(await s.manifestFor(project)).keys()]).toEqual([]);
+  });
+
+  it("materializes through a symlinked workspace root", async (context) => {
+    const { service: s } = service();
+    const real = root();
+    skill(projectSkills(real), "p", "project");
+    const link = join(root(), "workspace-link");
+    try {
+      linkDirectory(real, link);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EPERM") return context.skip();
+      throw error;
+    }
+    await s.materialize("ws-1", link);
+    expect(readFileSync(join(real, ".noir", "skills-engine", "p", "SKILL.md"), "utf8")).toContain("description: project");
   });
 
   it("rejects materialize for a removed workspace without recreating it", async () => {

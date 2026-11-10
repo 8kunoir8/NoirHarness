@@ -171,6 +171,8 @@ export async function discoverSkills(globalDir: string, projectDir: string | und
   const shadowed: string[] = [];
   await scanRoot("project", projectDir, skills, warnings);
   const projectNames = new Set(skills.keys());
+  const projectNamesLower =
+    process.platform === "win32" ? new Set([...projectNames].map((name) => name.toLowerCase())) : undefined;
   const global = new Map<string, DiscoveredSkill>();
   const globalWarnings: string[] = [];
   await scanRoot("global", globalDir, global, globalWarnings);
@@ -178,6 +180,12 @@ export async function discoverSkills(globalDir: string, projectDir: string | und
   for (const [name, skill] of global) {
     if (projectNames.has(name)) {
       shadowed.push(name);
+      continue;
+    }
+    // One NTFS directory cannot hold both spellings; project precedence wins case-insensitively.
+    if (projectNamesLower?.has(name.toLowerCase()) === true) {
+      shadowed.push(name);
+      warnings.push(`global:${skill.dir}: "${name}" differs only by case from a project skill`);
       continue;
     }
     skills.set(name, skill);
@@ -234,6 +242,17 @@ async function ensureRealDirectory(path: string, label: string): Promise<void> {
   if (!marker.isDirectory()) throw new Error(`${label} is not a directory`);
 }
 
+/** True when `<root>/.noir` exists but is a symlink or not a directory; it is never followed. */
+async function hasUntrustedNoir(root: string): Promise<boolean> {
+  try {
+    const marker = await lstat(join(root, ".noir"));
+    return marker.isSymbolicLink() || !marker.isDirectory();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
 export class SkillService {
   constructor(private readonly db: Database.Database, private readonly dataDir: string) {}
 
@@ -280,8 +299,13 @@ export class SkillService {
     workspaceId: string,
     root: string | undefined,
   ): Promise<{ skills: SkillRowView[]; shadowed: string[]; warnings: string[] }> {
-    const projectDir = root === undefined ? undefined : join(root, ".noir", "skills");
+    const noir = root === undefined ? undefined : join(root, ".noir");
+    const untrusted = root !== undefined && (await hasUntrustedNoir(root));
+    const projectDir = noir === undefined || untrusted ? undefined : join(noir, "skills");
     const scan = await discoverSkills(this.globalRoot, projectDir);
+    const warnings = [...scan.warnings];
+    // A linked `.noir` must never send the scan outside the workspace; report it and list globals.
+    if (untrusted && noir !== undefined) warnings.push(`project:${noir}: .noir is not a directory`);
     for (const skill of scan.skills) this.persist(workspaceId, skill);
     const flags = this.readEnabled(workspaceId);
     return {
@@ -293,7 +317,7 @@ export class SkillService {
         enabled: this.enabledFor(workspaceId, flags, skill),
       })),
       shadowed: scan.shadowed,
-      warnings: scan.warnings,
+      warnings: warnings.sort(compareCodeUnits),
     };
   }
 
@@ -319,7 +343,8 @@ export class SkillService {
     scope: SkillScope,
     name: string,
   ): Promise<{ content: string; hash: string; truncated: false }> {
-    const projectDir = root === undefined ? undefined : join(root, ".noir", "skills");
+    const projectDir =
+      root === undefined || (await hasUntrustedNoir(root)) ? undefined : join(root, ".noir", "skills");
     const scan = await discoverSkills(this.globalRoot, projectDir);
     const found = scan.skills.find((row) => row.scope === scope && row.name === name);
     if (found === undefined) throw new RpcFault(ErrorCodes.notFound, `Skill not found: ${name}`);
@@ -332,20 +357,24 @@ export class SkillService {
    * manifest. One directory per workspace makes precedence intrinsic: `discoverSkills` never
    * yields a global copy whose name a project skill claims, even when that project skill is
    * disabled, so disabling it cannot resurrect the global one. Each winner replaces only its own
-   * `<name>` directory; anything else in the engine root is left alone. The workspace and `.noir`
-   * must already be real directories (a removed workspace is never recreated, and no write goes
-   * through a symlink); filesystem failures propagate so the caller can decide.
+   * `<name>` directory; anything else in the engine root is left alone. The workspace must exist
+   * as a directory (a linked root is followed, a missing one is never recreated) while `.noir`
+   * must be a real directory (no write goes through a linked `.noir` or engine root); filesystem
+   * failures propagate so the caller can decide.
    */
   async materialize(workspaceId: string, root: string): Promise<void> {
-    const rootMarker = await lstat(root);
-    if (rootMarker.isSymbolicLink() || !rootMarker.isDirectory()) {
-      throw new Error("Workspace root is not a directory");
-    }
+    const rootMarker = await stat(root);
+    if (!rootMarker.isDirectory()) throw new Error("Workspace root is not a directory");
     const noir = join(root, ".noir");
     await ensureRealDirectory(noir, "Workspace .noir");
     const projectDir = join(noir, "skills");
     // Created on materialize, never by `list`: listing a workspace must not write into it.
-    await mkdir(projectDir, { recursive: true });
+    const projectLeaf = await lstat(projectDir).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    });
+    // Never create through a linked leaf; `discoverSkills` reports it and refuses to scan it.
+    if (projectLeaf === undefined) await mkdir(projectDir, { recursive: true });
     const scan = await discoverSkills(this.globalRoot, projectDir);
     const flags = this.readEnabled(workspaceId);
     const target = join(noir, "skills-engine");
@@ -373,7 +402,10 @@ export class SkillService {
         if (movedOld) await rm(old, { recursive: true, force: true });
       } catch (error) {
         await rm(temp, { recursive: true, force: true }).catch(() => undefined);
-        await rm(old, { recursive: true, force: true }).catch(() => undefined);
+        if (movedOld) {
+          // Put the previous copy back; only drop it when the restore itself cannot happen.
+          await rename(old, destination).catch(() => rm(old, { recursive: true, force: true }).catch(() => undefined));
+        }
         throw error;
       }
       manifest.skills.push({ name: skill.name, scope: skill.scope, hash: skill.hash, description: skill.description });
@@ -392,7 +424,11 @@ export class SkillService {
     const merged = new Map<string, { scope: SkillScope; hash: string }>();
     if (root === undefined) return merged;
     try {
-      const file = join(root, ".noir", "skills-engine.json");
+      const noir = join(root, ".noir");
+      const noirMarker = await lstat(noir);
+      // A linked `.noir` is not this workspace's own state; do not read a manifest through it.
+      if (noirMarker.isSymbolicLink() || !noirMarker.isDirectory()) return merged;
+      const file = join(noir, "skills-engine.json");
       const marker = await lstat(file);
       // A manifest replaced by a link is not one this service wrote; treat it as absent.
       if (marker.isSymbolicLink() || !marker.isFile()) return merged;
