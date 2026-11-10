@@ -1,5 +1,5 @@
 import { once } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -25,6 +25,7 @@ import { profileAgentDir } from "../src/profile.js";
 import { ProjectService } from "../src/projects.js";
 import { ProviderService, type Secrets } from "../src/providers.js";
 import { SessionService } from "../src/sessions.js";
+import { SkillService } from "../src/skills.js";
 import { WorkspaceService } from "../src/workspaces.js";
 
 const FAKE_SERVER = fileURLToPath(new URL("../../engines/acp/test/fakeAcpServer.ts", import.meta.url));
@@ -74,7 +75,7 @@ async function waitForEvent(
   }
 }
 
-function setup(opts: { turnTimeoutMs?: number; acpArgs?: string[] } = {}) {
+function setup(opts: { turnTimeoutMs?: number; acpArgs?: string[]; acpSkill?: string } = {}) {
   const root = tempDir();
   const dataDir = tempDir();
   const db = openDb(join(dataDir, "noir.db"));
@@ -97,20 +98,25 @@ function setup(opts: { turnTimeoutMs?: number; acpArgs?: string[] } = {}) {
   });
   const model = models.create({ providerId: provider.id, modelId: "fake-1", contextWindow: 200_000, enabled: true });
   const session = sessions.create(workspace.id, model.id);
+  const skills = new SkillService(db, dataDir);
 
   // The manager parses its launch argv at construction time.
   process.env.NOIR_OMP_ARGS_JSON = JSON.stringify(opts.acpArgs ?? [FAKE_SERVER]);
+  // The adapter merges opts.env over process.env, so the fake server inherits this switch.
+  if (opts.acpSkill === undefined) delete process.env.FAKE_ACP_SKILL;
+  else process.env.FAKE_ACP_SKILL = opts.acpSkill;
   const manager = new EngineManager({
     db,
     events,
     sessions,
     models,
     providers,
+    skills,
     dataDir,
     ompCommand: process.execPath,
     ...(opts.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: opts.turnTimeoutMs }),
   });
-  return { db, events, sessions, providers, models, manager, session, dataDir, root };
+  return { db, events, sessions, providers, models, skills, manager, session, workspaceId: workspace.id, dataDir, root };
 }
 
 function isAlive(pid: number): boolean {
@@ -132,7 +138,7 @@ const IdResult = z.object({ id: z.string() });
 const SubscribeResult = z.object({ events: z.array(AgentEvent), lastSeq: z.number().int() });
 
 beforeAll(() => {
-  for (const key of ["NOIR_OMP_COMMAND", "NOIR_OMP_ARGS_JSON", "NOIR_TURN_TIMEOUT_MS"]) {
+  for (const key of ["NOIR_OMP_COMMAND", "NOIR_OMP_ARGS_JSON", "NOIR_TURN_TIMEOUT_MS", "FAKE_ACP_SKILL"]) {
     savedEnv[key] = process.env[key];
   }
   process.env.NOIR_OMP_COMMAND = process.execPath;
@@ -221,6 +227,26 @@ describe("EngineManager over the fake ACP server", () => {
       expect(state?.messages).toHaveLength(1);
       expect(state?.messages[0]).toMatchObject({ id: "msg-fake-1", role: "assistant", status: "done" });
       expect(state?.status).toBe("idle");
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "attributes a skill:// read to the materialized skill's scope and hash",
+    async () => {
+      const { events, manager, session, root } = setup({ acpSkill: "demo" });
+      mkdirSync(join(root, ".noir", "skills", "demo"), { recursive: true });
+      writeFileSync(
+        join(root, ".noir", "skills", "demo", "SKILL.md"),
+        "---\nname: demo\ndescription: demo\n---\n\nBODY\n",
+      );
+      await manager.prompt({ sessionId: session.id, requestId: "skill-1", content: [{ type: "text", text: "stream" }] });
+      await waitForEvent(events, session.id, (event) => event.type === "turn.completed");
+      const loaded = events.list(session.id).filter((event) => event.type === "skill.loaded");
+      expect(loaded).toHaveLength(1);
+      expect(loaded[0]?.payload).toMatchObject({ name: "demo", scope: "project" });
+      expect(eventPayload(loaded[0]!, "skill.loaded").hash).toMatch(/^[0-9a-f]{64}$/);
+      expect(loaded[0]?.turnId).toBe(events.list(session.id).find((event) => event.type === "turn.started")?.turnId);
     },
     TEST_TIMEOUT_MS,
   );

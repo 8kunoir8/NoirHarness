@@ -24,13 +24,14 @@ import type { ModelService } from "./models.js";
 import { profileAgentDir, syncProfile } from "./profile.js";
 import type { ProviderService } from "./providers.js";
 import type { SessionService } from "./sessions.js";
+import type { SkillScope, SkillService } from "./skills.js";
 
 const DEFAULT_TURN_TIMEOUT_MS = 120_000;
 const PROVENANCE = { engine: "acp", engineName: "omp", adapterVersion: ADAPTER_VERSION } as const;
 
 const sessionQuery = `
   SELECT s.id AS id, s.agent_id AS agent_id, s.status AS status, s.model_id AS model_id,
-         w.path AS workspace_path
+         s.workspace_id AS workspace_id, w.path AS workspace_path
   FROM sessions s
   JOIN workspaces w ON w.id = s.workspace_id
   WHERE s.id = ?`;
@@ -48,6 +49,7 @@ interface SessionRow {
   agent_id: string;
   status: SessionStatus;
   model_id: string | null;
+  workspace_id: string;
   workspace_path: string;
 }
 
@@ -61,6 +63,8 @@ interface TurnContext extends QueuedTurn {
   openMessages: Map<string, true>;
   nextMessageSeq: number;
   cancelRequested: boolean;
+  /** Skills already attributed this turn, so a repeated read does not duplicate the event. */
+  loadedSkills: Set<string>;
 }
 
 interface PendingApproval {
@@ -74,7 +78,10 @@ interface PendingApproval {
 interface SessionState {
   sessionId: string;
   agentId: string;
+  workspaceId: string;
   workspaceRoot: string;
+  /** What `materialize` wrote for this workspace; empty when materialization failed. */
+  skillIndex: Map<string, { scope: SkillScope; hash: string }>;
   engine: AcpClient | undefined;
   engineSession: AcpSession | undefined;
   selector: string | undefined;
@@ -156,6 +163,14 @@ function planStatus(status: string): "pending" | "active" | "done" {
   }
 }
 
+/** `skill://<name>` and `skill://<name>/<subpath>` both name the skill. */
+function skillNameFromRawInput(raw: unknown): string | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  if (!("path" in raw) || typeof raw.path !== "string" || !raw.path.startsWith("skill://")) return undefined;
+  const name = raw.path.slice("skill://".length).split(/[/?#]/, 1)[0] ?? "";
+  return name === "" ? undefined : name;
+}
+
 export class EngineManager {
   private readonly command: string;
   private readonly baseArgs: string[];
@@ -173,6 +188,7 @@ export class EngineManager {
       sessions: SessionService;
       models: ModelService;
       providers: ProviderService;
+      skills: SkillService;
       dataDir: string;
       ompCommand?: string;
       turnTimeoutMs?: number;
@@ -389,7 +405,9 @@ export class EngineManager {
     const state: SessionState = {
       sessionId: row.id,
       agentId: row.agent_id,
+      workspaceId: row.workspace_id,
       workspaceRoot: row.workspace_path,
+      skillIndex: new Map(),
       engine: undefined,
       engineSession: undefined,
       selector: undefined,
@@ -429,6 +447,16 @@ export class EngineManager {
       dataDir: this.dataDir,
     });
 
+    // Materialization is a filesystem write, so it must not gate the engine: a read-only
+    // workspace still has to answer chat, just with nothing attributed. An empty index makes
+    // every `skill://` read silently unattributed instead of failing the turn.
+    try {
+      await this.deps.skills.materialize(state.workspaceId, state.workspaceRoot);
+      state.skillIndex = await this.deps.skills.manifestFor(state.workspaceRoot);
+    } catch {
+      state.skillIndex = new Map();
+    }
+
     const args = [
       ...this.baseArgs,
       "--session-dir",
@@ -458,7 +486,13 @@ export class EngineManager {
   }
 
   private async startTurn(state: SessionState, turn: QueuedTurn): Promise<void> {
-    const context: TurnContext = { ...turn, openMessages: new Map(), nextMessageSeq: 0, cancelRequested: false };
+    const context: TurnContext = {
+      ...turn,
+      openMessages: new Map(),
+      nextMessageSeq: 0,
+      cancelRequested: false,
+      loadedSkills: new Set(),
+    };
     state.turn = context;
     state.usage = undefined;
     try {
@@ -611,6 +645,12 @@ export class EngineManager {
       }
       case "tool.started": {
         this.emit(state, "tool.started", { toolCallId: update.toolCallId, title: update.title }, turn.turnId);
+        const skillName = skillNameFromRawInput(update.rawInput);
+        const meta = skillName === undefined ? undefined : state.skillIndex.get(skillName);
+        if (skillName !== undefined && meta !== undefined && !turn.loadedSkills.has(skillName)) {
+          turn.loadedSkills.add(skillName);
+          this.emit(state, "skill.loaded", { name: skillName, scope: meta.scope, hash: meta.hash }, turn.turnId);
+        }
         if (update.toolKind === "execute") {
           const raw = update.rawInput;
           const command =

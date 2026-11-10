@@ -11,6 +11,8 @@ const LOG_PATH = process.env.FAKE_ACP_LOG;
 const MUTE = process.env.FAKE_ACP_MUTE === "1";
 /** Answers everything except `session/close` — teardown-timeout coverage. */
 const IGNORE_CLOSE = process.env.FAKE_ACP_IGNORE_CLOSE === "1";
+/** When set, the turn also "reads" `skill://<name>` — skill-attribution coverage. */
+const SKILL_NAME = process.env.FAKE_ACP_SKILL;
 
 type JsonObject = Record<string, unknown>;
 
@@ -106,9 +108,25 @@ function textUpdate(text: string, messageId: string): JsonObject {
   return { sessionUpdate: "agent_message_chunk", content: { type: "text", text }, messageId };
 }
 
+function emitSkillRead(name: string): void {
+  emitUpdate({
+    sessionUpdate: "tool_call",
+    toolCallId: "skill-call-1",
+    title: `read ${name}`,
+    kind: "read",
+    rawInput: { path: `skill://${name}` },
+    status: "pending",
+  });
+  emitUpdate({ sessionUpdate: "tool_call_update", toolCallId: "skill-call-1", status: "completed" });
+}
+
 async function streamTurn(): Promise<JsonObject> {
   const messageId = "msg-fake-1";
-  for (const chunk of ["Hel", "lo from ", "mock."]) emitUpdate(textUpdate(chunk, messageId));
+  const chunks = ["Hel", "lo from ", "mock."];
+  for (const [index, chunk] of chunks.entries()) {
+    emitUpdate(textUpdate(chunk, messageId));
+    if (index === 0 && SKILL_NAME !== undefined && SKILL_NAME !== "") emitSkillRead(SKILL_NAME);
+  }
   emitUpdate({ sessionUpdate: "usage_update", size: 200_000, used: 11 });
   emitUpdate({ sessionUpdate: "session_info_update", updatedAt: new Date().toISOString() });
   return { stopReason: "end_turn", usage: { inputTokens: 11, outputTokens: 7, totalTokens: 18 } };

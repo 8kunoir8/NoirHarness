@@ -211,6 +211,7 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
         sessions,
         models,
         providers,
+        skills,
         dataDir: dir,
       });
       engines = engineManager;
