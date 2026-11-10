@@ -240,8 +240,23 @@ export class EngineManager {
         // The engine may already be gone; the turn settles as failed in that case.
       }
     }
-    this.dropQueue(state, "interrupted");
+    // The queue survives an interrupt: a prompt the user queued while this turn ran still runs
+    // once the engine settles. `cancelQueued` is the way to drop one.
     return { interrupted: turn !== undefined };
+  }
+
+  /**
+   * Drops one turn that is still waiting in the queue. No event is emitted: the turn never
+   * started, so a replay must not invent a failed or completed turn for it.
+   */
+  async cancelQueued(params: { sessionId: string; turnId: string }): Promise<{ cancelled: boolean }> {
+    const state = this.states.get(params.sessionId);
+    if (state === undefined) return { cancelled: false };
+    const index = state.queue.findIndex((turn) => turn.turnId === params.turnId);
+    if (index === -1) return { cancelled: false };
+    state.queue.splice(index, 1);
+    this.deps.db.prepare("DELETE FROM turns WHERE id = ?").run(params.turnId);
+    return { cancelled: true };
   }
 
   async respond(approvalId: string, decision: PermissionDecision): Promise<void> {

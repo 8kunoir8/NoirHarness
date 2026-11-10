@@ -41,6 +41,9 @@ const session: SessionView = {
   status: "running",
   modelId: null,
   createdAt: 1,
+  lastEventSeq: 0,
+  lastEventAt: 1,
+  pendingApproval: false,
 };
 
 describe("reduceChat", () => {
@@ -92,6 +95,12 @@ describe("reduceChat", () => {
   });
 });
 
+
+/** Chat is a pure view over lifted events; tests need the same shape App supplies. */
+function ChatHarness({ request }: { request: RequestFn }) {
+  const events = useSessionEvents(session.id, request);
+  return <Chat session={session} models={[]} request={request} events={events} />;
+}
 describe("Chat", () => {
   it("renders streamed text, tool cards and a permission dialog", async () => {
     const request = vi.fn(async (method: string): Promise<unknown> => {
@@ -120,7 +129,7 @@ describe("Chat", () => {
       throw new Error(method);
     });
 
-    render(<Chat session={session} models={[]} request={request as unknown as RequestFn} />);
+    render(<ChatHarness request={request as unknown as RequestFn} />);
 
     expect(await screen.findByText("Hello world")).toBeTruthy();
     expect(screen.getByText("Run tests")).toBeTruthy();
@@ -141,7 +150,7 @@ describe("Chat", () => {
       throw new Error(method);
     });
 
-    render(<Chat session={session} models={[]} request={request as unknown as RequestFn} />);
+    render(<ChatHarness request={request as unknown as RequestFn} />);
     const prompt = screen.getByLabelText("Prompt");
 
     await userEvent.type(prompt, "hello{Enter}");
@@ -173,7 +182,7 @@ describe("Chat", () => {
       throw new Error(method);
     });
 
-    render(<Chat session={session} models={[]} request={request as unknown as RequestFn} />);
+    render(<ChatHarness request={request as unknown as RequestFn} />);
     const prompt = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
 
     await userEvent.type(prompt, "keep me");

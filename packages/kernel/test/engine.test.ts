@@ -390,6 +390,77 @@ describe("EngineManager over the fake ACP server", () => {
   );
 
   it(
+    "runs the queued turn after interrupting the turn ahead of it",
+    async () => {
+      const { events, manager, session } = setup();
+      const first = await manager.prompt({
+        sessionId: session.id,
+        requestId: "interrupt-queue-1",
+        content: [{ type: "text", text: "slow" }],
+      });
+      await waitForEvent(events, session.id, (event) => event.type === "message.delta");
+      const second = await manager.prompt({
+        sessionId: session.id,
+        requestId: "interrupt-queue-2",
+        content: [{ type: "text", text: "stream" }],
+      });
+      expect(second.queued).toBe(true);
+
+      expect((await manager.interrupt(session.id)).interrupted).toBe(true);
+
+      const completedFirst = await waitForEvent(
+        events,
+        session.id,
+        (event) => event.type === "turn.completed" && event.turnId === first.turnId,
+      );
+      expect(eventPayload(completedFirst, "turn.completed").status).toBe("interrupted");
+      const startedSecond = await waitForEvent(
+        events,
+        session.id,
+        (event) => event.type === "turn.started" && event.turnId === second.turnId,
+      );
+      expect(startedSecond.seq).toBeGreaterThan(completedFirst.seq);
+      const completedSecond = await waitForEvent(
+        events,
+        session.id,
+        (event) => event.type === "turn.completed" && event.turnId === second.turnId,
+      );
+      expect(eventPayload(completedSecond, "turn.completed").status).toBe("completed");
+      expect(events.list(session.id).some((event) => event.type === "turn.failed")).toBe(false);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "drops a queued turn without inventing events for it",
+    async () => {
+      const { db, events, manager, session } = setup();
+      await manager.prompt({
+        sessionId: session.id,
+        requestId: "cancel-queued-running",
+        content: [{ type: "text", text: "slow" }],
+      });
+      await waitForEvent(events, session.id, (event) => event.type === "message.delta");
+      const queued = await manager.prompt({
+        sessionId: session.id,
+        requestId: "cancel-queued-waiting",
+        content: [{ type: "text", text: "later" }],
+      });
+      expect(queued.queued).toBe(true);
+
+      expect(await manager.cancelQueued({ sessionId: session.id, turnId: queued.turnId })).toEqual({ cancelled: true });
+      expect(await manager.cancelQueued({ sessionId: session.id, turnId: queued.turnId })).toEqual({ cancelled: false });
+      expect(events.list(session.id).filter((event) => event.turnId === queued.turnId)).toEqual([]);
+      expect(db.prepare("SELECT id FROM turns WHERE id = ?").get(queued.turnId)).toBeUndefined();
+
+      // Cancelling the queued turn leaves the running turn alone.
+      expect((await manager.interrupt(session.id)).interrupted).toBe(true);
+      await waitForEvent(events, session.id, (event) => event.type === "turn.completed");
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
     "fails the turn and the session when the engine dies mid-turn",
     async () => {
       const { db, events, manager, session } = setup();
