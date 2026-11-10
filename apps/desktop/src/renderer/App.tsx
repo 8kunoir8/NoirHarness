@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { connect, request } from "./api.js";
 import { Settings } from "./Settings.js";
+import { Workspace } from "./Workspace.js";
+import "./styles.css";
 
 export function App() {
   const [status, setStatus] = useState("connecting");
@@ -18,10 +20,15 @@ export function App() {
   }, []);
 
   return (
-    <main style={{ fontFamily: "Inter, system-ui, sans-serif", padding: 24 }}>
+    <main>
       <h1>NoirHarness</h1>
       <p data-testid="kernel-status">{status}</p>
-      {status === "kernel ok" ? <Settings request={request} /> : null}
+      {status === "kernel ok" ? (
+        <>
+          <Workspace request={request} />
+          <Settings request={request} />
+        </>
+      ) : null}
     </main>
   );
 }
