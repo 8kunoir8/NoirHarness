@@ -195,11 +195,6 @@ async function copySkill(src: string, dest: string): Promise<void> {
   }
 }
 
-async function replaceDir(staging: string, target: string): Promise<void> {
-  await rm(target, { recursive: true, force: true });
-  await rename(staging, target);
-}
-
 export class SkillService {
   constructor(private readonly db: Database.Database, private readonly dataDir: string) {}
 
@@ -274,11 +269,8 @@ export class SkillService {
     const skill = listed.skills.find((row) => row.scope === scope && row.name === name);
     if (skill === undefined) throw new RpcFault(ErrorCodes.notFound, `Skill not found: ${name}`);
     this.db
-      .prepare(
-        "INSERT INTO skills (id, workspace_id, scope, name, dir, hash, manifest_json, enabled) VALUES (?,?,?,?,?,?,?,?) " +
-          "ON CONFLICT (workspace_id, scope, name) DO UPDATE SET enabled = excluded.enabled",
-      )
-      .run(uuidv7(), scope === "global" ? "" : workspaceId, scope, name, "", skill.hash, "{}", enabled ? 1 : 0);
+      .prepare("UPDATE skills SET enabled = ? WHERE workspace_id = ? AND scope = ? AND name = ?")
+      .run(enabled ? 1 : 0, scope === "global" ? "" : workspaceId, scope, name);
     if (root !== undefined) await this.materialize(workspaceId, root);
   }
 
@@ -288,9 +280,6 @@ export class SkillService {
     scope: SkillScope,
     name: string,
   ): Promise<{ content: string; hash: string; truncated: false }> {
-    const listed = await this.list(workspaceId, root);
-    const skill = listed.skills.find((row) => row.scope === scope && row.name === name);
-    if (skill === undefined) throw new RpcFault(ErrorCodes.notFound, `Skill not found: ${name}`);
     const projectDir = root === undefined ? undefined : join(root, ".noir", "skills");
     const scan = await discoverSkills(this.globalRoot, projectDir);
     const found = scan.skills.find((row) => row.scope === scope && row.name === name);
@@ -303,30 +292,40 @@ export class SkillService {
    * Writes the effective set for one workspace into `<workspace>/.noir/skills-engine` plus its
    * manifest. One directory per workspace makes precedence intrinsic: `discoverSkills` never
    * yields a global copy whose name a project skill claims, even when that project skill is
-   * disabled, so disabling it cannot resurrect the global one. The directory is staged and
-   * renamed in; a read-only workspace simply ends up with no materialized skills.
+   * disabled, so disabling it cannot resurrect the global one. Each winner replaces only its own
+   * `<name>` directory; anything else in the engine root is left alone. Filesystem failures
+   * propagate so the caller can decide (a read-only workspace yields no materialized skills).
    */
   async materialize(workspaceId: string, root: string): Promise<void> {
     const noir = join(root, ".noir");
     const scan = await discoverSkills(this.globalRoot, join(noir, "skills"));
     const flags = this.readEnabled(workspaceId);
     const target = join(noir, "skills-engine");
-    const staging = `${target}.tmp-${randomUUID()}`;
     const manifest: SkillManifest = { version: 1, skills: [] };
-    try {
-      await mkdir(noir, { recursive: true });
-      await rm(staging, { recursive: true, force: true });
-      await mkdir(staging, { recursive: true });
-      for (const skill of scan.skills) {
-        if (!this.enabledFor(workspaceId, flags, skill)) continue;
-        await copySkill(skill.dir, join(staging, skill.name));
-        manifest.skills.push({ name: skill.name, scope: skill.scope, hash: skill.hash, description: skill.description });
+    const winners = scan.skills.filter((skill) => this.enabledFor(workspaceId, flags, skill));
+    const names = new Set(winners.map((skill) => skill.name));
+    // Read before writing: this is the only record of which directories this engine owns.
+    const previous = await this.manifestFor(root);
+    await mkdir(target, { recursive: true });
+    for (const skill of winners) {
+      const temp = join(target, `.tmp-${randomUUID()}`);
+      try {
+        await copySkill(skill.dir, temp);
+        await rm(join(target, skill.name), { recursive: true, force: true });
+        await rename(temp, join(target, skill.name));
+      } catch (error) {
+        await rm(temp, { recursive: true, force: true }).catch(() => undefined);
+        throw error;
       }
-      await replaceDir(staging, target);
-      await writeJsonAtomically(join(noir, "skills-engine.json"), manifest);
-    } catch {
-      await rm(staging, { recursive: true, force: true }).catch(() => undefined);
+      manifest.skills.push({ name: skill.name, scope: skill.scope, hash: skill.hash, description: skill.description });
     }
+    for (const name of previous.keys()) {
+      if (names.has(name)) continue;
+      // A hand-edited manifest must not turn into a path outside the engine root.
+      if (!SKILL_NAME.test(name)) continue;
+      await rm(join(target, name), { recursive: true, force: true });
+    }
+    await writeJsonAtomically(join(noir, "skills-engine.json"), manifest);
   }
 
   /** Scope and hash as materialized for this workspace; absent when nothing was written. */

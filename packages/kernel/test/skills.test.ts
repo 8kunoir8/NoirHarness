@@ -235,9 +235,28 @@ describe("skill enabled state and materialization", () => {
     await s.list("ws-1", project);
     await s.materialize("ws-1", project);
     mkdirSync(join(project, ".noir", "skills-engine", "p", "old"), { recursive: true });
+    writeFileSync(join(project, ".noir", "skills-engine", "notes.txt"), "keep me");
+    mkdirSync(join(project, ".noir", "skills-engine", "user-dir"), { recursive: true });
+    writeFileSync(join(project, ".noir", "skills-engine", "user-dir", "keep.txt"), "keep me too");
     rmSync(join(project, ".noir", "skills"), { recursive: true, force: true });
     await s.list("ws-1", project);
     await s.materialize("ws-1", project);
     expect(existsSync(join(project, ".noir", "skills-engine", "p"))).toBe(false);
+    expect(readFileSync(join(project, ".noir", "skills-engine", "notes.txt"), "utf8")).toBe("keep me");
+    expect(readFileSync(join(project, ".noir", "skills-engine", "user-dir", "keep.txt"), "utf8")).toBe("keep me too");
+  });
+
+  it("propagates a materialize failure when the engine root is not a directory", async () => {
+    const { service: s } = service();
+    const project = root();
+    skill(projectSkills(project), "p", "project");
+    await s.list("ws-1", project);
+    const engine = join(project, ".noir", "skills-engine");
+    writeFileSync(engine, "not a directory");
+    try {
+      await expect(s.materialize("ws-1", project)).rejects.toThrow();
+    } finally {
+      rmSync(engine, { force: true });
+    }
   });
 });
