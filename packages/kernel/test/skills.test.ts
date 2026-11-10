@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -76,6 +76,50 @@ describe("skill discovery", () => {
     expect(scan.skills.map((s) => s.name)).toEqual(["linked"]);
     expect(scan.warnings).toEqual([]);
     expect(await hashSkillDir(dir)).toBe(before);
+  });
+
+  it("refuses a skill whose SKILL.md is a symlink", async (context) => {
+    const global = root();
+    const outside = root();
+    const sentinel = "OUTSIDE-MANIFEST-SENTINEL";
+    writeFileSync(join(outside, "SKILL.md"), `---\nname: sneaky\ndescription: x\n---\n${sentinel}\n`);
+    const dir = skill(global, "sneaky", "has a linked manifest");
+    rmSync(join(dir, "SKILL.md"));
+    try {
+      symlinkSync(join(outside, "SKILL.md"), join(dir, "SKILL.md"));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EPERM") return context.skip();
+      throw error;
+    }
+    const scan = await discoverSkills(global, undefined);
+    expect(scan.skills).toEqual([]);
+    expect(scan.warnings).toHaveLength(1);
+    expect(scan.warnings[0]).toContain("sneaky");
+    expect(JSON.stringify(scan)).not.toContain(sentinel);
+  });
+
+  it("refuses a skill with more than 200 files", async () => {
+    const global = root();
+    const dir = skill(global, "crowded", "too many files");
+    for (let index = 0; index < 201; index += 1) {
+      writeFileSync(join(dir, `file-${String(index).padStart(3, "0")}.txt`), "");
+    }
+    const scan = await discoverSkills(global, undefined);
+    expect(scan.skills).toEqual([]);
+    expect(scan.warnings.join("\n")).toContain("crowded");
+    expect(scan.warnings.join("\n")).toContain("more than 200 files");
+  });
+
+  it("warns about duplicate names inside one scope", async () => {
+    const global = root();
+    const first = skill(global, "first", "one");
+    writeFileSync(join(first, "SKILL.md"), "---\nname: dup\ndescription: one\n---\n");
+    const second = skill(global, "second", "two");
+    writeFileSync(join(second, "SKILL.md"), "---\nname: dup\ndescription: two\n---\n");
+    const scan = await discoverSkills(global, undefined);
+    expect(scan.skills.map((s) => s.name)).toEqual(["dup"]);
+    expect(scan.warnings).toHaveLength(1);
+    expect(scan.warnings[0]).toContain('duplicate name "dup"');
   });
 
   it("hashes directory content, not the directory mtime", async () => {

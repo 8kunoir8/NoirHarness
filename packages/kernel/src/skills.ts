@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
+import type { Dirent } from "node:fs";
 import { lstat, readdir, readFile } from "node:fs/promises";
-import { join, sep } from "node:path";
+import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 
 export type SkillScope = "global" | "project";
@@ -27,6 +28,9 @@ const MAX_SKILL_FILES = 200;
 const MAX_SKILL_BYTES = 8 * 1024 * 1024;
 const SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
+/** Code-unit order, so output does not move with the machine's locale. */
+const compareCodeUnits = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
 export function parseSkillFrontmatter(text: string): { name?: string; description?: string } {
   if (!text.startsWith("---")) return {};
   const end = text.indexOf("\n---", 3);
@@ -50,16 +54,18 @@ export function parseSkillFrontmatter(text: string): { name?: string; descriptio
 }
 
 async function listFiles(dir: string, prefix: string, files: string[]): Promise<void> {
-  if (files.length > MAX_SKILL_FILES) throw new Error(`more than ${MAX_SKILL_FILES} files`);
   const entries = await readdir(dir, { withFileTypes: true });
-  entries.sort((a, b) => a.name.localeCompare(b.name));
+  entries.sort((a, b) => compareCodeUnits(a.name, b.name));
   for (const entry of entries) {
     const absolute = join(dir, entry.name);
     const rel = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
     // A symlink inside a skill could point outside the workspace; skip it rather than follow.
     if (entry.isSymbolicLink()) continue;
     if (entry.isDirectory()) await listFiles(absolute, rel, files);
-    else if (entry.isFile()) files.push(rel);
+    else if (entry.isFile()) {
+      if (files.length >= MAX_SKILL_FILES) throw new Error(`more than ${MAX_SKILL_FILES} files`);
+      files.push(rel);
+    }
   }
 }
 
@@ -73,7 +79,7 @@ export async function hashSkillDir(dir: string): Promise<string> {
     const bytes = await readFile(join(dir, ...rel.split("/")));
     total += bytes.length;
     if (total > MAX_SKILL_BYTES) throw new Error(`more than ${MAX_SKILL_BYTES} bytes`);
-    hash.update(rel.replaceAll(sep, "/"));
+    hash.update(rel);
     hash.update("\0");
     hash.update(String(bytes.length));
     hash.update("\0");
@@ -83,9 +89,10 @@ export async function hashSkillDir(dir: string): Promise<string> {
 }
 
 async function readSkill(scope: SkillScope, dir: string): Promise<{ name: string; description: string; hash: string }> {
-  const info = await lstat(dir);
-  if (!info.isDirectory()) throw new Error("not a directory");
-  const body = await readFile(join(dir, "SKILL.md"));
+  const file = join(dir, "SKILL.md");
+  const marker = await lstat(file);
+  if (!marker.isFile() || marker.isSymbolicLink()) throw new Error("SKILL.md is not a regular file");
+  const body = await readFile(file);
   if (body.length > MAX_SKILL_FILE_BYTES) throw new Error("SKILL.md is larger than 1 MiB");
   const front = parseSkillFrontmatter(body.toString("utf8"));
   if (front.name === undefined) throw new Error("SKILL.md has no name");
@@ -101,18 +108,27 @@ async function scanRoot(
   warnings: string[],
 ): Promise<void> {
   if (rootDir === undefined) return;
-  const entries = await readdir(rootDir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") return [];
-    throw error;
-  });
+  let entries: Dirent[];
+  try {
+    entries = await readdir(rootDir, { withFileTypes: true });
+  } catch (error) {
+    const failure = error as NodeJS.ErrnoException;
+    if (failure.code === "ENOENT") return;
+    warnings.push(`${scope}:${rootDir}: ${failure.message}`);
+    return;
+  }
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
     const dir = join(rootDir, entry.name);
     try {
       const read = await readSkill(scope, dir);
-      if (!skills.has(read.name)) skills.set(read.name, { scope, dir, ...read });
+      if (skills.has(read.name)) {
+        warnings.push(`${scope}:${dir}: duplicate name "${read.name}"`);
+        continue;
+      }
+      skills.set(read.name, { scope, dir, ...read });
     } catch (error) {
-      warnings.push(`${scope}:${entry.name}: ${error instanceof Error ? error.message : String(error)}`);
+      warnings.push(`${scope}:${dir}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 }
@@ -139,8 +155,8 @@ export async function discoverSkills(globalDir: string, projectDir: string | und
     skills.set(name, skill);
   }
   return {
-    skills: [...skills.values()].sort((a, b) => a.name.localeCompare(b.name)),
-    shadowed: shadowed.sort(),
-    warnings: warnings.sort(),
+    skills: [...skills.values()].sort((a, b) => compareCodeUnits(a.name, b.name)),
+    shadowed: shadowed.sort(compareCodeUnits),
+    warnings: warnings.sort(compareCodeUnits),
   };
 }
