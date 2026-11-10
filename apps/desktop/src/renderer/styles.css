@@ -390,14 +390,29 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; colo
 .usage-bar > span { display: block; height: 100%; background: var(--accent); }
 .usage-bar > span[data-tone="warn"] { background: var(--warning); }
 
-.composer { display: flex; flex-direction: column; gap: 6px; position: sticky; bottom: 0; background: var(--surface); padding: 8px 0 10px; }
+.composer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  position: sticky;
+  bottom: 0;
+  background: var(--surface);
+  padding: 8px 0 10px;
+  border-top: 1px solid var(--border);
+}
 .composer textarea {
   min-height: 72px;
   resize: vertical;
   padding: 8px 10px;
+  background: var(--surface-raised);
 }
-.composer-actions { display: flex; gap: 6px; align-items: center; }
+.composer[data-state="streaming"] textarea { border-color: var(--accent); }
+.composer[data-state="error"] textarea { border-color: var(--danger); }
+.composer[data-state="queued"] textarea { border-color: var(--warning); }
+.composer-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .composer-hint { color: var(--muted); font-size: 0.72rem; margin-left: auto; }
+.composer-queue { border-color: var(--warning); color: var(--warning); font-size: 0.76rem; }
+.approval-hint { color: var(--muted); font-size: 0.72rem; margin: 8px 0 0; }
 
 /* --- setup --- */
 

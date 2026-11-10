@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ModelView, PermissionOption, SessionPromptResult, SessionView } from "@noir/protocol";
 import type { RequestFn } from "./api.js";
 import { ChatHeader } from "./ChatHeader.js";
+import { Composer, type ComposerStatus } from "./Composer.js";
 import { errorMessage, useSessionEvents } from "./events.js";
 import { ToolCard } from "./ToolCard.js";
 
@@ -25,24 +26,25 @@ export function Chat({
   const { state, appendUser } = useSessionEvents(session.id, request);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
-  const [queued, setQueued] = useState(false);
+  const [queuedTurnId, setQueuedTurnId] = useState<string | undefined>(undefined);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
   const queuedAtTurn = useRef<string | undefined>(undefined);
 
   useEffect(() => {
-    if (!queued) return;
+    if (queuedTurnId === undefined) return;
     if (state.activeTurnId !== queuedAtTurn.current || (state.activeTurnId === undefined && state.status === "idle")) {
-      setQueued(false);
+      setQueuedTurnId(undefined);
     }
-  }, [queued, state.activeTurnId, state.status]);
+  }, [queuedTurnId, state.activeTurnId, state.status]);
 
-  const busy = sending || queued;
   const error = actionError ?? state.error;
   const canInterrupt = state.status === "running" || state.status === "waiting";
+  const streaming = state.status === "starting" || canInterrupt;
+  const queued = queuedTurnId !== undefined;
 
-  async function send(): Promise<void> {
+  async function submit(): Promise<void> {
     const text = draft.trim();
-    if (text === "" || busy) return;
+    if (text === "" || sending) return;
     setSending(true);
     queuedAtTurn.current = state.activeTurnId;
     const requestId = newId();
@@ -55,7 +57,7 @@ export function Chat({
       appendUser(text, requestId);
       setDraft("");
       setActionError(undefined);
-      if (result.queued) setQueued(true);
+      setQueuedTurnId(result.queued ? result.turnId : undefined);
     } catch (sendError) {
       setActionError(errorMessage(sendError));
     } finally {
@@ -69,6 +71,20 @@ export function Chat({
       setActionError(undefined);
     } catch (interruptError) {
       setActionError(errorMessage(interruptError));
+    }
+  }
+
+  async function cancelQueued(): Promise<void> {
+    if (queuedTurnId === undefined) return;
+    try {
+      const result = await request<{ cancelled: boolean }>("session.cancelQueued", {
+        sessionId: session.id,
+        turnId: queuedTurnId,
+      });
+      if (result.cancelled) setQueuedTurnId(undefined);
+      setActionError(undefined);
+    } catch (cancelError) {
+      setActionError(errorMessage(cancelError));
     }
   }
 
@@ -93,6 +109,63 @@ export function Chat({
     }
   }
 
+  // ⌘. interrupts from anywhere while this chat is open, including outside the composer.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (!(event.metaKey || event.ctrlKey) || event.key !== "." || !canInterrupt) return;
+      event.preventDefault();
+      void request("session.interrupt", { sessionId: session.id }).catch((interruptError: unknown) => {
+        setActionError(errorMessage(interruptError));
+      });
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [canInterrupt, request, session.id]);
+
+  // Approval keys: Esc rejects when a reject option exists, digits pick options by position.
+  useEffect(() => {
+    const approval = state.approval;
+    if (approval === undefined) return;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") {
+        const reject = approval.options.find((option) => option.kind === "reject" || option.kind === "reject_always");
+        if (reject !== undefined) {
+          event.preventDefault();
+          void request("approval.respond", { approvalId: approval.approvalId, decision: reject.kind }).catch(
+            (respondError: unknown) => setActionError(errorMessage(respondError)),
+          );
+        }
+        return;
+      }
+      const target = event.target;
+      const typing =
+        target instanceof HTMLElement &&
+        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT");
+      if (typing || !/^[1-9]$/.test(event.key)) return;
+      const option = approval.options[Number(event.key) - 1];
+      if (option === undefined) return;
+      event.preventDefault();
+      void request("approval.respond", { approvalId: approval.approvalId, decision: option.kind }).catch(
+        (respondError: unknown) => setActionError(errorMessage(respondError)),
+      );
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [request, state.approval]);
+
+  const composerStatus: ComposerStatus =
+    error !== undefined
+      ? "error"
+      : queued
+        ? "queued"
+        : streaming
+          ? "streaming"
+          : sending
+            ? "sending"
+            : state.lastTurn?.status === "interrupted"
+              ? "interrupted"
+              : "idle";
+
   const title = state.title ?? session.title;
   return (
     <section className="chat" aria-label="Chat">
@@ -108,8 +181,6 @@ export function Chat({
         onInterrupt={() => void interrupt()}
         onModelChange={(modelId) => void changeModel(modelId)}
       />
-
-      {error === undefined ? null : <p role="alert">{error}</p>}
 
       <ol className="messages">
         {state.messages.map((message) => (
@@ -146,35 +217,29 @@ export function Chat({
         <div role="dialog" aria-label="Permission required" className="approval" data-testid="permission-card">
           <p>{state.approval.title}</p>
           <div className="approval-options">
-            {state.approval.options.map((option) => (
-              <button key={option.optionId} type="button" onClick={() => void respond(option)}>{option.name}</button>
+            {state.approval.options.map((option, index) => (
+              <button key={option.optionId} type="button" onClick={() => void respond(option)}>
+                <kbd aria-hidden="true">{index + 1}</kbd> {option.name}
+              </button>
             ))}
           </div>
+          <p className="approval-hint">Press 1–9 to answer · Esc rejects</p>
         </div>
       )}
 
-
-
-      <form
-        className="composer"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void send();
-        }}
-      >
-        <textarea
-          aria-label="Prompt"
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-              event.preventDefault();
-              void send();
-            }
-          }}
-        />
-        <button type="submit" disabled={busy || draft.trim() === ""}>Send</button>
-      </form>
+      <Composer
+        draft={draft}
+        onDraftChange={setDraft}
+        status={composerStatus}
+        error={error}
+        queued={queued}
+        hasApproval={state.approval !== undefined}
+        sendDisabled={draft.trim() === "" || sending}
+        onSend={() => void submit()}
+        onQueue={() => void submit()}
+        onInterrupt={() => void interrupt()}
+        onCancelQueued={() => void cancelQueued()}
+      />
     </section>
   );
 }
