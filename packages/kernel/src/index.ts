@@ -5,6 +5,9 @@ import type Database from "better-sqlite3";
 import WebSocket from "ws";
 import { z } from "zod";
 import {
+  AnnotationAddParams,
+  AnnotationDeleteParams,
+  AnnotationListParams,
   ApprovalRespondParams,
   ErrorCodes,
   FsFilesParams,
@@ -32,6 +35,7 @@ import {
   type AgentEvent,
 } from "@noir/protocol";
 import { dataDir as defaultDataDir } from "./appdata.js";
+import { addAnnotation, deleteAnnotation, listAnnotations } from "./annotations.js";
 import { openDb } from "./db.js";
 import { EngineManager } from "./engineManager.js";
 import { EventStore } from "./eventStore.js";
@@ -180,7 +184,8 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
     let server: RpcServer | undefined;
     let engines: EngineManager | undefined;
     try {
-      db = openDb(join(dir, "noir.db"));
+      const database = openDb(join(dir, "noir.db"));
+      db = database;
       // Bound after the server starts so events raised earlier are not lost silently.
       let broadcast: (event: AgentEvent) => void = () => {};
       const events = new EventStore(db, (event) => broadcast(event));
@@ -238,6 +243,18 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
         [Methods.gitDiff]: async (params) => {
           const { workspaceId, path } = GitDiffParams.parse(params);
           return { diff: await gitDiff(workspaceRoot(workspaceId), path) };
+        },
+        [Methods.annotationList]: async (params) => {
+          const { workspaceId, path } = AnnotationListParams.parse(params);
+          return listAnnotations(database, workspaceRoot(workspaceId), workspaceId, path);
+        },
+        [Methods.annotationAdd]: async (params) => {
+          const parsed = AnnotationAddParams.parse(params);
+          return addAnnotation(database, workspaceRoot(parsed.workspaceId), parsed);
+        },
+        [Methods.annotationDelete]: async (params) => {
+          deleteAnnotation(database, AnnotationDeleteParams.parse(params).id);
+          return { ok: true };
         },
         [Methods.sessionCreate]: async (params) => {
           const { workspaceId, modelId } = SessionCreateParams.parse(params);

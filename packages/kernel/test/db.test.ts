@@ -47,7 +47,7 @@ describe("openDb", () => {
 
     const db = openDb(file);
     const applied = db.prepare("SELECT id FROM schema_migrations ORDER BY id").pluck().all() as number[];
-    expect(applied).toEqual([1, 2]);
+    expect(applied).toEqual([1, 2, 3]);
     expect(db.prepare("SELECT status FROM sessions WHERE id = 's1'").pluck().get()).toBe("idle");
     expect(db.prepare("SELECT name FROM providers WHERE id = 'pr1'").pluck().get()).toBe("Local");
 

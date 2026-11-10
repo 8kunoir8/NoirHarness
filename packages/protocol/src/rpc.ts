@@ -28,6 +28,9 @@ export const Methods = {
   fsFiles: "fs.files",
   gitStatus: "git.status",
   gitDiff: "git.diff",
+  annotationList: "annotation.list",
+  annotationAdd: "annotation.add",
+  annotationDelete: "annotation.delete",
 } as const;
 
 /** `system.health` result. `engineDir` is the agent directory the kernel materializes and omp reads. */
@@ -156,6 +159,33 @@ export const GitStatusResult = z.object({
 });
 export const GitDiffParams = z.object({ workspaceId: z.string().min(1), path: z.string().min(1) });
 export const GitDiffResult = z.object({ diff: z.string() });
+
+export const AnnotationView = z.object({
+  id: z.string(),
+  line: z.number().int().positive(),
+  note: z.string(),
+  createdAt: z.number().int(),
+  stale: z.boolean(),
+});
+export type AnnotationView = z.infer<typeof AnnotationView>;
+
+export const AnnotationListParams = z.object({ workspaceId: z.string().min(1), path: z.string().min(1) });
+export type AnnotationListParams = z.infer<typeof AnnotationListParams>;
+export const AnnotationListResult = z.object({ diffHash: z.string(), annotations: z.array(AnnotationView) });
+export type AnnotationListResult = z.infer<typeof AnnotationListResult>;
+
+export const AnnotationAddParams = z.object({
+  workspaceId: z.string().min(1),
+  path: z.string().min(1),
+  line: z.number().int().positive(),
+  note: z.string().trim().min(1).max(2_000),
+});
+export type AnnotationAddParams = z.infer<typeof AnnotationAddParams>;
+
+export const AnnotationDeleteParams = z.object({ id: z.string().min(1) });
+export type AnnotationDeleteParams = z.infer<typeof AnnotationDeleteParams>;
+export const AnnotationDeleteResult = z.object({ ok: z.literal(true) });
+export type AnnotationDeleteResult = z.infer<typeof AnnotationDeleteResult>;
 
 export const EventNotificationParams = z.object({ event: AgentEvent });
 export type EventNotificationParams = z.infer<typeof EventNotificationParams>;
