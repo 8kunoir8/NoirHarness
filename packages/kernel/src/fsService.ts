@@ -8,6 +8,8 @@ export const MAX_LIST_ENTRIES = 2_000;
 export const MAX_READ_BYTES = 2 * 1024 * 1024;
 export const MAX_FIND_FILES = 5_000;
 const SKIP_DIRS = new Set([".git", "node_modules", ".noir"]);
+/** A surrogate outside a valid pair; such content cannot round-trip through UTF-8. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u;
 
 export interface FsEntryView {
   name: string;
@@ -31,6 +33,11 @@ export async function listDirectory(
   });
   // Git metadata stays hidden, and symlinks are never navigated: the editor edits real files.
   const visible = dirents.filter((dirent) => dirent.name !== ".git" && !dirent.isSymbolicLink());
+  // Sort before paging so a directory over the cap always yields the same, ordered page.
+  visible.sort((a, b) => {
+    if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
   // stat is bounded by the page size and must never fail the listing for one bad entry.
   const entries: FsEntryView[] = [];
   for (const dirent of visible.slice(0, MAX_LIST_ENTRIES)) {
@@ -45,8 +52,7 @@ export async function listDirectory(
     }
     entries.push({ name: dirent.name, path: joinRel(rel, dirent.name), kind, size });
   }
-  entries.sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === "dir" ? -1 : 1));
-  return { entries: entries.slice(0, MAX_LIST_ENTRIES), truncated: visible.length > MAX_LIST_ENTRIES };
+  return { entries, truncated: visible.length > MAX_LIST_ENTRIES };
 }
 
 /**
@@ -114,6 +120,7 @@ export async function writeFileText(
   const rel = relativePath(value);
   if (rel === "") throw new RpcFault(ErrorCodes.invalidParams, "A file path is required");
   if (content.includes("\u0000")) throw new RpcFault(ErrorCodes.invalidParams, "File content must not contain NUL");
+  if (LONE_SURROGATE.test(content)) throw new RpcFault(ErrorCodes.invalidParams, "Content is not valid UTF-16");
   const absolute = resolveInsideRoot(root, rel);
   const parent = dirname(absolute);
   await stat(parent).catch(() => {

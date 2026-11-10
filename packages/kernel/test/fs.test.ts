@@ -121,6 +121,10 @@ describe("fs.* RPCs", () => {
     const nul = await call(kernel, "fs.write", { workspaceId, path: "hello.txt", content: "a\u0000b" });
     expect(nul.error.code).toBe(ErrorCodes.invalidParams);
     expect(readFileSync(join(root, "hello.txt"), "utf8")).toBe("hello");
+
+    const lone = await call(kernel, "fs.write", { workspaceId, path: "hello.txt", content: "a\uD800b" });
+    expect(lone.error.code).toBe(ErrorCodes.invalidParams);
+    expect(readFileSync(join(root, "hello.txt"), "utf8")).toBe("hello");
   });
 
   it("finds files for quick open, skipping git and dependency dirs", async () => {
