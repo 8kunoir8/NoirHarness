@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { RequestFn } from "./api.js";
 
 export interface DiffLine {
@@ -25,19 +25,30 @@ export function parseDiff(text: string): DiffLine[] {
   const parsed: DiffLine[] = [];
   let oldLine = 0;
   let newLine = 0;
-  for (const line of raw) {
-    if (line.startsWith(NO_NEWLINE)) {
+  let inHunk = false;
+  for (const rawLine of raw) {
+    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    if (line.startsWith("diff ")) {
+      inHunk = false;
+      oldLine = 0;
+      newLine = 0;
       parsed.push({ kind: "meta", text: line });
       continue;
     }
     const hunk = HUNK.exec(line);
     if (hunk !== null) {
+      inHunk = true;
       oldLine = Number(hunk[1]);
       newLine = Number(hunk[2]);
       parsed.push({ kind: "hunk", text: line });
       continue;
     }
-    if (line.startsWith("--- ") || line.startsWith("+++ ") || line.startsWith("diff ") || line.startsWith("index ")) {
+    if (!inHunk) {
+      // File headers (---/+++, index, mode/rename/binary markers) carry no hunks yet.
+      parsed.push({ kind: "meta", text: line });
+      continue;
+    }
+    if (line.startsWith(NO_NEWLINE)) {
       parsed.push({ kind: "meta", text: line });
       continue;
     }
@@ -74,26 +85,36 @@ export function DiffView({ request, workspaceId, path }: DiffViewProps) {
   const [draft, setDraft] = useState<{ line: number; note: string } | undefined>(undefined);
   const [error, setError] = useState<string | undefined>(undefined);
   const [loaded, setLoaded] = useState(false);
-
-  const refresh = useCallback(async (): Promise<void> => {
-    try {
-      const [diff, notes] = await Promise.all([
-        request<{ diff: string }>("git.diff", { workspaceId, path }),
-        request<{ diffHash: string; annotations: Annotation[] }>("annotation.list", { workspaceId, path }),
-      ]);
-      setLines(parseDiff(diff.diff));
-      setAnnotations(notes.annotations);
-      setError(undefined);
-    } catch (cause) {
-      setError(messageOf(cause, "Could not load the diff"));
-    } finally {
-      setLoaded(true);
-    }
-  }, [request, workspaceId, path]);
+  const generation = useRef(0);
 
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    generation.current += 1;
+    const run = generation.current;
+    setLines([]);
+    setAnnotations([]);
+    setDraft(undefined);
+    setError(undefined);
+    setLoaded(false);
+    void (async () => {
+      try {
+        const [diff, notes] = await Promise.all([
+          request<{ diff: string }>("git.diff", { workspaceId, path }),
+          request<{ diffHash: string; annotations: Annotation[] }>("annotation.list", { workspaceId, path }),
+        ]);
+        if (generation.current !== run) return;
+        setLines(parseDiff(diff.diff));
+        setAnnotations(notes.annotations);
+        setLoaded(true);
+      } catch (cause) {
+        if (generation.current !== run) return;
+        setError(messageOf(cause, "Could not load the diff"));
+        setLoaded(true);
+      }
+    })();
+    return () => {
+      if (generation.current === run) generation.current = run + 1;
+    };
+  }, [request, workspaceId, path]);
 
   const addNote = async (line: number, note: string): Promise<void> => {
     const trimmed = note.trim();
@@ -104,6 +125,7 @@ export function DiffView({ request, workspaceId, path }: DiffViewProps) {
         current.some((annotation) => annotation.id === added.id) ? current : [...current, added],
       );
       setDraft(undefined);
+      setError(undefined);
     } catch (cause) {
       setError(messageOf(cause, "Could not save the note"));
     }
@@ -113,6 +135,7 @@ export function DiffView({ request, workspaceId, path }: DiffViewProps) {
     try {
       await request<{ ok: true }>("annotation.delete", { id });
       setAnnotations((current) => current.filter((annotation) => annotation.id !== id));
+      setError(undefined);
     } catch (cause) {
       setError(messageOf(cause, "Could not delete the note"));
     }
@@ -154,7 +177,9 @@ export function DiffView({ request, workspaceId, path }: DiffViewProps) {
                   value={draft.note}
                   onChange={(event) => setDraft({ line: newLine, note: event.target.value })}
                   onKeyDown={(event) => {
-                    if (event.key === "Enter") void addNote(newLine, draft.note);
+                    if (event.key === "Enter" && event.nativeEvent.isComposing !== true) {
+                      void addNote(newLine, draft.note);
+                    }
                     if (event.key === "Escape") setDraft(undefined);
                   }}
                 />
@@ -186,7 +211,7 @@ export function DiffView({ request, workspaceId, path }: DiffViewProps) {
                 <button
                   type="button"
                   className="diff-note-delete"
-                  aria-label={`Delete note on line ${annotation.line}`}
+                  aria-label={`Delete stale note on line ${annotation.line}`}
                   onClick={() => void removeNote(annotation.id)}
                 >
                   ×

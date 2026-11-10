@@ -438,8 +438,8 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; colo
 .inspector-file span:first-child { overflow-wrap: anywhere; }
 .inspector-file .diff-add, .inspector-file .diff-del { margin-left: auto; flex: none; }
 .inspector-file .diff-add + .diff-del { margin-left: 0; }
-.diff-add { color: var(--success); }
-.diff-del { color: var(--danger); }
+.inspector .diff-add { color: var(--success); }
+.inspector .diff-del { color: var(--danger); }
 .inspector-plan li { display: flex; gap: 6px; align-items: baseline; }
 .inspector-plan li::before { content: "○"; color: var(--muted); }
 .inspector-plan li[data-status="active"]::before { content: "◐"; color: var(--accent); }
@@ -468,8 +468,8 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; colo
 }
 button.diff-gutter { cursor: pointer; }
 button.diff-gutter:hover, button.diff-gutter:focus-visible { color: var(--accent); }
-.diff-line.diff-add { background: var(--diff-add); }
-.diff-line.diff-del { background: var(--diff-del); }
+.diff-line.diff-add { background: var(--diff-add); color: var(--success); }
+.diff-line.diff-del { background: var(--diff-del); color: var(--danger); }
 .diff-line.diff-hunk { background: var(--surface-sunken); color: var(--accent); }
 .diff-line.diff-hunk code, .diff-line.diff-meta code { color: inherit; }
 .diff-line.diff-meta { color: var(--muted); }
