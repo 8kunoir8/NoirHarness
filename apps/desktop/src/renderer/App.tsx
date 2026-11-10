@@ -23,6 +23,7 @@ import {
   loadTabs,
   openTab,
   TABS_KEY,
+  type Tab,
   type TabsState,
 } from "./tabs.js";
 import { useTheme } from "./theme.js";
@@ -76,6 +77,7 @@ export function App() {
     loadTabs(loadJson<unknown>(TABS_KEY, loadJson<unknown>("noir.tabs", null))),
   );
   const [documents, setDocuments] = useState<Record<string, DocumentState>>({});
+  const [failedReads, setFailedReads] = useState<Record<string, string>>({});
   const [listMode, setListMode] = useState<ListMode>("chats");
   const [quickOpen, setQuickOpen] = useState(false);
   const [read, setRead] = useState<ReadState>(() => loadJson<ReadState>(READ_KEY, {}));
@@ -94,12 +96,17 @@ export function App() {
   // subscribe request on a cold socket fails without retrying.
   const events = useSessionEvents(status === "kernel ok" ? (activeChatId ?? "") : "", request);
   const refreshTimer = useRef<number | undefined>(undefined);
-  // Every asynchronous document read/write records the generation it started in; a workspace
-  // switch bumps it so a late response cannot overwrite state belonging to another workspace.
-  const generation = useRef(0);
-  const tabsRef = useRef<readonly { kind: string; path?: string }[]>(tabState.tabs);
+  // Reads carry the generation they started in; only a workspace change or an explicit reload bumps
+  // it, so a late read can never overwrite a document that belongs to another workspace (or to the
+  // disk after a reload). Writes only compare their workspace, so a status flap cannot throw away a
+  // save that already reached the disk.
+  const readGeneration = useRef(0);
+  // The workspace whose open documents have already been requested; a reconnect must not re-read
+  // (and thereby drop) live drafts.
+  const syncedWorkspace = useRef<string | undefined>(undefined);
+  const tabsRef = useRef<readonly Tab[]>(tabState.tabs);
   const documentsRef = useRef(documents);
-  const readWorkspace = useRef<string | undefined>(undefined);
+  const workspaceRef = useRef(workspaceId);
 
   useEffect(() => {
     tabsRef.current = tabState.tabs;
@@ -108,6 +115,10 @@ export function App() {
   useEffect(() => {
     documentsRef.current = documents;
   }, [documents]);
+
+  useEffect(() => {
+    workspaceRef.current = workspaceId;
+  }, [workspaceId]);
 
   useEffect(() => {
     storeJson(TABS_KEY, tabState);
@@ -176,42 +187,57 @@ export function App() {
     storeJson(READ_KEY, read);
   }, [read]);
 
-  // Paths are workspace-relative, so a workspace switch must re-read every open editor document;
-  // drafts that belonged to the previous workspace are dropped with an explicit notice.
-  useEffect(() => {
-    generation.current += 1;
-    const started = generation.current;
-    if (workspaceId === "" || status !== "kernel ok") return;
-    const switched = readWorkspace.current !== undefined && readWorkspace.current !== workspaceId;
-    readWorkspace.current = workspaceId;
-    const paths = tabsRef.current.flatMap((tab) => (tab.kind === "editor" && typeof tab.path === "string" ? [tab.path] : []));
-    if (paths.length === 0) return;
-    if (switched) {
-      setDocuments((current) => {
-        const next = { ...current };
-        for (const path of paths) delete next[path];
-        return next;
-      });
-      const dropped = paths.filter((path) => {
-        const document = documentsRef.current[path];
-        return document !== undefined && document.draft !== document.text;
-      });
-      if (dropped.length > 0) setError(`Unsaved changes discarded for ${dropped.join(", ")}`);
+  const applyDocument = useCallback((path: string, file: { content: string; mtimeMs: number }): void => {
+    setDocuments((current) => ({ ...current, [path]: { text: file.content, draft: file.content, mtimeMs: file.mtimeMs } }));
+    setFailedReads((current) => {
+      if (current[path] === undefined) return current;
+      const next = { ...current };
+      delete next[path];
+      return next;
+    });
+  }, []);
+
+  /** Reads one file; `undefined` means the read failed, or a workspace change/reload superseded it. */
+  const fetchDocument = useCallback(async (path: string): Promise<{ content: string; mtimeMs: number } | undefined> => {
+    const started = readGeneration.current;
+    try {
+      const file = await request<{ content: string; mtimeMs: number }>("fs.read", { workspaceId, path });
+      return started === readGeneration.current ? file : undefined;
+    } catch (cause) {
+      if (started !== readGeneration.current) return undefined;
+      const message = cause instanceof Error ? cause.message : `Could not read ${path}`;
+      setError(message);
+      setFailedReads((current) => ({ ...current, [path]: message }));
+      return undefined;
     }
-    const pending = paths.filter((path) => switched || documentsRef.current[path] === undefined);
-    void (async () => {
-      for (const path of pending) {
-        try {
-          const file = await request<{ content: string; mtimeMs: number }>("fs.read", { workspaceId, path });
-          if (started !== generation.current) return;
-          setDocuments((current) => ({ ...current, [path]: { text: file.content, draft: file.content, mtimeMs: file.mtimeMs } }));
-        } catch (cause) {
-          if (started !== generation.current) return;
-          setError(cause instanceof Error ? cause.message : `Could not read ${path}`);
-        }
-      }
-    })();
-  }, [request, status, workspaceId]);
+  }, [request, workspaceId]);
+
+  // Paths are workspace-relative, so every document belongs to exactly one workspace: a switch (or
+  // deselecting the workspace) drops the whole record before anything can render or save the old text.
+  useEffect(() => {
+    readGeneration.current += 1;
+    syncedWorkspace.current = undefined;
+    const dropped = Object.entries(documentsRef.current)
+      .filter(([, document]) => document.draft !== document.text)
+      .map(([path]) => path);
+    setDocuments((current) => (Object.keys(current).length === 0 ? current : {}));
+    setFailedReads((current) => (Object.keys(current).length === 0 ? current : {}));
+    if (dropped.length > 0) setError(`Unsaved changes discarded for ${dropped.join(", ")}`);
+  }, [workspaceId]);
+
+  // Read the editor documents of the selected workspace once the kernel is up, and re-read them after
+  // a switch. A reconnect must not re-read: that would silently replace live drafts with disk content.
+  useEffect(() => {
+    if (workspaceId === "" || status !== "kernel ok" || syncedWorkspace.current === workspaceId) return;
+    syncedWorkspace.current = workspaceId;
+    const started = readGeneration.current;
+    const paths = tabsRef.current.flatMap((tab) => (tab.kind === "editor" ? [tab.path] : []));
+    for (const path of paths) {
+      void fetchDocument(path).then((file) => {
+        if (file !== undefined && started === readGeneration.current) applyDocument(path, file);
+      });
+    }
+  }, [applyDocument, fetchDocument, status, workspaceId]);
 
   const workspaceSessions = sessions.filter((session) => workspaceId === "" || session.workspaceId === workspaceId);
   const activeSession = activeTab?.kind === "chat" ? sessions.find((session) => session.id === activeTab.sessionId) : undefined;
@@ -224,6 +250,7 @@ export function App() {
   // `noUncheckedIndexedAccess` does not narrow a repeated `documents[path]` read; resolve it once.
   const editorPath = activeTab?.kind === "editor" ? activeTab.path : undefined;
   const editorDocument = editorPath === undefined ? undefined : documents[editorPath];
+  const editorFailure = editorPath === undefined ? undefined : failedReads[editorPath];
 
   const dirty = (path: string): boolean => {
     const document = documents[path];
@@ -233,25 +260,20 @@ export function App() {
   const openFile = useCallback(async (path: string): Promise<void> => {
     setTabState((current) => openTab(current, editorTab(path)));
     if (workspaceId === "" || documents[path] !== undefined) return;
-    const started = generation.current;
-    try {
-      const file = await request<{ content: string; mtimeMs: number }>("fs.read", { workspaceId, path });
-      // Ignore a response whose workspace and tab are no longer the state this read started from.
-      if (started !== generation.current) return;
-      if (!tabsRef.current.some((tab) => tab.kind === "editor" && tab.path === path)) return;
-      setDocuments((current) => ({ ...current, [path]: { text: file.content, draft: file.content, mtimeMs: file.mtimeMs } }));
-    } catch (cause) {
-      if (started !== generation.current) return;
-      setError(cause instanceof Error ? cause.message : `Could not open ${path}`);
-    }
-  }, [documents, request, workspaceId]);
+    const started = readGeneration.current;
+    const file = await fetchDocument(path);
+    // Ignore a response whose workspace and tab are no longer the state this read started from.
+    if (file === undefined || started !== readGeneration.current) return;
+    if (!tabsRef.current.some((tab) => tab.kind === "editor" && tab.path === path)) return;
+    applyDocument(path, file);
+  }, [applyDocument, documents, fetchDocument, workspaceId]);
 
   const saveActive = useCallback(async (): Promise<void> => {
     const tab = tabState.tabs.find((candidate) => candidate.id === tabState.active);
     if (tab?.kind !== "editor" || workspaceId === "") return;
     const document = documents[tab.path];
     if (document === undefined || document.draft === document.text) return;
-    const started = generation.current;
+    const savedWorkspace = workspaceId;
     try {
       const saved = await request<{ mtimeMs: number }>("fs.write", {
         workspaceId,
@@ -259,7 +281,8 @@ export function App() {
         content: document.draft,
         expectedMtimeMs: document.mtimeMs,
       });
-      if (started !== generation.current) return;
+      // A status flap is not a reason to throw a save away; a workspace switch is.
+      if (workspaceRef.current !== savedWorkspace) return;
       setDocuments((current) => {
         const latest = current[tab.path];
         // Keep a draft typed while the write was in flight; only the disk copy moved.
@@ -270,10 +293,33 @@ export function App() {
       setError(undefined);
       void refreshGit();
     } catch (cause) {
-      if (started !== generation.current) return;
+      if (workspaceRef.current !== savedWorkspace) return;
       setError(cause instanceof Error ? cause.message : `Could not save ${tab.path}`);
     }
   }, [documents, request, tabState, workspaceId, refreshGit]);
+
+  // Re-read the active file after a save conflict (or any change made outside the editor). Unsaved
+  // edits are dropped, which is what the command label says.
+  const reloadActive = useCallback(async (): Promise<void> => {
+    const tab = tabState.tabs.find((candidate) => candidate.id === tabState.active);
+    if (tab?.kind !== "editor" || workspaceId === "") return;
+    readGeneration.current += 1;
+    const started = readGeneration.current;
+    const file = await fetchDocument(tab.path);
+    if (started !== readGeneration.current) return;
+    if (file === undefined) {
+      // Show the failure instead of a stale buffer that would be saved back over the new file.
+      setDocuments((current) => {
+        if (current[tab.path] === undefined) return current;
+        const next = { ...current };
+        delete next[tab.path];
+        return next;
+      });
+      return;
+    }
+    applyDocument(tab.path, file);
+    setError(undefined);
+  }, [applyDocument, fetchDocument, tabState, workspaceId]);
 
   function openSession(session: SessionView): void {
     setTabState((current) => openTab(current, chatTab(session.id)));
@@ -281,10 +327,25 @@ export function App() {
 
   function closeTabById(id: string): void {
     const tab = tabState.tabs.find((candidate) => candidate.id === id);
-    // A dirty editor tab must not lose its edits to a stray ⌘W; saving or reverting comes first.
+    // A dirty editor tab must not lose its edits to a stray ⌘W; saving or reloading comes first.
     if (tab?.kind === "editor" && dirty(tab.path)) {
       setError(`${tab.path} has unsaved changes — save with ⌘S before closing`);
       return;
+    }
+    if (tab?.kind === "editor") {
+      // The buffer belongs to the workspace; a later open must read the file again, not resurrect it.
+      setDocuments((current) => {
+        if (current[tab.path] === undefined) return current;
+        const next = { ...current };
+        delete next[tab.path];
+        return next;
+      });
+      setFailedReads((current) => {
+        if (current[tab.path] === undefined) return current;
+        const next = { ...current };
+        delete next[tab.path];
+        return next;
+      });
     }
     setTabState((current) => closeTab(current, id));
   }
@@ -366,6 +427,12 @@ export function App() {
     <StatusBar status={status} running={running} pendingApprovals={pendingApprovals} engineDir={engineDir} />
   );
 
+  const emptyMain = (
+    <p className="empty">
+      {workspaces.length === 0 ? "Add a workspace to start." : "Create a chat to start talking to the agent."}
+    </p>
+  );
+
   const commands: Command[] = [
     {
       id: "new-chat",
@@ -391,6 +458,16 @@ export function App() {
       enabled: activeTab?.kind === "editor" && dirty(activeTab.path),
       allowInInput: true,
       run: () => void saveActive(),
+    },
+    {
+      id: "reload-file",
+      label:
+        activeTab?.kind === "editor" && dirty(activeTab.path)
+          ? "Reload file from disk (discards unsaved edits)"
+          : "Reload file from disk",
+      keywords: "reread revert conflict refresh",
+      enabled: activeTab?.kind === "editor",
+      run: () => void reloadActive(),
     },
     {
       id: "close-tab",
@@ -607,11 +684,11 @@ export function App() {
               dirty={dirty}
             />
             {activeTab === undefined ? (
-              <p className="empty">
-                {workspaces.length === 0 ? "Add a workspace to start." : "Create a chat to start talking to the agent."}
-              </p>
+              emptyMain
             ) : activeTab.kind === "chat" ? (
-              activeSession === undefined ? null : (
+              activeSession === undefined ? (
+                emptyMain
+              ) : (
                 <Chat
                   key={activeSession.id}
                   session={activeSession}
@@ -624,9 +701,15 @@ export function App() {
             ) : activeTab.kind === "editor" ? (
               <section aria-label="Editor" className="editor-pane">
                 {editorDocument === undefined ? (
-                  <p className="empty">
-                    {workspaceId === "" ? "Select a workspace to read this file." : `Loading ${activeTab.path}…`}
-                  </p>
+                  editorFailure === undefined ? (
+                    <p className="empty">
+                      {workspaceId === "" ? "Select a workspace to read this file." : `Loading ${activeTab.path}…`}
+                    </p>
+                  ) : (
+                    <p role="status">
+                      Could not open {activeTab.path}: {editorFailure}
+                    </p>
+                  )
                 ) : (
                   <MonacoEditor
                     path={activeTab.path}
