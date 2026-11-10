@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { QuickOpen, subsequence } from "../src/renderer/QuickOpen.js";
@@ -24,11 +24,32 @@ function renderQuickOpen(options: {
   );
 }
 
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  const { promise, resolve } = Promise.withResolvers<T>();
+  return { promise, resolve };
+}
+
+function workspaceOf(params: unknown): string {
+  if (typeof params !== "object" || params === null) return "";
+  if (!("workspaceId" in params)) return "";
+  return typeof params.workspaceId === "string" ? params.workspaceId : "";
+}
+
 describe("subsequence", () => {
   it("matches case-insensitively while preserving character order", () => {
     expect(subsequence("src/Main.ts", "SMAIN")).toBe(true);
     expect(subsequence("src/main.ts", "ni")).toBe(false);
     expect(subsequence("README.md", "")).toBe(true);
+  });
+
+  it("matches on code points rather than UTF-16 units", () => {
+    expect(subsequence("docs/🎉/notes.md", "🎉N")).toBe(true);
+    expect(subsequence("docs/🎉/notes.md", "🎊")).toBe(false);
   });
 });
 
@@ -139,5 +160,106 @@ describe("QuickOpen", () => {
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids).toContain(input.getAttribute("aria-activedescendant"));
     expect(options.filter((option) => option.getAttribute("aria-selected") === "true")).toHaveLength(1);
+  });
+
+  it("announces the empty state", async () => {
+    renderQuickOpen();
+    await screen.findByText("src/main.ts");
+    await userEvent.type(screen.getByRole("combobox", { name: "Open file" }), "zzz");
+
+    expect((await screen.findByRole("status")).textContent).toBe("No matching files.");
+  });
+
+  it("requests fs.files for the mounted workspace", async () => {
+    const requestSpy = vi.fn(async () => ({ files: ["a.ts"], truncated: false }));
+    renderQuickOpen({ request: requestSpy });
+    await screen.findByText("a.ts");
+
+    expect(requestSpy).toHaveBeenCalledWith("fs.files", { workspaceId: "w1" });
+  });
+
+  it("picks the clicked row with the pointer", async () => {
+    const onPick = vi.fn();
+    const onClose = vi.fn();
+    renderQuickOpen({ onPick, onClose });
+    await screen.findByText("src/app.tsx");
+
+    await userEvent.click(screen.getByText("src/app.tsx"));
+
+    expect(onPick).toHaveBeenCalledWith("src/app.tsx");
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("closes when the backdrop is clicked", async () => {
+    const onClose = vi.fn();
+    const view = renderQuickOpen({ onClose });
+    await screen.findByText("src/main.ts");
+
+    const backdrop = view.container.querySelector<HTMLElement>(".quick-open-backdrop");
+    expect(backdrop).not.toBeNull();
+    if (backdrop === null) throw new Error("backdrop missing");
+    await userEvent.click(backdrop);
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops the old listing while a new workspace is still loading", async () => {
+    const pending = deferred<{ files: string[]; truncated: boolean }>();
+    const requestFn = vi.fn((_method: string, params?: unknown) => {
+      return workspaceOf(params) === "w1"
+        ? Promise.resolve({ files: ["old.txt"], truncated: false })
+        : pending.promise;
+    });
+    const view = render(
+      <QuickOpen
+        request={requestFn as never}
+        workspaceId="w1"
+        onPick={() => undefined}
+        onClose={() => undefined}
+      />,
+    );
+    expect(await screen.findByText("old.txt")).toBeTruthy();
+
+    view.rerender(
+      <QuickOpen
+        request={requestFn as never}
+        workspaceId="w2"
+        onPick={() => undefined}
+        onClose={() => undefined}
+      />,
+    );
+    expect(screen.queryByText("old.txt")).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("No matching files.");
+
+    await act(async () => {
+      pending.resolve({ files: ["new.txt"], truncated: false });
+      await pending.promise;
+    });
+    expect(await screen.findByText("new.txt")).toBeTruthy();
+  });
+
+  it("writes nothing when unmounted before fs.files resolves", async () => {
+    const pending = deferred<{ files: string[]; truncated: boolean }>();
+    const requestFn = vi.fn(() => pending.promise);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const view = renderQuickOpen({ request: requestFn });
+
+    view.unmount();
+    await act(async () => {
+      pending.resolve({ files: ["late.ts"], truncated: false });
+      await pending.promise;
+    });
+
+    expect(consoleError).not.toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+
+  it("shows the alert when request throws synchronously", async () => {
+    const sync = vi.fn(() => {
+      throw new Error("sync boom");
+    });
+    renderQuickOpen({ request: sync });
+
+    expect((await screen.findByRole("alert")).textContent).toContain("sync boom");
   });
 });

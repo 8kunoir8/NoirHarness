@@ -552,12 +552,17 @@ button.diff-gutter:hover, button.diff-gutter:focus-visible { color: var(--accent
 
 /* --- quick open --- */
 
-.quick-open {
+.quick-open-backdrop {
   position: fixed;
-  top: 12vh;
-  left: 50%;
-  transform: translateX(-50%);
+  inset: 0;
   z-index: 45;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 12vh;
+  background: rgba(8, 10, 12, 0.45);
+}
+.quick-open {
   width: min(560px, 92vw);
   display: flex;
   flex-direction: column;
