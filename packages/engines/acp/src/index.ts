@@ -4,7 +4,7 @@ import { JsonRpcClient, type JsonRpcTransport } from "./jsonRpc.js";
 import { ClientRequestHandler } from "./terminals.js";
 
 const DEFAULT_TURN_TIMEOUT_MS = 120_000;
-const CANCEL_GRACE_MS = 5_000;
+const DEFAULT_CANCEL_GRACE_MS = 5_000;
 
 /** Provenance version stamped on events this adapter produces. Keep in sync with package.json. */
 export const ADAPTER_VERSION = "0.0.0";
@@ -75,6 +75,7 @@ export interface CreateAcpClientOptions {
   cwd: string;
   env?: Record<string, string>;
   turnTimeoutMs?: number;
+  cancelGraceMs?: number;
   requestTimeoutMs?: number;
 }
 
@@ -207,6 +208,7 @@ interface ActiveTurn {
   timer: NodeJS.Timeout | undefined;
   graceTimer: NodeJS.Timeout | undefined;
   expire: ((error: Error) => void) | undefined;
+  requestId: number | undefined;
 }
 
 function messageUpdate(update: JsonObject, reasoning: boolean): EngineUpdate {
@@ -388,6 +390,7 @@ class AcpSessionImpl implements AcpSession {
       timer: undefined,
       graceTimer: undefined,
       expire: undefined,
+      requestId: undefined,
     };
     turn.arm = () => {
       if (turn.timedOut) return;
@@ -406,9 +409,13 @@ class AcpSessionImpl implements AcpSession {
       });
       turn.expire = expire;
       // `0` disables the client-wide request timeout: the turn watchdog + cancel grace own this deadline.
-      this.#owner.client
-        .request("session/prompt", { sessionId: this.sessionId, prompt: content }, 0)
-        .then(settle, expire);
+      const request = this.#owner.client.requestWithId(
+        "session/prompt",
+        { sessionId: this.sessionId, prompt: content },
+        0,
+      );
+      turn.requestId = request.id;
+      request.promise.then(settle, expire);
       const response = await settled;
       if (turn.timedOut) return { stopReason: "cancelled", timedOut: true };
       return toPromptResult(response);
@@ -466,8 +473,12 @@ class AcpSessionImpl implements AcpSession {
       // Transport gone: the grace timer below still settles the turn.
     }
     turn.graceTimer = setTimeout(() => {
-      turn.expire?.(new Error(`ACP prompt did not settle ${CANCEL_GRACE_MS}ms after session/cancel`));
-    }, CANCEL_GRACE_MS);
+      // The agent ignored the cancel: drop the frame so it cannot linger in the pending map forever.
+      if (turn.requestId !== undefined) this.#owner.client.abandon(turn.requestId);
+      turn.expire?.(
+        new Error(`ACP prompt did not settle ${this.#owner.cancelGraceMs}ms after session/cancel`),
+      );
+    }, this.#owner.cancelGraceMs);
   }
 }
 
@@ -475,16 +486,18 @@ class AcpRuntime implements AcpClient {
   readonly client: JsonRpcClient;
   readonly pid: number;
   readonly turnTimeoutMs: number;
+  readonly cancelGraceMs: number;
   readonly #transport: ChildTransport;
   readonly #handlers: ClientRequestHandler;
   readonly #sessions = new Map<string, AcpSessionImpl>();
   #disposed = false;
 
-  constructor(transport: ChildTransport, client: JsonRpcClient, turnTimeoutMs: number) {
+  constructor(transport: ChildTransport, client: JsonRpcClient, turnTimeoutMs: number, cancelGraceMs: number) {
     this.#transport = transport;
     this.client = client;
     this.pid = transport.pid;
     this.turnTimeoutMs = turnTimeoutMs;
+    this.cancelGraceMs = cancelGraceMs;
     this.#handlers = new ClientRequestHandler((sessionId) => this.#cwdFor(sessionId));
     client.onRequest((method, params) => this.#handleRequest(method, params));
     client.onNotification((method, params) => this.#handleNotification(method, params));
@@ -603,7 +616,12 @@ export async function createAcpClient(opts: CreateAcpClientOptions): Promise<Acp
     transport,
     opts.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: opts.requestTimeoutMs },
   );
-  const runtime = new AcpRuntime(transport, client, opts.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS);
+  const runtime = new AcpRuntime(
+    transport,
+    client,
+    opts.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS,
+    opts.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS,
+  );
   try {
     await client.request("initialize", INITIALIZE_PARAMS);
   } catch (error) {

@@ -236,6 +236,9 @@ async function runPrompt(params: unknown): Promise<JsonObject> {
       return await unknownTurn();
     case "hang":
       return await hangTurn();
+    case "deaf":
+      // Ignores session/cancel as well: only the client's cancel grace can end this turn.
+      return await new Promise<JsonObject>(() => undefined);
     case "slow":
       return await slowTurn();
     case "crash":

@@ -82,7 +82,42 @@ export class JsonRpcClient {
    */
   request<T = unknown>(method: string, params?: unknown, timeoutMs?: number): Promise<T> {
     if (this.#disposed) return Promise.reject(new Error(`JSON-RPC client is disposed (${method})`));
+    return this.#dispatch<T>(method, params, timeoutMs).promise;
+  }
 
+  /**
+   * Like `request`, but also returns the frame id, so a caller that gave up waiting (e.g. a turn
+   * watchdog) can drop the pending entry with `abandon` instead of leaking it for the connection's
+   * lifetime.
+   */
+  requestWithId<T = unknown>(
+    method: string,
+    params?: unknown,
+    timeoutMs?: number,
+  ): { id: number; promise: Promise<T> } {
+    if (this.#disposed) throw new Error(`JSON-RPC client is disposed (${method})`);
+    return this.#dispatch<T>(method, params, timeoutMs);
+  }
+
+  /** Drops a still-pending request, clearing its timer, and settles it as abandoned. */
+  abandon(id: number): void {
+    const entry = this.#pending.get(id);
+    if (entry === undefined) return;
+    clearTimeout(entry.timer);
+    this.#pending.delete(id);
+    entry.reject(new Error(`JSON-RPC request abandoned (id ${id})`));
+  }
+
+  /** Requests still awaiting a response. Diagnostics only. */
+  get pendingCount(): number {
+    return this.#pending.size;
+  }
+
+  #dispatch<T>(
+    method: string,
+    params: unknown,
+    timeoutMs: number | undefined,
+  ): { id: number; promise: Promise<T> } {
     const id = this.#nextId;
     this.#nextId += 1;
     const effectiveTimeout = timeoutMs ?? this.#requestTimeoutMs;
@@ -115,7 +150,7 @@ export class JsonRpcClient {
       this.#pending.delete(id);
       fail(error instanceof Error ? error : new Error(String(error)));
     }
-    return promise;
+    return { id, promise };
   }
 
   notify(method: string, params?: unknown): void {

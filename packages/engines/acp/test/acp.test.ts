@@ -24,13 +24,16 @@ function workspace(): string {
   return dir;
 }
 
-async function start(opts: { turnTimeoutMs?: number } = {}): Promise<{ engine: AcpClient; root: string }> {
+async function start(
+  opts: { turnTimeoutMs?: number; cancelGraceMs?: number } = {},
+): Promise<{ engine: AcpClient; root: string }> {
   const root = workspace();
   const engine = await createAcpClient({
     command: process.execPath,
     args: [FAKE_SERVER, "--omp", "--profile", "fake", "--model", "fake/fake-1"],
     cwd: root,
     ...(opts.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: opts.turnTimeoutMs }),
+    ...(opts.cancelGraceMs === undefined ? {} : { cancelGraceMs: opts.cancelGraceMs }),
   });
   cleanups.push(() => engine.dispose());
   return { engine, root };
@@ -225,18 +228,39 @@ describe("ACP engine adapter", () => {
         args: [FAKE_SERVER],
         cwd: root,
         env: { FAKE_ACP_LOG: logPath },
-        requestTimeoutMs: 100,
-        turnTimeoutMs: 400,
+        // The handshake on a loaded machine takes ~100 ms, so the client-wide timeout must be well
+        // clear of it; the prompt still outlives it because the watchdog runs at 3 s.
+        requestTimeoutMs: 1_500,
+        turnTimeoutMs: 3_000,
       });
       cleanups.push(() => engine.dispose());
 
       const session = await engine.newSession(root);
+      const startedAt = Date.now();
       const result = await session.prompt([{ type: "text", text: "hang" }], collector().handlers);
       expect(result).toEqual({ stopReason: "cancelled", timedOut: true });
+      expect(Date.now() - startedAt).toBeGreaterThan(1_800);
 
       const wire = readFileSync(logPath, "utf8");
       expect(wire).toContain('"method":"session/prompt"');
       expect(wire).toContain('"method":"session/cancel"');
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "abandons the pending prompt when the agent ignores the cancel",
+    async () => {
+      const { engine, root } = await start({ turnTimeoutMs: 150, cancelGraceMs: 150 });
+      const session = await engine.newSession(root);
+
+      await expect(session.prompt([{ type: "text", text: "deaf" }], collector().handlers)).rejects.toThrow(
+        /did not settle 150ms after session\/cancel/,
+      );
+      expect(engine.client.pendingCount).toBe(0);
+
+      const next = await session.prompt([{ type: "text", text: "stream" }], collector().handlers);
+      expect(next.stopReason).toBe("end_turn");
     },
     TEST_TIMEOUT_MS,
   );
