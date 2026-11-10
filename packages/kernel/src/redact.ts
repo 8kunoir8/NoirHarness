@@ -92,7 +92,14 @@ export class Redactor {
     if (value !== null && typeof value === "object") {
       const out: Record<string, unknown> = {};
       for (const [key, item] of Object.entries(value)) {
-        Object.defineProperty(out, key, { value: this.redact(item, depth + 1), enumerable: true, writable: true, configurable: true });
+        // Keys are redacted as text: tool payloads and provider errors can put a secret in a
+        // map key, which would otherwise survive into the event log verbatim.
+        Object.defineProperty(out, this.redactText(key), {
+          value: this.redact(item, depth + 1),
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        });
       }
       return out;
     }

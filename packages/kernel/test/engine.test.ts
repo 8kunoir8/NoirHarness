@@ -843,7 +843,9 @@ describe("EngineManager over the fake ACP server", () => {
     db.prepare("INSERT INTO sessions (id, workspace_id, agent_id, engine, status, created_at) VALUES ('wait','w','a','acp','waiting',2)").run();
     db.prepare("INSERT INTO sessions (id, workspace_id, agent_id, engine, status, created_at) VALUES ('done','w','a','acp','closed',3)").run();
     db.prepare("INSERT INTO sessions (id, workspace_id, agent_id, engine, status, created_at) VALUES ('start','w','a','acp','starting',4)").run();
+    db.prepare("INSERT INTO sessions (id, workspace_id, agent_id, engine, status, created_at) VALUES ('fresh','w','a','acp','starting',5)").run();
     db.prepare("INSERT INTO turns (id, session_id, idx, status, started_at) VALUES ('t1','run',1,'running',1)").run();
+    db.prepare("INSERT INTO turns (id, session_id, idx, status, started_at) VALUES ('t2','start',2,'running',4)").run();
 
     const events = new EventStore(db);
     const manager = new EngineManager({ db, events, sessions: new SessionService(db, events), models: new ModelService(db), providers: new ProviderService(db, memorySecrets()), skills: new SkillService(db, tempDir()), dataDir: tempDir() });
@@ -852,15 +854,54 @@ describe("EngineManager over the fake ACP server", () => {
     const statuses = db.prepare("SELECT id, status FROM sessions ORDER BY id").all();
     expect(statuses).toEqual([
       { id: "done", status: "closed" },
+      { id: "fresh", status: "starting" },
       { id: "run", status: "error" },
       { id: "start", status: "error" },
       { id: "wait", status: "error" },
     ]);
-    const turn = db.prepare("SELECT status FROM turns WHERE id = 't1'").get() as { status: string };
-    expect(turn.status).toBe("failed");
+    const turn = db.prepare("SELECT id, status FROM turns ORDER BY id").all();
+    expect(turn).toEqual([
+      { id: "t1", status: "failed" },
+      { id: "t2", status: "failed" },
+    ]);
     expect(events.list("run").some((event) => event.type === "session.status" && PayloadSchemas["session.status"].safeParse(event.payload).data?.reason === "kernel_restart")).toBe(true);
     expect(events.list("done")).toHaveLength(0);
+    // A session that never accepted a turn is still starting, not a failed crash victim.
+    expect(events.list("fresh")).toHaveLength(0);
   });
+
+  it(
+    "fails the turn but leaves a resumable error session untouched when its model is gone",
+    async () => {
+      const { db, events, sessions, manager, session } = setup();
+      sessions.setStatus(session.id, "error");
+      if (session.modelId === null) throw new Error("fixture session has no model");
+      db.prepare("UPDATE models SET enabled = 0 WHERE id = ?").run(session.modelId);
+      const before = events.list(session.id).length;
+
+      const result = await manager.prompt({
+        sessionId: session.id,
+        requestId: "resume-gone-1",
+        content: [{ type: "text", text: "resume" }],
+      });
+      expect(result.queued).toBe(false);
+
+      const failed = await waitForEvent(events, session.id, (event) => event.type === "turn.failed");
+      const failedPayload = eventPayload(failed, "turn.failed");
+      expect(failedPayload.turnId).toBe(result.turnId);
+      expect(failedPayload.message).toBe("The session model is disabled or missing");
+
+      const turn = db.prepare("SELECT status FROM turns WHERE id = ?").get(result.turnId) as { status: string };
+      expect(turn.status).toBe("failed");
+      const row = db.prepare("SELECT status FROM sessions WHERE id = ?").get(session.id) as { status: string };
+      expect(row.status).toBe("error");
+      // No zombie `running` and no status flap: the only new event is the failure itself.
+      expect(events.list(session.id).slice(before).map((event) => event.type)).toEqual(["turn.failed"]);
+      expect(events.list(session.id).some((event) => event.type === "turn.started")).toBe(false);
+      expect(manager.enginePid(session.id)).toBeUndefined();
+    },
+    TEST_TIMEOUT_MS,
+  );
 });
 
 describe("kernel RPC over the fake ACP server", () => {

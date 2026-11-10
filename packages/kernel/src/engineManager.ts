@@ -389,11 +389,17 @@ export class EngineManager {
   /** Fails sessions a previous kernel left active; the next prompt resumes them from `error`. */
   reconcileAll(): void {
     const rows = this.deps.db
-      .prepare("SELECT id, agent_id FROM sessions WHERE status IN ('starting','running','waiting') ORDER BY created_at ASC")
+      .prepare(
+        `SELECT s.id, s.agent_id FROM sessions s
+         WHERE s.status IN ('starting','running','waiting')
+           AND (s.status <> 'starting' OR EXISTS (SELECT 1 FROM turns t WHERE t.session_id = s.id))
+         ORDER BY s.created_at ASC`,
+      )
       .all() as Array<{ id: string; agent_id: string }>;
     for (const row of rows) {
       this.reconcile({ sessionId: row.id, agentId: row.agent_id });
-      // A crash during startup leaves the session `starting`; `reconcile` only fails live statuses.
+      // A crashed mid-turn session stays `starting` until it accepted a turn; only then is the
+      // stale `starting` a lie worth resolving. A session with no turn was never live.
       this.setStatus(row.id, "error", "kernel_restart");
     }
   }

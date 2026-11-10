@@ -51,6 +51,14 @@ describe("Redactor", () => {
     expect(node).toBe(REDACTED);
   });
 
+  it("redacts secrets used as object keys", () => {
+    const secret = "plain-provider-secret-9d2c";
+    const redactor = new Redactor({ secrets: [secret] });
+    const redacted = redactor.redact({ [secret]: 1, ok: 2 });
+    expect(redacted).toEqual({ [REDACTED]: 1, ok: 2 });
+    expect(JSON.stringify(redacted)).toBe(`{"${REDACTED}":1,"ok":2}`);
+  });
+
   it("keeps a __proto__ own key in the redacted clone", () => {
     const redactor = new Redactor({ secrets: ["sk-live-1234567890"] });
     const redacted = redactor.redact(JSON.parse('{"__proto__":"sk-live-1234567890","keep":"sk-live-1234567890"}'));
