@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { FileTree } from "../src/renderer/FileTree.js";
@@ -43,4 +43,90 @@ describe("FileTree", () => {
     const row = await screen.findByRole("treeitem", { name: /README\.md/ });
     expect(row.getAttribute("aria-selected")).toBe("true");
   });
+
+  it("shows an alert and collapses a directory whose listing fails", async () => {
+    const request = (_method: string, params?: unknown): Promise<unknown> => {
+      const { path } = paramsOf(params);
+      if (path === "src") return Promise.reject(new Error("permission denied"));
+      return Promise.resolve(entries[""]);
+    };
+    render(<FileTree request={request as never} workspaceId="w1" onOpenFile={() => undefined} />);
+
+    const src = await screen.findByRole("treeitem", { name: /src/ });
+    expect(src.getAttribute("aria-expanded")).toBe("false");
+
+    await userEvent.click(src);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("src");
+    expect(alert.textContent).toContain("permission denied");
+    expect(src.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("treeitem", { name: /main\.ts/ })).toBeNull();
+  });
+
+  it("keeps an expanded directory cached across a collapse", async () => {
+    const calls: string[] = [];
+    const request = (_method: string, params?: unknown): Promise<unknown> => {
+      const { path } = paramsOf(params);
+      calls.push(path);
+      return entries[path] === undefined ? Promise.reject(new Error("nope")) : Promise.resolve(entries[path]);
+    };
+    render(<FileTree request={request as never} workspaceId="w1" onOpenFile={() => undefined} />);
+
+    const src = await screen.findByRole("treeitem", { name: /src/ });
+    await userEvent.click(src);
+    await screen.findByRole("treeitem", { name: /main\.ts/ });
+
+    await userEvent.click(src);
+    await userEvent.click(src);
+    await screen.findByRole("treeitem", { name: /main\.ts/ });
+
+    expect(calls.filter((path) => path === "src")).toHaveLength(1);
+  });
+
+  it("notes a truncated root listing", async () => {
+    const request = (_method: string, _params?: unknown): Promise<unknown> =>
+      Promise.resolve({ entries: [{ name: "a.ts", path: "a.ts", kind: "file", size: 1 }], truncated: true });
+    render(<FileTree request={request as never} workspaceId="w1" onOpenFile={() => undefined} />);
+
+    await screen.findByRole("treeitem", { name: /a\.ts/ });
+    const note = screen.getByText("Showing the first 2,000 entries");
+    expect(note.className).toBe("file-tree-note");
+  });
+
+  it("drops a listing that resolves after the workspace changes", async () => {
+    const deferred = Promise.withResolvers<unknown>();
+    const request = (_method: string, params?: unknown): Promise<unknown> => {
+      const { workspaceId } = paramsOf(params);
+      if (workspaceId === "w1") return deferred.promise;
+      return Promise.resolve({
+        entries: [{ name: "new.ts", path: "new.ts", kind: "file", size: 3 }],
+        truncated: false,
+      });
+    };
+    const { rerender } = render(
+      <FileTree request={request as never} workspaceId="w1" onOpenFile={() => undefined} />,
+    );
+    expect(screen.queryByRole("treeitem", { name: /old\.txt/ })).toBeNull();
+
+    rerender(<FileTree request={request as never} workspaceId="w2" onOpenFile={() => undefined} />);
+    const fresh = await screen.findByRole("treeitem", { name: /new\.ts/ });
+    expect(fresh.getAttribute("data-depth")).toBe("0");
+
+    await act(async () => {
+      deferred.resolve({
+        entries: [{ name: "old.txt", path: "old.txt", kind: "file", size: 9 }],
+        truncated: false,
+      });
+    });
+    expect(screen.queryByRole("treeitem", { name: /old\.txt/ })).toBeNull();
+    expect(screen.getByRole("treeitem", { name: /new\.ts/ })).toBeTruthy();
+  });
 });
+
+function paramsOf(value: unknown): { workspaceId: string; path: string } {
+  if (typeof value !== "object" || value === null) return { workspaceId: "", path: "" };
+  const workspaceId = "workspaceId" in value && typeof value.workspaceId === "string" ? value.workspaceId : "";
+  const path = "path" in value && typeof value.path === "string" ? value.path : "";
+  return { workspaceId, path };
+}

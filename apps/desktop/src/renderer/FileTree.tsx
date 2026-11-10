@@ -1,16 +1,10 @@
 import { useEffect, useRef, useState } from "react";
+import type { FsEntry as Entry, FsListResult as Listing } from "@noir/protocol";
 import type { RequestFn } from "./api.js";
 
-interface Entry {
-  name: string;
+interface Failure {
   path: string;
-  kind: "file" | "dir";
-  size: number;
-}
-
-interface Listing {
-  entries: Entry[];
-  truncated: boolean;
+  message: string;
 }
 
 export interface FileTreeProps {
@@ -20,11 +14,18 @@ export interface FileTreeProps {
   onOpenFile: (path: string) => void;
 }
 
+/** Names the failing directory in the alert so a nested failure is identifiable. */
+function describeFailure(path: string, cause: unknown): string {
+  const detail = cause instanceof Error ? cause.message : "Could not read the directory";
+  if (path === "") return detail;
+  return `${path.slice(path.lastIndexOf("/") + 1)}: ${detail}`;
+}
+
 /** Lazily expanded tree over `fs.list`; expansions and listings are cached for the mount. */
 export function FileTree({ request, workspaceId, activePath, onOpenFile }: FileTreeProps) {
   const [listings, setListings] = useState<Record<string, Listing>>({});
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
-  const [error, setError] = useState<string | undefined>(undefined);
+  const [error, setError] = useState<Failure | undefined>(undefined);
   // Paths already requested (or in flight) for the current workspace; survives re-renders so a
   // second expand does not hit the kernel twice, and is reset when the workspace changes.
   const requested = useRef(new Set<string>());
@@ -37,16 +38,28 @@ export function FileTree({ request, workspaceId, activePath, onOpenFile }: FileT
     void request<Listing>("fs.list", { workspaceId, path }).then(
       (listing) => {
         if (current !== generation.current) return;
-        setError(undefined);
         setListings((listings) => ({ ...listings, [path]: listing }));
+        // Only clear the alert raised by this path; a sibling's success says nothing about it.
+        setError((failure) => (failure?.path === path ? undefined : failure));
       },
       (cause: unknown) => {
         if (current !== generation.current) return;
-        // Drop the marker so a later expand can retry, and surface the failure inline.
+        // Drop the marker so a later expand retries, and roll the directory back to collapsed.
         requested.current.delete(path);
-        setError(cause instanceof Error ? cause.message : "Could not read the directory");
+        setExpanded((expanded) => {
+          if (!expanded.has(path)) return expanded;
+          const next = new Set(expanded);
+          next.delete(path);
+          return next;
+        });
+        setError({ path, message: describeFailure(path, cause) });
       },
     );
+  };
+
+  const retryRoot = (): void => {
+    requested.current.delete("");
+    load("");
   };
 
   useEffect(() => {
@@ -60,15 +73,12 @@ export function FileTree({ request, workspaceId, activePath, onOpenFile }: FileT
   }, [workspaceId]);
 
   const toggle = (path: string): void => {
-    setExpanded((current) => {
-      const next = new Set(current);
-      if (next.has(path)) next.delete(path);
-      else {
-        next.add(path);
-        load(path);
-      }
-      return next;
-    });
+    const next = new Set(expanded);
+    const shouldLoad = !next.has(path);
+    if (shouldLoad) next.add(path);
+    else next.delete(path);
+    setExpanded(next);
+    if (shouldLoad) load(path);
   };
 
   const rows: Array<{ entry: Entry; depth: number }> = [];
@@ -83,7 +93,16 @@ export function FileTree({ request, workspaceId, activePath, onOpenFile }: FileT
   return (
     <section aria-label="Files" className="file-tree">
       <h3>Files</h3>
-      {error === undefined ? null : <p role="alert">{error}</p>}
+      {error === undefined ? null : (
+        <p role="alert" className="file-tree-alert">
+          <span>{error.message}</span>
+          {error.path === "" ? (
+            <button type="button" onClick={retryRoot}>
+              Retry
+            </button>
+          ) : null}
+        </p>
+      )}
       <ul role="tree" aria-label="Workspace files">
         {rows.map(({ entry, depth }) => (
           <li
@@ -91,8 +110,9 @@ export function FileTree({ request, workspaceId, activePath, onOpenFile }: FileT
             role="treeitem"
             aria-selected={entry.path === activePath}
             aria-expanded={entry.kind === "dir" ? expanded.has(entry.path) : undefined}
+            aria-level={depth + 1}
             tabIndex={0}
-            data-depth={depth}
+            data-depth={Math.min(depth, 6)}
             onClick={() => (entry.kind === "dir" ? toggle(entry.path) : onOpenFile(entry.path))}
             onKeyDown={(event) => {
               if (event.key !== "Enter" && event.key !== " ") return;
@@ -104,10 +124,13 @@ export function FileTree({ request, workspaceId, activePath, onOpenFile }: FileT
             <span className="file-kind" aria-hidden="true">
               {entry.kind === "dir" ? (expanded.has(entry.path) ? "▾" : "▸") : "·"}
             </span>
-            {entry.name}
+            <span className="file-name">{entry.name}</span>
           </li>
         ))}
       </ul>
+      {listings[""]?.truncated === true ? (
+        <p className="file-tree-note">Showing the first 2,000 entries</p>
+      ) : null}
     </section>
   );
 }

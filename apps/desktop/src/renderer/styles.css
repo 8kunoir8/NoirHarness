@@ -541,11 +541,18 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; colo
   border-radius: var(--radius-sm);
   font-family: var(--font-mono);
   font-size: 12px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   cursor: pointer;
 }
+.file-tree .file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.file-tree-alert {
+  margin: 0;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--danger);
+  font-size: 0.78rem;
+}
+.file-tree-note { margin: 0; color: var(--muted); font-size: 0.72rem; }
 .file-tree li:hover { background: var(--surface-sunken); }
 .file-tree li[aria-selected="true"] { background: var(--accent); color: var(--accent-contrast); }
 .file-tree .file-kind { flex: none; color: var(--muted); }
