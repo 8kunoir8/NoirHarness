@@ -208,7 +208,7 @@ export const SkillView = z.object({
 });
 export type SkillView = z.infer<typeof SkillView>;
 
-export const SkillListParams = z.object({ workspaceId: z.string().optional() });
+export const SkillListParams = z.object({ workspaceId: z.string().min(1).optional() });
 export type SkillListParams = z.infer<typeof SkillListParams>;
 export const SkillListResult = z.object({
   skills: z.array(SkillView),
@@ -218,7 +218,7 @@ export const SkillListResult = z.object({
 export type SkillListResult = z.infer<typeof SkillListResult>;
 
 export const SkillSetEnabledParams = z.object({
-  workspaceId: z.string().optional(),
+  workspaceId: z.string().min(1).optional(),
   scope: SkillScopeSchema,
   name: z.string().min(1),
   enabled: z.boolean(),
@@ -228,7 +228,7 @@ export const SkillSetEnabledResult = z.object({ ok: z.literal(true) });
 export type SkillSetEnabledResult = z.infer<typeof SkillSetEnabledResult>;
 
 export const SkillReadParams = z.object({
-  workspaceId: z.string().optional(),
+  workspaceId: z.string().min(1).optional(),
   scope: SkillScopeSchema,
   name: z.string().min(1),
 });
