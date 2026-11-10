@@ -1,22 +1,14 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
-import { _electron as electron, expect, test, type Page } from "@playwright/test";
+import { _electron as electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
+import {
+  deleteProviderThroughKernel,
+  removeDir,
+  snapshotProfileAgentDir,
+  waitForKernelExit,
+} from "./helpers.js";
 import { startMockProvider, type MockProvider } from "./mock-provider.js";
-
-/** Retries because Windows keeps handles on the kernel's SQLite and omp's session files briefly. */
-async function removeDir(dir: string): Promise<void> {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      rmSync(dir, { recursive: true, force: true });
-      return;
-    } catch (error) {
-      if (attempt === 19) throw error;
-      await delay(100);
-    }
-  }
-}
 
 interface Harness {
   dataDir: string;
@@ -31,7 +23,7 @@ function createDirs(): Harness {
   return { dataDir, workspacePath };
 }
 
-function launchApp(harness: Harness) {
+function launchApp(harness: Harness): Promise<ElectronApplication> {
   return electron.launch({ args: ["."], env: { ...process.env, NOIR_DATA_DIR: harness.dataDir } });
 }
 
@@ -71,13 +63,40 @@ async function sendPrompt(page: Page, text: string): Promise<void> {
   await page.getByRole("button", { name: "Send" }).click();
 }
 
-test("streams an assistant reply through the mock provider", async () => {
+/** Runs one chat against the mock. Teardown removes the keyring entry, the mock, and the profile. */
+async function runChat(
+  body: (page: Page, mock: MockProvider, harness: Harness) => Promise<void>,
+): Promise<void> {
   test.setTimeout(120_000);
   const harness = createDirs();
-  const mock = await startMockProvider();
-  const app = await launchApp(harness);
+  const snapshot = snapshotProfileAgentDir();
   try {
-    const page = await app.firstWindow();
+    const mock = await startMockProvider();
+    let app: ElectronApplication | undefined;
+    try {
+      app = await launchApp(harness);
+      await body(await app.firstWindow(), mock, harness);
+    } finally {
+      if (app !== undefined) {
+        // Through the kernel socket, so both the SQLite row and the host keyring entry go away.
+        await deleteProviderThroughKernel(harness.dataDir, "Mock").catch(() => undefined);
+      }
+      await app?.close().catch(() => undefined);
+      await mock.close().catch(() => undefined);
+    }
+  } finally {
+    await waitForKernelExit(harness.dataDir).catch(() => undefined);
+    try {
+      await snapshot.restore();
+    } finally {
+      await removeDir(harness.dataDir);
+      await removeDir(harness.workspacePath);
+    }
+  }
+}
+
+test("streams an assistant reply through the mock provider", async () => {
+  await runChat(async (page, mock, harness) => {
     await bootstrap(page, mock, harness.workspacePath);
 
     await sendPrompt(page, "stream");
@@ -85,21 +104,11 @@ test("streams an assistant reply through the mock provider", async () => {
       timeout: 20_000,
     });
     expect(mock.requests).toContain("/v1/chat/completions");
-  } finally {
-    await app.close();
-    await mock.close();
-    await removeDir(harness.dataDir);
-    await removeDir(harness.workspacePath);
-  }
+  });
 });
 
 test("allows a tool once and streams the follow-up reply", async () => {
-  test.setTimeout(120_000);
-  const harness = createDirs();
-  const mock = await startMockProvider();
-  const app = await launchApp(harness);
-  try {
-    const page = await app.firstWindow();
+  await runChat(async (page, mock, harness) => {
     await bootstrap(page, mock, harness.workspacePath);
 
     await sendPrompt(page, "tool");
@@ -107,15 +116,11 @@ test("allows a tool once and streams the follow-up reply", async () => {
     await expect(permission).toBeVisible({ timeout: 20_000 });
     await permission.getByRole("button", { name: "Allow once" }).click();
 
-    await expect(page.getByTestId("tool-card")).toContainText("hi", { timeout: 20_000 });
+    // Only `tool.output` fills the card's <pre>; without it the element never renders.
+    await expect(page.getByTestId("tool-card").locator("pre")).toContainText("hi", { timeout: 20_000 });
     await expect(page.getByTestId("message-assistant").filter({ hasText: "tool finished" })).toBeVisible({
       timeout: 20_000,
     });
     expect(mock.toolMessageSeen()).toBe(true);
-  } finally {
-    await app.close();
-    await mock.close();
-    await removeDir(harness.dataDir);
-    await removeDir(harness.workspacePath);
-  }
+  });
 });

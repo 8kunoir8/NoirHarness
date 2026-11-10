@@ -177,7 +177,8 @@ describe("ACP engine adapter", () => {
       ).toEqual(["in_progress", "completed"]);
 
       const completed = updates.find((update) => update.kind === "tool.updated" && update.status === "completed");
-      expect(completed?.kind === "tool.updated" ? completed.text : "").toContain("terminal-ok");
+      // The rendered command omp prefixes to the content is dropped; only the result survives.
+      expect(completed?.kind === "tool.updated" ? completed.text : "").toBe("terminal said terminal-ok");
       expect(result.stopReason).toBe("end_turn");
     },
     TEST_TIMEOUT_MS,

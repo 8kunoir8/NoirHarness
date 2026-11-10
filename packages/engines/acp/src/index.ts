@@ -229,6 +229,9 @@ function contentText(content: unknown): string | undefined {
     const inner = asObject(record.content);
     if (inner !== undefined && inner.type === "text" && typeof inner.text === "string") parts.push(inner.text);
   }
+  // omp prefixes tool content with the rendered command ("$ echo hi"), which the tool card already
+  // shows as its title; only the result text belongs in the streamed output.
+  if (parts[0]?.startsWith("$ ")) parts.shift();
   return parts.length === 0 ? undefined : parts.join("\n");
 }
 

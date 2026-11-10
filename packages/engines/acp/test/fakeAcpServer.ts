@@ -218,7 +218,10 @@ async function permissionTurn(): Promise<JsonObject> {
     sessionUpdate: "tool_call_update",
     toolCallId: "call_fake_1",
     status: "completed",
-    content: [{ type: "content", content: { type: "text", text: `terminal said ${outputText}` } }],
+    content: [
+      { type: "content", content: { type: "text", text: "$ echo hi" } },
+      { type: "content", content: { type: "text", text: `terminal said ${outputText}` } },
+    ],
   });
   return { stopReason: "end_turn" };
 }
