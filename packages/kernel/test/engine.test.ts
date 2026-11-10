@@ -274,6 +274,36 @@ describe("EngineManager over the fake ACP server", () => {
   );
 
   it(
+    "stops attributing a skill disabled between turns on one live engine",
+    async () => {
+      const { events, manager, skills, session, workspaceId, root } = setup({ acpSkill: "demo" });
+      writeProjectSkill(root);
+
+      const first = await manager.prompt({
+        sessionId: session.id,
+        requestId: "skill-toggle-1",
+        content: [{ type: "text", text: "stream" }],
+      });
+      await waitForEvent(events, session.id, (event) => event.type === "turn.completed" && event.turnId === first.turnId);
+      expect(events.list(session.id).filter((event) => event.type === "skill.loaded")).toHaveLength(1);
+
+      await skills.setEnabled(workspaceId, root, "project", "demo", false);
+
+      const second = await manager.prompt({
+        sessionId: session.id,
+        requestId: "skill-toggle-2",
+        content: [{ type: "text", text: "stream" }],
+      });
+      await waitForEvent(events, session.id, (event) => event.type === "turn.completed" && event.turnId === second.turnId);
+
+      const loaded = events.list(session.id).filter((event) => event.type === "skill.loaded");
+      expect(loaded).toHaveLength(1);
+      expect(loaded.filter((event) => event.turnId === second.turnId)).toHaveLength(0);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
     "attributes one skill.loaded per turn so the dedupe set resets between turns",
     async () => {
       const { events, manager, session, root } = setup({ acpSkill: "demo" });
