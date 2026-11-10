@@ -85,6 +85,23 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
       CREATE INDEX annotations_lookup ON annotations (workspace_id, path);
     `,
   },
+  {
+    id: 4,
+    sql: `
+      DROP TABLE skills;
+      CREATE TABLE skills (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL DEFAULT '',
+        scope TEXT NOT NULL,
+        name TEXT NOT NULL,
+        dir TEXT NOT NULL,
+        hash TEXT NOT NULL,
+        manifest_json TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        UNIQUE (workspace_id, scope, name)
+      );
+    `,
+  },
 ];
 
 export function migrate(db: Database.Database): void {

@@ -1,8 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
-import { discoverSkills, hashSkillDir, parseSkillFrontmatter } from "../src/skills.js";
+import { migrate } from "../src/migrations.js";
+import { SkillService, discoverSkills, hashSkillDir, parseSkillFrontmatter, type SkillManifest } from "../src/skills.js";
 
 function skill(root: string, name: string, description: string, body = "BODY"): string {
   const dir = join(root, name);
@@ -138,5 +140,104 @@ describe("skill discovery", () => {
     const scan = await discoverSkills(global, undefined);
     expect(scan.skills).toEqual([]);
     expect(scan.warnings.join("\n")).toContain("huge");
+  });
+});
+
+function service(): { db: Database.Database; service: SkillService; dataDir: string } {
+  const db = new Database(":memory:");
+  db.pragma("foreign_keys = ON");
+  migrate(db);
+  const dataDir = root();
+  mkdirSync(join(dataDir, "engine"), { recursive: true });
+  return { db, service: new SkillService(db, dataDir), dataDir };
+}
+
+/** `SkillService` reads project skills from `<workspace>/.noir/skills`, not the workspace root. */
+function projectSkills(workspace: string): string {
+  const dir = join(workspace, ".noir", "skills");
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+describe("skill enabled state and materialization", () => {
+  it("materializes the effective winners for one workspace with a manifest", async () => {
+    const { service: s, dataDir } = service();
+    const global = join(dataDir, "skills");
+    const project = root();
+    mkdirSync(global, { recursive: true });
+    skill(global, "g", "global");
+    skill(projectSkills(project), "p", "project");
+    await s.list("ws-1", project);
+    await s.materialize("ws-1", project);
+    expect(readFileSync(join(project, ".noir", "skills-engine", "g", "SKILL.md"), "utf8")).toContain("description: global");
+    expect(readFileSync(join(project, ".noir", "skills-engine", "p", "SKILL.md"), "utf8")).toContain("description: project");
+    const manifest = JSON.parse(readFileSync(join(project, ".noir", "skills-engine.json"), "utf8")) as SkillManifest;
+    expect(manifest.skills.map((x) => [x.name, x.scope])).toEqual([
+      ["g", "global"],
+      ["p", "project"],
+    ]);
+  });
+
+  it("drops a disabled skill from the materialized root but keeps its source", async () => {
+    const { service: s } = service();
+    const project = root();
+    const dir = skill(projectSkills(project), "p", "project");
+    await s.list("ws-1", project);
+    await s.setEnabled("ws-1", project, "project", "p", false);
+    await s.materialize("ws-1", project);
+    expect(existsSync(join(project, ".noir", "skills-engine", "p"))).toBe(false);
+    expect(existsSync(join(dir, "SKILL.md"))).toBe(true);
+    const listed = await s.list("ws-1", project);
+    expect(listed.skills.find((x) => x.name === "p")?.enabled).toBe(false);
+  });
+
+  it("does not resurrect a shadowed global copy when the project copy is disabled", async () => {
+    const { service: s, dataDir } = service();
+    const global = join(dataDir, "skills");
+    mkdirSync(global, { recursive: true });
+    skill(global, "shared", "global");
+    const project = root();
+    skill(projectSkills(project), "shared", "project");
+    await s.list("ws-1", project);
+    await s.setEnabled("ws-1", project, "project", "shared", false);
+    await s.materialize("ws-1", project);
+    expect(existsSync(join(project, ".noir", "skills-engine", "shared"))).toBe(false);
+    const manifest = JSON.parse(readFileSync(join(project, ".noir", "skills-engine.json"), "utf8")) as SkillManifest;
+    expect(manifest.skills).toEqual([]);
+  });
+
+  it("keeps enable flags per workspace and scope", async () => {
+    const { service: s } = service();
+    const a = root();
+    const b = root();
+    skill(projectSkills(a), "p", "a");
+    skill(projectSkills(b), "p", "b");
+    await s.list("ws-a", a);
+    await s.list("ws-b", b);
+    await s.setEnabled("ws-a", a, "project", "p", false);
+    expect((await s.list("ws-a", a)).skills[0]?.enabled).toBe(false);
+    expect((await s.list("ws-b", b)).skills[0]?.enabled).toBe(true);
+  });
+
+  it("returns the SKILL.md body and refuses unknown names", async () => {
+    const { service: s } = service();
+    const project = root();
+    skill(projectSkills(project), "p", "project", "VIEW_ME");
+    await s.list("ws-1", project);
+    expect((await s.read("ws-1", project, "project", "p")).content).toContain("VIEW_ME");
+    await expect(s.read("ws-1", project, "project", "missing")).rejects.toThrow(/not found/i);
+  });
+
+  it("removes a stale materialized skill and leaves unknown files alone", async () => {
+    const { service: s } = service();
+    const project = root();
+    skill(projectSkills(project), "p", "project");
+    await s.list("ws-1", project);
+    await s.materialize("ws-1", project);
+    mkdirSync(join(project, ".noir", "skills-engine", "p", "old"), { recursive: true });
+    rmSync(join(project, ".noir", "skills"), { recursive: true, force: true });
+    await s.list("ws-1", project);
+    await s.materialize("ws-1", project);
+    expect(existsSync(join(project, ".noir", "skills-engine", "p"))).toBe(false);
   });
 });
