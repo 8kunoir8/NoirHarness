@@ -19,6 +19,7 @@ import {
   activateTab,
   chatTab,
   closeTab,
+  diffTab,
   editorTab,
   loadTabs,
   openTab,
@@ -40,6 +41,13 @@ interface DocumentState {
   text: string;
   draft: string;
   mtimeMs: number;
+}
+
+/** `git.status` reports workspace-root-relative paths; the shape matches an event file. */
+interface GitStatusView {
+  isRepo: boolean;
+  branch: string | null;
+  files: Array<{ path: string; change: "created" | "modified" | "deleted"; add: number; del: number }>;
 }
 
 const READ_KEY = "noir.read.sessions";
@@ -77,6 +85,7 @@ export function App() {
     loadTabs(loadJson<unknown>(TABS_KEY, loadJson<unknown>("noir.tabs", null))),
   );
   const [documents, setDocuments] = useState<Record<string, DocumentState>>({});
+  const [gitStatus, setGitStatus] = useState<GitStatusView | undefined>(undefined);
   const [failedReads, setFailedReads] = useState<Record<string, string>>({});
   const [listMode, setListMode] = useState<ListMode>("chats");
   const [quickOpen, setQuickOpen] = useState(false);
@@ -124,6 +133,45 @@ export function App() {
     storeJson(TABS_KEY, tabState);
   }, [tabState]);
 
+  // Git status belongs to one workspace; an answer that arrives after a switch describes the wrong
+  // tree, so both success and failure check the workspace they were asked for.
+  const refreshGit = useCallback(async (): Promise<void> => {
+    if (workspaceId === "") {
+      setGitStatus(undefined);
+      return;
+    }
+    const asked = workspaceId;
+    try {
+      const status = await request<GitStatusView>("git.status", { workspaceId });
+      if (workspaceRef.current !== asked) return;
+      setGitStatus(status);
+    } catch {
+      if (workspaceRef.current !== asked) return;
+      // A workspace that is not a repo (or an unavailable `git`) keeps working without stats.
+      setGitStatus(undefined);
+    }
+  }, [request, workspaceId]);
+
+  useEffect(() => {
+    void refreshGit();
+  }, [refreshGit]);
+
+  const diffStats =
+    gitStatus === undefined || gitStatus.files.length === 0
+      ? undefined
+      : gitStatus.files.reduce(
+          (total, file) => ({ add: total.add + file.add, del: total.del + file.del }),
+          { add: 0, del: 0 },
+        );
+
+  // Git is the source of truth for what changed; event files fill in anything git cannot see (a
+  // deleted tracked file is in both, so git's counts win per path).
+  const inspectorFiles = (() => {
+    const byPath = new Map(events.state.files.map((file) => [file.path, file]));
+    for (const file of gitStatus?.isRepo === true ? gitStatus.files : []) byPath.set(file.path, file);
+    return [...byPath.values()];
+  })();
+
   const loadSessions = useCallback(async (): Promise<SessionView[]> => {
     const result = await request<{ sessions: SessionView[] }>("session.list");
     setSessions(result.sessions);
@@ -166,6 +214,7 @@ export function App() {
       refreshTimer.current = window.setTimeout(() => {
         refreshTimer.current = undefined;
         void loadSessions().catch(() => undefined);
+        void refreshGit();
       }, 250);
     };
     void connect(listener).catch(() => undefined);
@@ -173,7 +222,7 @@ export function App() {
       if (refreshTimer.current !== undefined) window.clearTimeout(refreshTimer.current);
       offEvent(listener);
     };
-  }, [loadSessions]);
+  }, [loadSessions, refreshGit]);
 
   // Keep the read watermark on the active chat so "Unread" means "not opened since it changed".
   useEffect(() => {
@@ -243,9 +292,6 @@ export function App() {
   const activeSession = activeTab?.kind === "chat" ? sessions.find((session) => session.id === activeTab.sessionId) : undefined;
   const running = workspaceSessions.filter((session) => session.status === "running" || session.status === "starting").length;
   const pendingApprovals = workspaceSessions.filter((session) => session.pendingApproval).length;
-
-  // Task 11 replaces this stub with the real `git.status` refresh.
-  const refreshGit = useCallback(async (): Promise<void> => undefined, []);
 
   // `noUncheckedIndexedAccess` does not narrow a repeated `documents[path]` read; resolve it once.
   const editorPath = activeTab?.kind === "editor" ? activeTab.path : undefined;
@@ -406,7 +452,10 @@ export function App() {
   const topbar = (
     <>
       <span className="brand">NoirHarness</span>
-      <span className="topbar-workspace">{workspaceSessions.length === 0 ? "" : `${workspaceSessions.length} chat${workspaceSessions.length === 1 ? "" : "s"}`}</span>
+      <span className="topbar-workspace">
+        {gitStatus?.branch === null || gitStatus?.branch === undefined ? "" : `${gitStatus.branch} · `}
+        {workspaceSessions.length === 0 ? "" : `${workspaceSessions.length} chat${workspaceSessions.length === 1 ? "" : "s"}`}
+      </span>
       <button type="button" className="topbar-action" onClick={() => setPaletteOpen(true)} aria-label="Commands">
         ⌘K
       </button>
@@ -695,6 +744,7 @@ export function App() {
                   models={models}
                   request={request}
                   events={events}
+                  diffStats={diffStats}
                   onSessionChange={() => void loadSessions().catch(() => undefined)}
                 />
               )
@@ -749,9 +799,10 @@ export function App() {
                   usage={events.state.usage}
                   turnStartedAt={events.state.turnStartedAt}
                   lastTurn={events.state.lastTurn}
-                  files={events.state.files}
+                  files={inspectorFiles}
                   plan={events.state.plan}
                   approvalTitles={events.state.approval === undefined ? [] : [events.state.approval.title]}
+                  onShowDiff={(path) => setTabState((current) => openTab(current, diffTab(path)))}
                   onClose={() => setInspectorOpen(false)}
                 />
               ),

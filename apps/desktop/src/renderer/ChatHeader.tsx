@@ -10,6 +10,7 @@ export interface ChatHeaderProps {
   modelId: string | null;
   models: readonly ModelView[];
   usage?: ChatUsage | undefined;
+  diffStats?: { add: number; del: number } | undefined;
   turnStartedAt?: number | undefined;
   lastTurn?: ChatTurn | undefined;
   canInterrupt: boolean;
@@ -35,6 +36,7 @@ export function ChatHeader({
   modelId,
   models,
   usage,
+  diffStats,
   turnStartedAt,
   lastTurn,
   canInterrupt,
@@ -73,6 +75,11 @@ export function ChatHeader({
           : `${formatDuration(elapsed)}`}
       </span>
       <UsageMeter usage={usage} />
+      {diffStats === undefined ? null : (
+        <span className="chat-diff" aria-label="Diff stats">
+          <span className="diff-add">+{diffStats.add}</span> <span className="diff-del">−{diffStats.del}</span>
+        </span>
+      )}
       {canInterrupt ? (
         <button type="button" onClick={onInterrupt}>
           Interrupt

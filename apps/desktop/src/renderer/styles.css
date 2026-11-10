@@ -83,6 +83,8 @@ button.primary {
   border-color: var(--accent);
   color: var(--accent-contrast);
 }
+.link { background: none; border: 0; color: var(--accent); padding: 0; cursor: pointer; font: inherit; }
+.link:hover:not(:disabled) { text-decoration: underline; }
 
 input, select, textarea {
   border: 1px solid var(--border);
@@ -314,6 +316,9 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; colo
 .chat-header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .chat-header h2 { flex: 1; min-width: 12ch; }
 .chat-header label { flex-direction: row; align-items: center; gap: 6px; }
+.chat-diff { display: inline-flex; gap: 4px; font-family: var(--font-mono); font-size: 0.8rem; }
+.chat-diff .diff-add { color: var(--success); }
+.chat-diff .diff-del { color: var(--danger); }
 
 .messages { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; flex: 1; }
 .message {

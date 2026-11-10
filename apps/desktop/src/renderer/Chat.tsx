@@ -17,12 +17,14 @@ export function Chat({
   models,
   request,
   events,
+  diffStats,
   onSessionChange,
 }: {
   session: SessionView;
   models: ModelView[];
   request: RequestFn;
   events: SessionEvents;
+  diffStats?: { add: number; del: number } | undefined;
   onSessionChange?: (() => void) | undefined;
 }) {
   const { state, appendUser } = events;
@@ -164,6 +166,7 @@ export function Chat({
         modelId={session.modelId}
         models={models}
         usage={state.usage}
+        diffStats={diffStats}
         turnStartedAt={state.turnStartedAt}
         lastTurn={state.lastTurn}
         canInterrupt={canInterrupt}

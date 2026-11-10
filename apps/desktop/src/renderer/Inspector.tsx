@@ -11,6 +11,7 @@ export interface InspectorProps {
   files: readonly ChatFile[];
   plan: readonly ChatPlanItem[];
   approvalTitles: readonly string[];
+  onShowDiff: (path: string) => void;
   onClose: () => void;
 }
 
@@ -24,6 +25,7 @@ export function Inspector({
   files,
   plan,
   approvalTitles,
+  onShowDiff,
   onClose,
 }: InspectorProps) {
   if (session === undefined) {
@@ -124,6 +126,9 @@ export function Inspector({
                   <code title={file.path}>{file.path}</code>
                   <span className="diff-add">+{file.add}</span>
                   <span className="diff-del">−{file.del}</span>
+                  <button type="button" className="link" onClick={() => onShowDiff(file.path)}>
+                    Show diff
+                  </button>
                 </li>
               ))}
             </ul>

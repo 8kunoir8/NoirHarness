@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
 import type { SessionView } from "@noir/protocol";
 import { Inspector } from "../src/renderer/Inspector.js";
 
@@ -34,6 +35,7 @@ describe("Inspector", () => {
           { text: "Read the kernel", status: "done" },
         ]}
         approvalTitles={["Run tests?"]}
+        onShowDiff={() => undefined}
         onClose={() => undefined}
       />,
     );
@@ -58,6 +60,7 @@ describe("Inspector", () => {
         files={[]}
         plan={[]}
         approvalTitles={[]}
+        onShowDiff={() => undefined}
         onClose={() => undefined}
       />,
     );
@@ -66,8 +69,33 @@ describe("Inspector", () => {
     expect(screen.getByRole("region", { name: "Changed files" }).textContent).toContain("No files changed.");
 
     rerender(
-      <Inspector session={undefined} status="idle" files={[]} plan={[]} approvalTitles={[]} onClose={() => undefined} />,
+      <Inspector
+        session={undefined}
+        status="idle"
+        files={[]}
+        plan={[]}
+        approvalTitles={[]}
+        onShowDiff={() => undefined}
+        onClose={() => undefined}
+      />,
     );
     expect(screen.getByText(/Open a chat to inspect/)).toBeTruthy();
+  });
+
+  it("opens the diff for a changed file", async () => {
+    const onShowDiff = vi.fn();
+    render(
+      <Inspector
+        session={session}
+        status="idle"
+        files={[{ path: "src/a.ts", change: "modified", add: 2, del: 1 }]}
+        plan={[]}
+        approvalTitles={[]}
+        onShowDiff={onShowDiff}
+        onClose={() => undefined}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Show diff" }));
+    expect(onShowDiff).toHaveBeenCalledWith("src/a.ts");
   });
 });
