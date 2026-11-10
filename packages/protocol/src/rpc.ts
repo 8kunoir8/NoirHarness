@@ -26,6 +26,8 @@ export const Methods = {
   fsRead: "fs.read",
   fsWrite: "fs.write",
   fsFiles: "fs.files",
+  gitStatus: "git.status",
+  gitDiff: "git.diff",
 } as const;
 
 /** `system.health` result. `engineDir` is the agent directory the kernel materializes and omp reads. */
@@ -137,6 +139,23 @@ export const FsFilesParams = z.object({ workspaceId: z.string().min(1) });
 export type FsFilesParams = z.infer<typeof FsFilesParams>;
 export const FsFilesResult = z.object({ files: z.array(z.string()), truncated: z.boolean() });
 export type FsFilesResult = z.infer<typeof FsFilesResult>;
+
+export const GitFileStatus = z.object({
+  path: z.string(),
+  change: z.enum(["created", "modified", "deleted"]),
+  add: z.number().int().nonnegative(),
+  del: z.number().int().nonnegative(),
+});
+export type GitFileStatus = z.infer<typeof GitFileStatus>;
+
+export const GitStatusParams = z.object({ workspaceId: z.string().min(1) });
+export const GitStatusResult = z.object({
+  isRepo: z.boolean(),
+  branch: z.string().nullable(),
+  files: z.array(GitFileStatus),
+});
+export const GitDiffParams = z.object({ workspaceId: z.string().min(1), path: z.string().min(1) });
+export const GitDiffResult = z.object({ diff: z.string() });
 
 export const EventNotificationParams = z.object({ event: AgentEvent });
 export type EventNotificationParams = z.infer<typeof EventNotificationParams>;

@@ -11,6 +11,8 @@ import {
   FsListParams,
   FsReadParams,
   FsWriteParams,
+  GitDiffParams,
+  GitStatusParams,
   Methods,
   ModelCreateParams,
   ModelDeleteParams,
@@ -34,6 +36,7 @@ import { openDb } from "./db.js";
 import { EngineManager } from "./engineManager.js";
 import { EventStore } from "./eventStore.js";
 import { findFiles, listDirectory, readFileText, writeFileText } from "./fsService.js";
+import { gitDiff, gitStatus } from "./gitService.js";
 import { ModelService } from "./models.js";
 import { clearProfileModels, profileAgentDir, syncProfile } from "./profile.js";
 import { ProjectService } from "./projects.js";
@@ -231,6 +234,11 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
           return writeFileText(workspaceRoot(workspaceId), path, content, expectedMtimeMs);
         },
         [Methods.fsFiles]: async (params) => findFiles(workspaceRoot(FsFilesParams.parse(params).workspaceId)),
+        [Methods.gitStatus]: async (params) => gitStatus(workspaceRoot(GitStatusParams.parse(params).workspaceId)),
+        [Methods.gitDiff]: async (params) => {
+          const { workspaceId, path } = GitDiffParams.parse(params);
+          return { diff: await gitDiff(workspaceRoot(workspaceId), path) };
+        },
         [Methods.sessionCreate]: async (params) => {
           const { workspaceId, modelId } = SessionCreateParams.parse(params);
           await sync();
