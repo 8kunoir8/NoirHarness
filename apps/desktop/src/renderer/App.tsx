@@ -10,7 +10,7 @@ import { SessionList, type ReadState, type SessionFilter } from "./SessionList.j
 import { Setup } from "./Setup.js";
 import { Shell } from "./Shell.js";
 import { StatusBar } from "./StatusBar.js";
-import { Tabs } from "./Tabs.js";
+import { Tabs } from "./TabStrip.js";
 import { useTheme } from "./theme.js";
 import { useShortcuts } from "./useShortcuts.js";
 import { WorkspacePanel, type ProjectView, type WorkspaceView } from "./WorkspacePanel.js";
