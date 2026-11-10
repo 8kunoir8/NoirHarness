@@ -576,6 +576,10 @@ export class EngineManager {
       }
       case "tool.updated": {
         if (update.status === "completed") {
+          // The final tool_call_update carries the whole content snapshot; the UI appends it to the card.
+          if (update.text !== undefined && update.text !== "") {
+            this.emit(state, "tool.output", { toolCallId: update.toolCallId, chunk: update.text }, turn.turnId);
+          }
           this.emit(state, "tool.completed", { toolCallId: update.toolCallId, status: update.status }, turn.turnId);
         } else if (update.status === "failed") {
           this.emit(state, "tool.failed", { toolCallId: update.toolCallId, message: update.text ?? update.status }, turn.turnId);

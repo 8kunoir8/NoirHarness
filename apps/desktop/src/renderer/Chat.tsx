@@ -92,7 +92,7 @@ export function Chat({ session, models, request }: { session: SessionView; model
 
       <ol className="messages">
         {state.messages.map((message) => (
-          <li key={message.id} className={`message message-${message.role}`}>
+          <li key={message.id} className={`message message-${message.role}`} data-testid={message.role === "assistant" ? "message-assistant" : undefined}>
             <strong>{message.role === "user" ? "You" : "Assistant"}</strong>
             {message.blocks.map((block, index) => (
               <div key={`${message.id}-${index}`} className={block.kind === "reasoning" ? "reasoning" : "text"}>
@@ -109,7 +109,7 @@ export function Chat({ session, models, request }: { session: SessionView; model
           <h3>Tools</h3>
           <ul className="tools">
             {state.tools.map((tool) => (
-              <li key={tool.id} className="tool">
+              <li key={tool.id} className="tool" data-testid="tool-card">
                 <strong>{tool.title === "" ? tool.id : tool.title}</strong>
                 <span className="status">{tool.status}</span>
                 {tool.output === "" ? null : <pre>{tool.output}</pre>}
@@ -120,7 +120,7 @@ export function Chat({ session, models, request }: { session: SessionView; model
       )}
 
       {state.approval === undefined ? null : (
-        <div role="dialog" aria-label="Permission required" className="approval">
+        <div role="dialog" aria-label="Permission required" className="approval" data-testid="permission-card">
           <p>{state.approval.title}</p>
           <div className="approval-options">
             {state.approval.options.map((option) => (
