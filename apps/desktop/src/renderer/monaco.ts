@@ -54,16 +54,31 @@ const cssWorker: WorkerLoader = () => import("monaco-editor/esm/vs/language/css/
 const htmlWorker: WorkerLoader = () => import("monaco-editor/esm/vs/language/html/html.worker.js?worker");
 const jsonWorker: WorkerLoader = () => import("monaco-editor/esm/vs/language/json/json.worker.js?worker");
 
-const WORKER_BY_LABEL: Readonly<Partial<Record<string, WorkerLoader>>> = {
-  typescript: tsWorker,
-  javascript: tsWorker,
+/** The worker bundle that owns a Monaco language service label. */
+export type WorkerKind = "ts" | "css" | "html" | "json" | "editor";
+
+const WORKER_KIND_BY_LABEL: Readonly<Partial<Record<string, WorkerKind>>> = {
+  typescript: "ts",
+  javascript: "ts",
+  css: "css",
+  scss: "css",
+  less: "css",
+  html: "html",
+  handlebars: "html",
+  razor: "html",
+  json: "json",
+};
+
+export function workerKindFor(label: string): WorkerKind {
+  return WORKER_KIND_BY_LABEL[label] ?? "editor";
+}
+
+const WORKER_LOADERS: Record<WorkerKind, WorkerLoader> = {
+  ts: tsWorker,
   css: cssWorker,
-  scss: cssWorker,
-  less: cssWorker,
   html: htmlWorker,
-  handlebars: htmlWorker,
-  razor: htmlWorker,
   json: jsonWorker,
+  editor: editorWorker,
 };
 
 let loading: Promise<typeof Monaco> | undefined;
@@ -78,7 +93,7 @@ export function loadMonaco(): Promise<typeof Monaco> {
       // Loaded on the first request per language, so opening a plain markdown file never downloads
       // the TypeScript service.
       getWorker: async (_workerId: string, label: string) => {
-        const { default: WorkerClass } = await (WORKER_BY_LABEL[label] ?? editorWorker)();
+        const { default: WorkerClass } = await WORKER_LOADERS[workerKindFor(label)]();
         return new WorkerClass();
       },
     };

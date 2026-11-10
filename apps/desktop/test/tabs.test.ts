@@ -97,14 +97,21 @@ describe("tabs", () => {
     expect(loadTabs({ tabs: [editorTab("a.ts")] }).workspaceId).toBe("");
   });
 
-  it("scopeTabs adopts an unset workspace without dropping tabs", () => {
-    const state: TabsState = { tabs: [chatTab("s1"), editorTab("a.ts")], active: "editor:a.ts", workspaceId: "" };
-    expect(scopeTabs(state, "w1")).toEqual({
-      tabs: [chatTab("s1"), editorTab("a.ts")],
+  it("scopeTabs treats an unset workspace as unowned and keeps only chats", () => {
+    const v2: TabsState = {
+      tabs: [chatTab("s1"), editorTab("a.ts"), diffTab("a.ts")],
       active: "editor:a.ts",
+      workspaceId: "",
+    };
+    expect(scopeTabs(v2, "w1")).toEqual({ tabs: [chatTab("s1")], active: "chat:s1", workspaceId: "w1" });
+
+    // v1 blobs are chat-only, so the stricter rule loses nothing legitimate.
+    expect(scopeTabs({ tabs: [chatTab("s1")], active: "chat:s1", workspaceId: "" }, "w1")).toEqual({
+      tabs: [chatTab("s1")],
+      active: "chat:s1",
       workspaceId: "w1",
     });
-    expect(scopeTabs({ ...state, workspaceId: "w1" }, "w1")).toEqual({ ...state, workspaceId: "w1" });
+    expect(scopeTabs({ ...v2, workspaceId: "w1" }, "w1")).toEqual({ ...v2, workspaceId: "w1" });
   });
 
   it("scopeTabs drops editor and diff tabs saved in another workspace", () => {

@@ -129,6 +129,8 @@ export function App() {
   // subscribe request on a cold socket fails without retrying.
   const events = useSessionEvents(status === "kernel ok" ? (activeChatId ?? "") : "", request);
   const refreshTimer = useRef<number | undefined>(undefined);
+  // Whether the debounced refresh still owes a git scan: session updates alone only need the list.
+  const pendingFileChange = useRef(false);
   // `git.status` scans the whole workspace; a burst of edits can overlap. Only the newest run may
   // publish, so an older scan can never overwrite a newer one.
   const gitSeq = useRef(0);
@@ -250,12 +252,16 @@ export function App() {
 
   useEffect(() => {
     const listener = (event: AgentEvent): void => {
-      if (FILE_EVENTS[event.type] !== true) return;
+      // Session titles, statuses and badges refresh after every event; only a scan of the whole
+      // workspace waits for one that can actually change files on disk.
+      if (FILE_EVENTS[event.type] === true) pendingFileChange.current = true;
       if (refreshTimer.current !== undefined) return;
       refreshTimer.current = window.setTimeout(() => {
         refreshTimer.current = undefined;
+        const filesChanged = pendingFileChange.current;
+        pendingFileChange.current = false;
         void loadSessions().catch(() => undefined);
-        void refreshGit();
+        if (filesChanged) void refreshGit();
       }, 250);
     };
     void connect(listener).catch(() => undefined);
@@ -332,9 +338,10 @@ export function App() {
   // a switch. A reconnect must not re-read: that would silently replace live drafts with disk content.
   useEffect(() => {
     if (workspaceId === "" || status !== "kernel ok" || syncedWorkspace.current === workspaceId) return;
-    // Tabs restored under another workspace are about to be dropped by the scoping effect; reading
-    // their paths here would put another workspace's file into this workspace's document map.
-    if (tabState.workspaceId !== "" && tabState.workspaceId !== workspaceId) {
+    // Only tabs already scoped to this workspace may be read. Anything else (another workspace, or a
+    // legacy blob with no owner) is dropped by the scoping effect, so reading its paths here would
+    // bind this workspace's document map to files that belong elsewhere.
+    if (tabState.workspaceId !== workspaceId) {
       syncedWorkspace.current = workspaceId;
       return;
     }

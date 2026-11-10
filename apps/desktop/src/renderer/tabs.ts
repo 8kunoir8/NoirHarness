@@ -86,11 +86,13 @@ export function loadTabs(raw: unknown): TabsState {
  * Pins the stored tab set to the workspace it was saved in. Editor/diff paths are
  * workspace-relative, so a tab restored under another workspace would silently read (and later save)
  * a same-named file from the wrong tree: those tabs are dropped, while chat tabs stay usable.
- * An unset workspace id adopts the current one without losing the restored tabs.
+ *
+ * An unset workspace id does not prove ownership either: legacy v2 blobs predate the field, so
+ * adopting their editor/diff tabs would bind them to whichever workspace is selected first. They are
+ * dropped like a mismatch; v1 blobs are chat-only, so no legitimate tab is lost.
  */
 export function scopeTabs(state: TabsState, workspaceId: string): TabsState {
   if (workspaceId === "" || state.workspaceId === workspaceId) return state;
-  if (state.workspaceId === "") return { ...state, workspaceId };
   const tabs = state.tabs.filter((tab) => tab.kind === "chat");
   const active = state.active !== undefined && tabs.some((tab) => tab.id === state.active) ? state.active : tabs[0]?.id;
   return { tabs, active, workspaceId };
