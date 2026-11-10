@@ -13,6 +13,16 @@ export interface Secrets {
 
 interface ProviderRow { id: string; name: string; base_url: string; api_kind: ApiKind; enabled: number; created_at: number; }
 
+/** An enabled provider plus its vault key, for materializing the engine profile. Never logged. */
+export interface EnabledProvider {
+  id: string;
+  name: string;
+  baseUrl: string;
+  apiKind: ApiKind;
+  /** `null` when the vault entry is missing; profile sync skips that provider. */
+  apiKey: string | null;
+}
+
 export class ProviderService {
   constructor(private readonly db: Database.Database, private readonly secrets: Secrets) {}
 
@@ -37,6 +47,18 @@ export class ProviderService {
     return (this.db.prepare("SELECT * FROM providers ORDER BY created_at DESC").all() as ProviderRow[]).map((r) => ({
       id: r.id, name: r.name, baseUrl: r.base_url, apiKind: r.api_kind,
       enabled: r.enabled === 1, hasKey: this.secrets.get(r.id) !== null, createdAt: r.created_at,
+    }));
+  }
+
+  /** Enabled providers in insertion order, with their vault key when one exists. */
+  enabledWithKeys(): EnabledProvider[] {
+    const rows = this.db.prepare("SELECT * FROM providers WHERE enabled = 1 ORDER BY created_at ASC, rowid ASC").all() as ProviderRow[];
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      baseUrl: r.base_url,
+      apiKind: r.api_kind,
+      apiKey: this.secrets.get(r.id),
     }));
   }
 

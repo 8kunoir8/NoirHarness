@@ -2,8 +2,61 @@ import type Database from "better-sqlite3";
 import { v7 as uuidv7 } from "uuid";
 import { ErrorCodes, RpcFault, type ModelCreateParams, type ModelView } from "@noir/protocol";
 
+/** An enabled model whose provider is enabled; `providerName` completes the engine selector. */
+export interface EnabledModelRef {
+  id: string;
+  providerId: string;
+  providerName: string;
+  modelId: string;
+}
+
+const ENABLED_MODEL_SELECT = `
+  SELECT m.id AS id, m.provider_id AS provider_id, p.name AS provider_name, m.model_id AS model_id,
+         m.created_at AS created_at
+  FROM models m
+  JOIN providers p ON p.id = m.provider_id
+  WHERE m.enabled = 1 AND p.enabled = 1`;
+
+function toRef(row: Record<string, unknown>): EnabledModelRef {
+  return {
+    id: row.id as string,
+    providerId: row.provider_id as string,
+    providerName: row.provider_name as string,
+    modelId: row.model_id as string,
+  };
+}
+
 export class ModelService {
   constructor(private readonly db: Database.Database) {}
+
+  /** Every enabled model of an enabled provider, oldest first (the fallback default order). */
+  enabledModels(): EnabledModelRef[] {
+    const rows = this.db.prepare(`${ENABLED_MODEL_SELECT} ORDER BY m.created_at ASC, m.id ASC`).all() as Array<Record<string, unknown>>;
+    return rows.map(toRef);
+  }
+
+  enabledModel(id: string): EnabledModelRef | undefined {
+    const row = this.db.prepare(`${ENABLED_MODEL_SELECT} AND m.id = ?`).get(id) as Record<string, unknown> | undefined;
+    return row === undefined ? undefined : toRef(row);
+  }
+
+  /** `settings.defaultModelId` when it still names an enabled model, else the oldest enabled model. */
+  defaultModel(): EnabledModelRef | undefined {
+    const row = this.db.prepare("SELECT value_json FROM settings WHERE key = 'defaultModelId'").get() as { value_json: string } | undefined;
+    if (row !== undefined) {
+      try {
+        const value: unknown = JSON.parse(row.value_json);
+        if (typeof value === "string") {
+          const configured = this.enabledModel(value);
+          if (configured !== undefined) return configured;
+        }
+      } catch {
+        // A malformed setting falls back to the oldest enabled model.
+      }
+    }
+    return this.enabledModels()[0];
+  }
+
 
   create(params: ModelCreateParams): ModelView {
     const provider = this.db.prepare("SELECT id FROM providers WHERE id = ?").get(params.providerId);

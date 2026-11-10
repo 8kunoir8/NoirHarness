@@ -4,11 +4,11 @@ import { ErrorCodes, RpcFault, type SessionStatus, type SessionView } from "@noi
 import type { EventStore } from "./eventStore.js";
 
 const TRANSITIONS: Record<SessionStatus, SessionStatus[]> = {
-  starting: ["idle", "error", "closed"],
+  starting: ["idle", "running", "error", "closed"],
   idle: ["running", "closed", "error"],
   running: ["waiting", "idle", "error", "closed"],
   waiting: ["running", "idle", "error", "closed"],
-  error: ["idle", "closed"],
+  error: ["idle", "running", "closed"],
   closed: [],
 };
 

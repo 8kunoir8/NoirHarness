@@ -2,13 +2,26 @@ import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 import { ErrorCodes } from "@noir/protocol";
 import { startKernel, type Kernel } from "../src/index.js";
 
 const dirs: string[] = [];
+let priorProfileHome: string | undefined;
+let profileHome = "";
 function tempDir(): string { const d = mkdtempSync(join(tmpdir(), "noir kernel ünïcode ")); dirs.push(d); return d; }
+// The kernel materializes the engine profile under the profile home; never touch the real one in tests.
+beforeAll(() => {
+  priorProfileHome = process.env.NOIR_PROFILE_HOME;
+  profileHome = mkdtempSync(join(tmpdir(), "noir profile ünïcode "));
+  process.env.NOIR_PROFILE_HOME = profileHome;
+});
+afterAll(() => {
+  if (priorProfileHome === undefined) delete process.env.NOIR_PROFILE_HOME;
+  else process.env.NOIR_PROFILE_HOME = priorProfileHome;
+  rmSync(profileHome, { recursive: true, force: true });
+});
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
 
 async function call(port: number, token: string, method: string, params?: unknown): Promise<any> {
