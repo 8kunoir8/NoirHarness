@@ -158,6 +158,25 @@ truncation for the root only today — a read at 2 MiB (larger files are refused
 at 5 000 000 characters, and quick open at 5 000 files. Files that are not UTF-8 text and symlinks
 are refused or skipped rather than rendered.
 
+## Skills
+
+Each workspace gets a skill set from two directories: `%APPDATA%/NoirHarness/skills` (global) and
+`<workspace>/.noir/skills` (project). A skill is a directory with a `SKILL.md` whose frontmatter
+carries `name` and `description`. When both scopes define a name, the project copy wins and the
+global one is marked shadowed.
+
+The kernel hashes each skill directory, copies the enabled effective set into
+`<workspace>/.noir/skills-engine`, and points the generated `config.yml` at it with a cwd-relative
+`skills.customDirectories` entry. Global skills are copied into each workspace that uses them, so a
+name claimed by a project skill stays claimed even when that project skill is disabled. Disabling a
+skill removes it from the materialized copy — never from its source — and applies to the next
+session started in that workspace. A `skill://` read by the engine becomes a `skill.loaded` event
+carrying the name, scope and hash; the chat shows a `Skills loaded` group.
+
+The `Skills` view lists both scopes with a hash, a live toggle, and a read-only `SKILL.md` viewer.
+A directory without valid frontmatter, a symlink, or a `SKILL.md` over 1 MiB is reported as a
+warning and skipped rather than failing the scan.
+
 ## Configuration
 
 | variable | default | meaning |
@@ -178,13 +197,14 @@ pnpm --filter @noir/desktop test
 pnpm --filter @noir/desktop test:e2e
 ```
 
-`test:e2e` builds the app and drives Electron with Playwright against a local mock provider. Seven
+`test:e2e` builds the app and drives Electron with Playwright against a local mock provider. Eight
 specs cover: `smoke` (2) — boot, process spawn, health, and a provider surviving an app restart;
 `chat` (2) — a streamed reply and a permission-approved tool call; `shell` (1) — a tool turn that
 survives the restart, a prompt queued behind a slow turn, an interrupt, the queued turn draining
 after it, and a restart that replays the transcript; `editor` (2) — open a file, edit it, save
 through the kernel, assert the file on disk, check the diff stats and `Show diff` from the
-inspector, and refuse a file larger than the read cap.
+inspector, and refuse a file larger than the read cap; `skills` (1) — list a project skill, view its
+body, disable it, and assert the manifest and materialized directory drop it.
 Each spec gets its own temporary data directory and its own Electron profile
 (`--user-data-dir` inside that directory), so engine state and restored tabs stay inside it.
 
