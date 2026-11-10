@@ -61,6 +61,55 @@ Deleting the last enabled provider or model deletes `models.yml`, so a removed k
 on disk. The format is omp's own, so a `models.yml` copied from an existing omp profile works
 verbatim.
 
+## The chat shell
+
+The **Chats** view is five regions:
+
+- **Rail** — `Chats` / `Setup` and the theme toggle. Entering `Chats` reloads providers, models,
+  workspaces, and sessions, so setup changes show up without a restart.
+- **List pane** — `Projects` (project path, project, workspace) over `Sessions`: the new-chat model
+  picker, `New chat`, a search box, filter buttons, and sessions grouped by `Today` / `Yesterday` /
+  `Earlier` from the last event time.
+- **Main pane** — tab strip, chat header (session status, model picker, token usage, `Interrupt`),
+  transcript (assistant text, tool cards, permission cards, diffs), and the composer.
+- **Inspector** — optional right panel with usage, files touched, the plan, and pending approvals.
+- **Status bar** — kernel health, turns running, approvals waiting, and the engine directory in use.
+
+Filters read kernel session metadata, not the transcript: `All`; `Needs you` (a pending approval or
+an errored session); `Working` (starting, running, or waiting without an approval); `Unread` (the
+session's newest event is past the last event its tab rendered); `Done` (closed). Search matches the
+session title, with untitled chats matching `untitled chat`.
+
+### Shortcuts
+
+| Shortcut | Action |
+| --- | --- |
+| `⌘K` / `Ctrl+K` | Command palette |
+| `⌘N` / `Ctrl+N` | New chat on the selected workspace and model |
+| `⌘W` / `Ctrl+W` | Close the active tab |
+| `⌘B` / `Ctrl+B` | Toggle the inspector |
+| `⌘J` / `Ctrl+J` | Focus the composer |
+| `⌘.` / `Ctrl+.` | Interrupt the running turn |
+| `⌘,` / `Ctrl+,` | Open setup |
+| `⌘⇧T` / `Ctrl+Shift+T` | Switch `paper` / `ink` theme |
+
+The palette lists available commands with their shortcut, filters on label and keywords as you type,
+and greys out commands whose preconditions are unmet (no workspace, no active chat, no running turn).
+It only dispatches actions that already exist — kernel RPCs such as `session.interrupt` and shell
+actions such as `new-chat` — so nothing is reachable from the palette that a button cannot do.
+
+In the composer, `Enter` sends, `⇧Enter` inserts a newline, and `⌘Enter` queues the draft while a turn
+runs. `Esc` interrupts a streaming turn. While a permission card is open it owns the keyboard: `1`–`9`
+pick an option by position and `Esc` picks the reject option. The send button always reads `Send`; the
+state line under it reports `Sending…`, `Queued for after this turn`, `Streaming`, `Interrupted`, or
+`Failed`.
+
+Queued turns live in kernel memory. They survive an interrupt — the turn ahead is cancelled and the
+queue drains — but not a kernel restart: turns persisted as `running` or `queued` are reported as
+failed the next time the app touches that session, with any open approval rejected. Open tabs, the
+active tab, and the theme (`noir.theme` in `localStorage`, applied as `<html data-theme>`) are
+restored on launch, and each restored tab replays its transcript from sequence 0.
+
 ## Configuration
 
 | variable | default | meaning |
@@ -81,8 +130,10 @@ pnpm --filter @noir/desktop test:e2e
 ```
 
 `test:e2e` builds the app and drives Electron with Playwright against a local mock provider: it
-streams a reply and completes a permission-approved tool call. Each spec uses its own temporary
-data directory, so engine state stays inside it.
+streams a reply, completes a permission-approved tool call, and runs the shell lifecycle spec — a
+tool turn, a prompt queued behind a slow turn, an interrupt, the queued turn draining after it, and
+an app restart that replays the transcript. Each spec uses its own temporary data directory, so
+engine state stays inside it.
 
 ## Layout
 
