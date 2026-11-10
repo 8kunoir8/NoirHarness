@@ -218,6 +218,20 @@ directory drop it.
 Each spec gets its own temporary data directory and its own Electron profile
 (`--user-data-dir` inside that directory), so engine state and restored tabs stay inside it.
 
+## Installer
+
+Build a Windows installer from a clean checkout:
+
+```sh
+pnpm install
+pnpm --filter @noir/desktop package
+```
+
+`release/NoirHarness Setup <version>.exe` installs per user; `release/win-unpacked/NoirHarness.exe` is
+the same app without the NSIS wrapper. The package ships its own Node runtime
+(`resources/runtime/node.exe`) and the bundled kernel (`resources/kernel`), so a machine without Node
+can run it.
+
 ## Layout
 
 - `packages/protocol` — wire types and the session reducer
