@@ -152,6 +152,7 @@ export const GitFileStatus = z.object({
 export type GitFileStatus = z.infer<typeof GitFileStatus>;
 
 export const GitStatusParams = z.object({ workspaceId: z.string().min(1) });
+export type GitStatusParams = z.infer<typeof GitStatusParams>;
 export const GitStatusResult = z.object({
   isRepo: z.boolean(),
   branch: z.string().nullable(),
@@ -159,7 +160,9 @@ export const GitStatusResult = z.object({
 });
 export type GitStatusResult = z.infer<typeof GitStatusResult>;
 export const GitDiffParams = z.object({ workspaceId: z.string().min(1), path: z.string().min(1) });
+export type GitDiffParams = z.infer<typeof GitDiffParams>;
 export const GitDiffResult = z.object({ diff: z.string() });
+export type GitDiffResult = z.infer<typeof GitDiffResult>;
 
 export const AnnotationView = z.object({
   id: z.string(),
@@ -180,6 +183,8 @@ export const AnnotationAddParams = z.object({
   path: z.string().min(1),
   line: z.number().int().positive(),
   note: z.string().trim().min(1).max(2_000),
+  // The hash the note was written against, so a note cannot be stored against a newer diff.
+  expectedDiffHash: z.string().optional(),
 });
 export type AnnotationAddParams = z.infer<typeof AnnotationAddParams>;
 

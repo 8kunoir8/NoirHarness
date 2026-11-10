@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { readFile, stat } from "node:fs/promises";
+import { TextDecoder, promisify } from "node:util";
+import { open, stat } from "node:fs/promises";
 import { ErrorCodes, RpcFault } from "@noir/protocol";
 import { relativePath, resolveInsideRoot } from "./fsPaths.js";
 
@@ -49,15 +49,48 @@ function rebase(prefix: string, path: string): string | undefined {
   return path.slice(prefix.length);
 }
 
-/** Reads the file body as lines, keeping blank lines; a trailing newline does not start a new one. */
-async function readLines(absolute: string): Promise<string[]> {
-  const text = await readFile(absolute, "utf8").catch(() => "");
-  const lines = text.split("\n");
-  if (lines.at(-1) === "") lines.pop();
-  return lines;
+/** The text cap a synthetic untracked patch or line count reads, mirroring the editor's read limit. */
+const MAX_UNTRACKED_BYTES = 2 * 1024 * 1024;
+const TRUNCATED_MARKER = "[truncated: file is larger than 2 MiB]";
+
+/** Reads at most `length` bytes plus one to detect overflow, so a huge untracked file never loads whole. */
+async function readHead(absolute: string, length: number): Promise<{ bytes: Buffer; truncated: boolean }> {
+  const buffer = Buffer.alloc(length + 1);
+  const handle = await open(absolute, "r");
+  try {
+    let offset = 0;
+    while (offset < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    return { bytes: buffer.subarray(0, Math.min(offset, length)), truncated: offset > length };
+  } finally {
+    await handle.close();
+  }
 }
 
-/** A status path that cannot be resolved to the workspace simply reports no counted lines. */
+/**
+ * Reads the file body as lines, keeping blank lines; a trailing newline does not start a new one.
+ * The read stops at 2 MiB (`truncated` then reports it), and decoding keeps a split trailing
+ * character pending instead of emitting a replacement char for it.
+ */
+async function readLines(absolute: string): Promise<{ lines: string[]; truncated: boolean }> {
+  const head = await readHead(absolute, MAX_UNTRACKED_BYTES).catch(() => ({
+    bytes: Buffer.alloc(0),
+    truncated: false,
+  }));
+  const text = new TextDecoder("utf-8").decode(head.bytes, { stream: true });
+  const lines = text.split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  return { lines, truncated: head.truncated };
+}
+
+/**
+ * A status path that cannot be resolved to the workspace simply reports no counted lines.
+ * Only the first 2 MiB are read, so a huge untracked file cannot stall `git.status`; past that cap
+ * the count is a lower bound rather than the file's true line count.
+ */
 async function countLines(root: string, path: string): Promise<number> {
   let absolute: string;
   try {
@@ -65,7 +98,7 @@ async function countLines(root: string, path: string): Promise<number> {
   } catch {
     return 0;
   }
-  return (await readLines(absolute)).length;
+  return (await readLines(absolute)).lines.length;
 }
 
 function parseNumstat(numstat: string): Map<string, { add: number; del: number }> {
@@ -149,8 +182,11 @@ export async function gitDiff(root: string, value: string): Promise<string> {
     () => false,
   );
   if (!exists) return "";
-  const lines = await readLines(absolute);
-  const body = lines.map((line) => `+${line}`).join("\n");
+  const head = await readLines(absolute);
+  const lines = head.lines.map((line) => `+${line}`);
+  // Never let a capped read look like the whole file: the patch says where it stops.
+  if (head.truncated) lines.push(`+${TRUNCATED_MARKER}`);
+  const body = lines.join("\n");
   return [
     `diff --git a/${path} b/${path}`,
     "new file mode 100644",

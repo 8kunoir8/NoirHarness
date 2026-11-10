@@ -1,5 +1,6 @@
-import { open, readdir, stat, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { open, readdir, rename, stat, unlink } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { basename, dirname, join } from "node:path";
 import { TextDecoder } from "node:util";
 import { ErrorCodes, RpcFault } from "@noir/protocol";
 import { relativePath, resolveInsideRoot } from "./fsPaths.js";
@@ -126,17 +127,33 @@ export async function writeFileText(
   await stat(parent).catch(() => {
     throw new RpcFault(ErrorCodes.notFound, `Directory not found: ${rel.split("/").slice(0, -1).join("/")}`);
   });
+  const current = await stat(absolute).catch(() => undefined);
   if (expectedMtimeMs !== undefined) {
-    const current = await stat(absolute).catch(() => undefined);
-    if (current !== undefined && Math.floor(current.mtimeMs) !== expectedMtimeMs) {
+    // A cached editor buffer must not bring back a file someone else deleted; only a first write may create.
+    if (current === undefined) throw new RpcFault(ErrorCodes.conflict, `${rel} was deleted on disk`);
+    if (Math.floor(current.mtimeMs) !== expectedMtimeMs) {
       throw new RpcFault(ErrorCodes.conflict, `${rel} changed on disk`);
     }
   }
+  // Write beside the target and rename over it, so a crash mid-write cannot leave a torn file.
+  const temp = join(parent, `.${basename(absolute)}.noir-${randomUUID()}.tmp`);
   try {
-    await writeFile(absolute, content, "utf8");
+    const handle = await open(temp, "w");
+    try {
+      await handle.writeFile(content, "utf8");
+      // The rename replaces the target wholesale, so the old permissions have to move along with it.
+      if (current !== undefined) await handle.chmod(current.mode & 0o777);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await rename(temp, absolute);
   } catch (error) {
+    await unlink(temp).catch(() => undefined);
     const code = (error as NodeJS.ErrnoException | undefined)?.code;
-    if (code === "EISDIR" || code === "ENOTDIR") {
+    // Renaming onto a directory is rejected differently per platform; both mean "not a file".
+    const ontoDirectory = current?.isDirectory() === true && (code === "EPERM" || code === "EACCES");
+    if (code === "EISDIR" || code === "ENOTDIR" || ontoDirectory) {
       throw new RpcFault(ErrorCodes.invalidParams, `Not a file: ${rel}`);
     }
     throw error;

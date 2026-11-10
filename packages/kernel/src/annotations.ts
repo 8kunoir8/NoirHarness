@@ -44,11 +44,16 @@ export async function listAnnotations(
 export async function addAnnotation(
   db: Database.Database,
   root: string,
-  params: { workspaceId: string; path: string; line: number; note: string },
+  params: { workspaceId: string; path: string; line: number; note: string; expectedDiffHash?: string | undefined },
 ): Promise<AnnotationRow> {
   const rel = relativePath(params.path);
   const diff = await gitDiff(root, rel);
   if (diff === "") throw new RpcFault(ErrorCodes.invalidParams, `${rel} has no diff to annotate`);
+  const diffHash = createHash("sha256").update(diff).digest("hex");
+  // The note points at a line of the diff the client displayed; a newer diff moved that line.
+  if (params.expectedDiffHash !== undefined && params.expectedDiffHash !== diffHash) {
+    throw new RpcFault(ErrorCodes.conflict, `${rel} changed since the diff was read`);
+  }
   const note = params.note.trim();
   if (note === "") throw new RpcFault(ErrorCodes.invalidParams, "Annotation note cannot be empty");
   const row: AnnotationRow = {
@@ -60,7 +65,7 @@ export async function addAnnotation(
   };
   db.prepare(
     "INSERT INTO annotations (id, workspace_id, path, line, note, diff_hash, created_at) VALUES (?,?,?,?,?,?,?)",
-  ).run(row.id, params.workspaceId, rel, row.line, row.note, createHash("sha256").update(diff).digest("hex"), row.createdAt);
+  ).run(row.id, params.workspaceId, rel, row.line, row.note, diffHash, row.createdAt);
   return row;
 }
 

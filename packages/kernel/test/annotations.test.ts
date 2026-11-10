@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { once } from "node:events";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
+import { ErrorCodes } from "@noir/protocol";
 import { startKernel, type Kernel } from "../src/index.js";
 
 const dirs: string[] = [];
@@ -132,6 +133,37 @@ describe("annotation.* RPCs", () => {
     const secondList = await call(kernel, "annotation.list", { workspaceId: second, path: "a.txt" });
     expect(firstList.result.annotations.map((annotation: { note: string }) => annotation.note)).toEqual(["first"]);
     expect(secondList.result.annotations.map((annotation: { note: string }) => annotation.note)).toEqual(["second"]);
+  });
+
+  it("rejects a note written against a stale diff and accepts the current hash", async () => {
+    const { kernel, workspaceId, root } = await setupRepo();
+    const stale = await call(kernel, "annotation.add", {
+      workspaceId,
+      path: "a.txt",
+      line: 2,
+      note: "old view",
+      expectedDiffHash: "0".repeat(64),
+    });
+    expect(stale.error.code).toBe(ErrorCodes.conflict);
+
+    const listed = await call(kernel, "annotation.list", { workspaceId, path: "a.txt" });
+    expect(listed.result.annotations).toEqual([]);
+    expect(typeof listed.result.diffHash).toBe("string");
+
+    const added = await call(kernel, "annotation.add", {
+      workspaceId,
+      path: "a.txt",
+      line: 2,
+      note: "current view",
+      expectedDiffHash: listed.result.diffHash,
+    });
+    expect(added.error).toBeUndefined();
+    expect(added.result.stale).toBe(false);
+
+    // The hash was current when the note was written, so the file changing later only marks it stale.
+    writeFileSync(join(root, "a.txt"), "one\nrewritten\n");
+    const after = await call(kernel, "annotation.list", { workspaceId, path: "a.txt" });
+    expect(after.result.annotations[0]).toMatchObject({ note: "current view", stale: true });
   });
 
   it("annotates a file that was never committed", async () => {

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -125,6 +125,48 @@ describe("fs.* RPCs", () => {
     const lone = await call(kernel, "fs.write", { workspaceId, path: "hello.txt", content: "a\uD800b" });
     expect(lone.error.code).toBe(ErrorCodes.invalidParams);
     expect(readFileSync(join(root, "hello.txt"), "utf8")).toBe("hello");
+  });
+
+  it("refuses to resurrect a file deleted on disk", async () => {
+    const { kernel, workspaceId, root } = await setup();
+    const first = await call(kernel, "fs.read", { workspaceId, path: "hello.txt" });
+    rmSync(join(root, "hello.txt"));
+
+    const write = await call(kernel, "fs.write", {
+      workspaceId,
+      path: "hello.txt",
+      content: "back",
+      expectedMtimeMs: first.result.mtimeMs,
+    });
+    expect(write.error.code).toBe(ErrorCodes.conflict);
+    expect(readdirSync(root)).toEqual([]);
+
+    // Without an expected mtime this is a first write, which still creates the file.
+    const created = await call(kernel, "fs.write", { workspaceId, path: "hello.txt", content: "fresh" });
+    expect(created.error).toBeUndefined();
+    expect(readFileSync(join(root, "hello.txt"), "utf8")).toBe("fresh");
+  });
+
+  it("saves through a temp file and leaves no temp behind", async () => {
+    const { kernel, workspaceId, root } = await setup();
+    const content = "line one\nline two\n\ntrailing\n";
+    const write = await call(kernel, "fs.write", { workspaceId, path: "hello.txt", content });
+    expect(write.error).toBeUndefined();
+    expect(typeof write.result.mtimeMs).toBe("number");
+    expect(readFileSync(join(root, "hello.txt"), "utf8")).toBe(content);
+    expect(readdirSync(root).filter((name) => name.includes(".noir-"))).toEqual([]);
+
+    // A rejected save cleans its temp up as well and leaves the target untouched.
+    mkdirSync(join(root, "dir.txt"));
+    const rejected = await call(kernel, "fs.write", { workspaceId, path: "dir.txt", content: "x" });
+    expect(rejected.error.code).toBe(ErrorCodes.invalidParams);
+    expect(readdirSync(root).filter((name) => name.includes(".noir-"))).toEqual([]);
+    expect(readFileSync(join(root, "hello.txt"), "utf8")).toBe(content);
+
+    const fresh = await call(kernel, "fs.write", { workspaceId, path: "new.txt", content: "new" });
+    expect(fresh.error).toBeUndefined();
+    expect(readFileSync(join(root, "new.txt"), "utf8")).toBe("new");
+    expect(readdirSync(root).filter((name) => name.includes(".noir-"))).toEqual([]);
   });
 
   it("finds files for quick open, skipping git and dependency dirs", async () => {

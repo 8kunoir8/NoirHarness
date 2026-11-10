@@ -137,6 +137,24 @@ describe("git.* RPCs", () => {
     expect(status.result.files).toEqual([{ path: "fresh.txt", change: "created", add: 3, del: 0 }]);
   });
 
+  it("caps the read of a huge untracked file and says so in its patch", async () => {
+    const root = tempDir();
+    initRepo(root);
+    const cap = 2 * 1024 * 1024;
+    // The first line fills the whole cap, so a capped head is one line while the file has two.
+    writeFileSync(join(root, "big.log"), `${"a".repeat(cap)}\n${"b".repeat(1_000)}\n`);
+    const { kernel, workspaceId } = await setupWorkspace(root);
+
+    const status = await call(kernel, "git.status", { workspaceId });
+    expect(status.result.files).toEqual([{ path: "big.log", change: "created", add: 1, del: 0 }]);
+
+    const diff = await call(kernel, "git.diff", { workspaceId, path: "big.log" });
+    expect(diff.result.diff).toContain("@@ -0,0 +1,2 @@");
+    expect(diff.result.diff.endsWith("+[truncated: file is larger than 2 MiB]\n")).toBe(true);
+    expect(diff.result.diff).not.toContain("b".repeat(1_000));
+    expect(diff.result.diff.length).toBeLessThan(cap + 4_096);
+  });
+
   it("returns a deletion patch for a staged deletion", async () => {
     const { kernel, workspaceId, root } = await setupRepo();
     git(root, "rm", "-q", "b.txt");
