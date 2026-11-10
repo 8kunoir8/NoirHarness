@@ -550,6 +550,40 @@ button.diff-gutter:hover, button.diff-gutter:focus-visible { color: var(--accent
 }
 .palette-hint { margin: 0; color: var(--muted); font-size: 0.72rem; }
 
+/* --- quick open --- */
+
+.quick-open {
+  position: fixed;
+  top: 12vh;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 45;
+  width: min(560px, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.32);
+}
+.quick-open input { font-size: 0.9rem; }
+.quick-open-list { list-style: none; margin: 0; padding: 0; max-height: 46vh; overflow-y: auto; }
+.quick-open-list li {
+  padding: 5px 8px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.quick-open-list li[aria-selected="true"] { background: var(--surface-sunken); }
+.quick-open-empty, .quick-open-truncated { margin: 0; color: var(--muted); font-size: 0.72rem; }
+.quick-open-error { margin: 0; color: var(--danger); font-size: 0.75rem; }
+
 /* --- setup --- */
 
 .setup { display: flex; flex-direction: column; gap: 12px; max-width: 860px; }
