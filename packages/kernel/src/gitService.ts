@@ -42,42 +42,92 @@ async function isRepo(root: string): Promise<boolean> {
   }
 }
 
-export async function gitStatus(root: string): Promise<GitStatusView> {
-  if (!(await isRepo(root))) return { isRepo: false, branch: null, files: [] };
-  const branch = await git(root, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => "");
-  const porcelain = await git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
-  // A repository with no commit yet has no HEAD to diff against; untracked files still report.
-  const numstat = await git(root, ["diff", "--numstat", "-z", "HEAD", "--"]).catch(() => "");
+/** `git status` always emits toplevel-relative paths; drop anything outside the workspace root. */
+function rebase(prefix: string, path: string): string | undefined {
+  if (prefix === "") return path;
+  if (!path.startsWith(prefix)) return undefined;
+  return path.slice(prefix.length);
+}
+
+/** Reads the file body as lines, keeping blank lines; a trailing newline does not start a new one. */
+async function readLines(absolute: string): Promise<string[]> {
+  const text = await readFile(absolute, "utf8").catch(() => "");
+  const lines = text.split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  return lines;
+}
+
+/** A status path that cannot be resolved to the workspace simply reports no counted lines. */
+async function countLines(root: string, path: string): Promise<number> {
+  let absolute: string;
+  try {
+    absolute = resolveInsideRoot(root, path);
+  } catch {
+    return 0;
+  }
+  return (await readLines(absolute)).length;
+}
+
+function parseNumstat(numstat: string): Map<string, { add: number; del: number }> {
   const counts = new Map<string, { add: number; del: number }>();
-  for (const record of numstat.split("\0")) {
+  const records = numstat.split("\0");
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index] ?? "";
+    if (record === "") continue;
+    const renamed = /^(\d+|-)\t(\d+|-)\t$/.exec(record);
+    if (renamed !== null) {
+      // A rename record carries no path: the source then the destination arrive as the next records.
+      const source = records[index + 1] ?? "";
+      const destination = records[index + 2] ?? "";
+      index += 2;
+      const value = { add: Number(renamed[1]) || 0, del: Number(renamed[2]) || 0 };
+      for (const name of [source, destination]) if (name !== "") counts.set(name, value);
+      continue;
+    }
     const [add, del, path] = record.split("\t");
-    // Rename records carry an empty path: their counts arrive under the destination path instead.
     if (path === undefined || path === "" || add === undefined || del === undefined) continue;
     counts.set(path, { add: Number(add) || 0, del: Number(del) || 0 });
   }
+  return counts;
+}
+
+export async function gitStatus(root: string): Promise<GitStatusView> {
+  if (!(await isRepo(root))) return { isRepo: false, branch: null, files: [] };
+  const prefix = (await git(root, ["rev-parse", "--show-prefix"]).catch(() => "")).trim();
+  const branch = await git(root, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => "");
+  // A status failure degrades to an empty list rather than an error wall.
+  const porcelain = await git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]).catch(() => "");
+  // A repository with no commit yet has no HEAD to diff against; untracked files still report.
+  // `--relative` rebases numstat paths onto the workspace root and omits everything outside it.
+  const numstat = await git(root, ["diff", "--numstat", "-z", "--relative", "HEAD", "--"]).catch(() => "");
+  const counts = parseNumstat(numstat);
   const records = porcelain.split("\0");
   const files: GitFileStatusView[] = [];
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index] ?? "";
     if (record.length < 4) continue;
     const code = record.slice(0, 2);
-    const path = record.slice(3);
+    const renamed = code.includes("R") || code.includes("C");
     // `-z` renames emit the destination first and the source as the next record; skip the source.
-    if (code.includes("R") || code.includes("C")) {
-      index += 1;
-      continue;
-    }
-    const change = code === "??" ? "created" : code.includes("D") ? "deleted" : code.includes("A") ? "created" : "modified";
+    if (renamed) index += 1;
+    const path = rebase(prefix, record.slice(3));
+    if (path === undefined || path === "") continue;
+    const change = renamed
+      ? "modified"
+      : code === "??"
+        ? "created"
+        : code.includes("D")
+          ? "deleted"
+          : code.includes("A")
+            ? "created"
+            : "modified";
     const counted = counts.get(path) ?? { add: 0, del: 0 };
-    const createdLines =
-      change === "created"
-        ? (await readFile(resolveInsideRoot(root, path), "utf8").catch(() => "")).split("\n").filter((line) => line !== "").length
-        : 0;
+    const createdLines = change === "created" ? await countLines(root, path) : 0;
     files.push({
       path,
       change,
-      add: change === "deleted" ? 0 : createdLines > 0 ? createdLines : counted.add,
-      del: change === "deleted" ? counted.del || 1 : counted.del,
+      add: change === "deleted" ? 0 : counted.add > 0 ? counted.add : createdLines,
+      del: counted.del,
     });
   }
   files.sort((a, b) => a.path.localeCompare(b.path));
@@ -88,18 +138,26 @@ export async function gitDiff(root: string, value: string): Promise<string> {
   if (!(await isRepo(root))) return "";
   const path = relativePath(value);
   const absolute = resolveInsideRoot(root, path);
-  const tracked = await git(root, ["ls-files", "--error-unmatch", "--", path]).then(
-    () => true,
+  // `ls-tree` still lists a staged deletion, which `ls-files` no longer does.
+  const inHead = await git(root, ["ls-tree", "-r", "--name-only", "HEAD", "--", path]).then(
+    (output) => output.trim() !== "",
     () => false,
   );
-  if (tracked) return git(root, ["diff", "--no-color", "HEAD", "--", path]);
+  if (inHead) return git(root, ["diff", "--relative", "--no-color", "HEAD", "--", path]);
   const exists = await stat(absolute).then(
     (info) => info.isFile(),
     () => false,
   );
   if (!exists) return "";
-  const lines = (await readFile(absolute, "utf8")).split("\n");
-  if (lines.at(-1) === "") lines.pop();
+  const lines = await readLines(absolute);
   const body = lines.map((line) => `+${line}`).join("\n");
-  return ["--- /dev/null", `+++ b/${path}`, `@@ -0,0 +1,${lines.length} @@`, body, ""].join("\n");
+  return [
+    `diff --git a/${path} b/${path}`,
+    "new file mode 100644",
+    "--- /dev/null",
+    `+++ b/${path}`,
+    `@@ -0,0 +1,${lines.length} @@`,
+    body,
+    "",
+  ].join("\n");
 }

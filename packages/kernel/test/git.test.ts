@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync, unlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
@@ -26,28 +26,42 @@ async function call(kernel: Kernel, method: string, params?: unknown): Promise<a
   ws.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }));
   const [data] = await reply;
   ws.close();
-  return JSON.parse(String(data));
+  const envelope = JSON.parse(String(data));
+  if (envelope.error !== undefined) {
+    throw Object.assign(new Error(`${method}: ${envelope.error.message}`), { code: envelope.error.code });
+  }
+  expect(envelope.result).toBeDefined();
+  return envelope;
 }
 
 function git(root: string, ...args: string[]): void {
   execFileSync("git", args, { cwd: root, stdio: "ignore" });
 }
 
-async function setupRepo(): Promise<{ kernel: Kernel; workspaceId: string; root: string }> {
-  const root = tempDir();
-  writeFileSync(join(root, "a.txt"), "one\n");
-  writeFileSync(join(root, "b.txt"), "gone\n");
+function initRepo(root: string): void {
   git(root, "init", "-q");
   git(root, "config", "user.email", "t@example.com");
   git(root, "config", "user.name", "T");
-  git(root, "add", ".");
-  git(root, "commit", "-q", "-m", "init");
+}
 
+async function setupWorkspace(root: string): Promise<{ kernel: Kernel; workspaceId: string }> {
   const kernel = await startKernel({ dataDir: tempDir() });
   kernels.push(kernel);
   const project = await call(kernel, "project.add", { path: root });
   const workspace = await call(kernel, "workspace.create", { projectId: project.result.id });
-  return { kernel, workspaceId: workspace.result.id, root };
+  return { kernel, workspaceId: workspace.result.id };
+}
+
+async function setupRepo(): Promise<{ kernel: Kernel; workspaceId: string; root: string }> {
+  const root = tempDir();
+  writeFileSync(join(root, "a.txt"), "one\n");
+  writeFileSync(join(root, "b.txt"), "gone\n");
+  initRepo(root);
+  git(root, "add", ".");
+  git(root, "commit", "-q", "-m", "init");
+
+  const { kernel, workspaceId } = await setupWorkspace(root);
+  return { kernel, workspaceId, root };
 }
 
 describe("git.* RPCs", () => {
@@ -82,11 +96,73 @@ describe("git.* RPCs", () => {
   it("reports a non-repository workspace instead of failing", async () => {
     const root = tempDir();
     writeFileSync(join(root, "x.txt"), "x");
-    const kernel = await startKernel({ dataDir: tempDir() });
-    kernels.push(kernel);
-    const project = await call(kernel, "project.add", { path: root });
-    const workspace = await call(kernel, "workspace.create", { projectId: project.result.id });
-    const status = await call(kernel, "git.status", { workspaceId: workspace.result.id });
+    const { kernel, workspaceId } = await setupWorkspace(root);
+    const status = await call(kernel, "git.status", { workspaceId });
     expect(status.result).toEqual({ isRepo: false, branch: null, files: [] });
+  });
+
+  it("reports only paths inside a workspace nested in a repository", async () => {
+    const repo = tempDir();
+    mkdirSync(join(repo, "sub"));
+    writeFileSync(join(repo, "sub", "tracked.txt"), "one\n");
+    writeFileSync(join(repo, "outside.txt"), "out\n");
+    initRepo(repo);
+    git(repo, "add", ".");
+    git(repo, "commit", "-q", "-m", "init");
+
+    const { kernel, workspaceId } = await setupWorkspace(join(repo, "sub"));
+    writeFileSync(join(repo, "sub", "tracked.txt"), "one\ntwo\n");
+    writeFileSync(join(repo, "outside.txt"), "out\nmore\n");
+
+    const status = await call(kernel, "git.status", { workspaceId });
+    expect(status.result.files).toEqual([{ path: "tracked.txt", change: "modified", add: 1, del: 0 }]);
+
+    const diff = await call(kernel, "git.diff", { workspaceId, path: "tracked.txt" });
+    expect(diff.result.diff).toContain("+two");
+
+    await expect(call(kernel, "git.diff", { workspaceId, path: "../outside.txt" })).rejects.toThrow(
+      /Path must not contain/,
+    );
+  });
+
+  it("lists untracked files in a repository with no commit yet", async () => {
+    const root = tempDir();
+    initRepo(root);
+    writeFileSync(join(root, "fresh.txt"), "a\n\nb\n");
+    const { kernel, workspaceId } = await setupWorkspace(root);
+
+    const status = await call(kernel, "git.status", { workspaceId });
+    expect(status.result.isRepo).toBe(true);
+    expect(status.result.branch).toBeNull();
+    expect(status.result.files).toEqual([{ path: "fresh.txt", change: "created", add: 3, del: 0 }]);
+  });
+
+  it("returns a deletion patch for a staged deletion", async () => {
+    const { kernel, workspaceId, root } = await setupRepo();
+    git(root, "rm", "-q", "b.txt");
+
+    const status = await call(kernel, "git.status", { workspaceId });
+    expect(status.result.files.find((file: { path: string }) => file.path === "b.txt")).toEqual({
+      path: "b.txt",
+      change: "deleted",
+      add: 0,
+      del: 1,
+    });
+
+    const diff = await call(kernel, "git.diff", { workspaceId, path: "b.txt" });
+    expect(diff.result.diff).toContain("-gone");
+  });
+
+  it("reports a staged rename once at its destination", async () => {
+    const { kernel, workspaceId, root } = await setupRepo();
+    git(root, "mv", "a.txt", "renamed.txt");
+
+    const status = await call(kernel, "git.status", { workspaceId });
+    const files = status.result.files as Array<{ path: string; change: string; add: number; del: number }>;
+    expect(files.filter((file) => file.path === "renamed.txt")).toEqual([
+      { path: "renamed.txt", change: "modified", add: 0, del: 0 },
+    ]);
+    expect(files.find((file) => file.path === "a.txt")).toBeUndefined();
+    expect(files.filter((file) => file.path === "renamed.txt")).toHaveLength(1);
   });
 });
