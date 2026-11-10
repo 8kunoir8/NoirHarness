@@ -19,6 +19,7 @@ import {
 import { openDb } from "../src/db.js";
 import { EngineManager } from "../src/engineManager.js";
 import { EventStore } from "../src/eventStore.js";
+import { REDACTED, Redactor } from "../src/redact.js";
 import { startKernel, type Kernel } from "../src/index.js";
 import { ModelService } from "../src/models.js";
 import { profileAgentDir } from "../src/profile.js";
@@ -75,12 +76,14 @@ async function waitForEvent(
   }
 }
 
-function setup(opts: { turnTimeoutMs?: number; acpArgs?: string[]; acpSkill?: string } = {}) {
+function setup(
+  opts: { turnTimeoutMs?: number; acpArgs?: string[]; acpSkill?: string; acpPermissionTitle?: string; redactor?: Redactor } = {},
+) {
   const root = tempDir();
   const dataDir = tempDir();
   const db = openDb(join(dataDir, "noir.db"));
   dbs.push(db);
-  const events = new EventStore(db);
+  const events = new EventStore(db, undefined, opts.redactor);
   const projects = new ProjectService(db);
   const workspaces = new WorkspaceService(db, projects);
   const sessions = new SessionService(db, events);
@@ -105,6 +108,8 @@ function setup(opts: { turnTimeoutMs?: number; acpArgs?: string[]; acpSkill?: st
   // The adapter merges opts.env over process.env, so the fake server inherits this switch.
   if (opts.acpSkill === undefined) delete process.env.FAKE_ACP_SKILL;
   else process.env.FAKE_ACP_SKILL = opts.acpSkill;
+  if (opts.acpPermissionTitle === undefined) delete process.env.FAKE_ACP_PERMISSION_TITLE;
+  else process.env.FAKE_ACP_PERMISSION_TITLE = opts.acpPermissionTitle;
   const manager = new EngineManager({
     db,
     events,
@@ -146,7 +151,7 @@ const IdResult = z.object({ id: z.string() });
 const SubscribeResult = z.object({ events: z.array(AgentEvent), lastSeq: z.number().int() });
 
 beforeAll(() => {
-  for (const key of ["NOIR_OMP_COMMAND", "NOIR_OMP_ARGS_JSON", "NOIR_TURN_TIMEOUT_MS", "FAKE_ACP_SKILL"]) {
+  for (const key of ["NOIR_OMP_COMMAND", "NOIR_OMP_ARGS_JSON", "NOIR_TURN_TIMEOUT_MS", "FAKE_ACP_SKILL", "FAKE_ACP_PERMISSION_TITLE"]) {
     savedEnv[key] = process.env[key];
   }
   process.env.NOIR_OMP_COMMAND = process.execPath;
@@ -467,6 +472,34 @@ describe("EngineManager over the fake ACP server", () => {
       expect(
         eventPayload(events.list(session.id).find((event) => event.type === "turn.completed")!, "turn.completed").status,
       ).toBe("completed");
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "projects the redacted approval title into the approvals table",
+    async () => {
+      const secret = "noir-approval-secret-9d2c";
+      const { db, events, manager, session } = setup({
+        acpPermissionTitle: `echo ${secret}`,
+        redactor: new Redactor({ secrets: [secret] }),
+      });
+      const prompt = manager.prompt({
+        sessionId: session.id,
+        requestId: "permission-redact",
+        content: [{ type: "text", text: "permission" }],
+      });
+      const requested = await waitForEvent(events, session.id, (event) => event.type === "permission.requested");
+      const approval = eventPayload(requested, "permission.requested");
+      expect(approval.title).toBe(`echo ${REDACTED}`);
+
+      const rows = JSON.stringify(db.prepare("SELECT payload_json, options_json FROM approvals").all());
+      expect(rows).toContain(`echo ${REDACTED}`);
+      expect(rows).not.toContain(secret);
+
+      await manager.respond(approval.approvalId, "allow_once");
+      await waitForEvent(events, session.id, (event) => event.type === "turn.completed");
+      expect((await prompt).queued).toBe(false);
     },
     TEST_TIMEOUT_MS,
   );

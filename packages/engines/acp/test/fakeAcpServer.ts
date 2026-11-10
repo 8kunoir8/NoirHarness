@@ -164,11 +164,13 @@ function crashTurn(): JsonObject {
 }
 
 async function permissionTurn(): Promise<JsonObject> {
+  // Kernel tests use this to prove approval titles are redacted before they reach any table.
+  const title = process.env.FAKE_ACP_PERMISSION_TITLE ?? "echo hi";
   const answer = await request("session/request_permission", {
     sessionId: SESSION_ID,
     toolCall: {
       toolCallId: "call_fake_1",
-      title: "echo hi",
+      title,
       kind: "execute",
       status: "pending",
       rawInput: { command: "echo hi" },

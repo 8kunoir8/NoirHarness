@@ -51,6 +51,11 @@ export interface RedactorOptions {
   env?: NodeJS.ProcessEnv;
 }
 
+/** Caller-supplied patterns are normalized to global so every occurrence is replaced. */
+function withGlobalFlag(pattern: RegExp): RegExp {
+  return new RegExp(pattern.source, pattern.global ? pattern.flags : `${pattern.flags}g`);
+}
+
 export class Redactor {
   private secrets: string[] = [];
   private readonly patterns: RegExp[];
@@ -58,7 +63,7 @@ export class Redactor {
   constructor(opts: RedactorOptions = {}) {
     const initial = [...(opts.secrets ?? []), ...environmentSecrets(opts.env ?? {})];
     for (const secret of initial) this.addSecret(secret);
-    this.patterns = [...BUILTIN_PATTERNS, ...(opts.patterns ?? [])];
+    this.patterns = [...BUILTIN_PATTERNS, ...(opts.patterns ?? [])].map(withGlobalFlag);
   }
 
   addSecret(value: string | null | undefined): void {
@@ -80,12 +85,15 @@ export class Redactor {
   }
 
   redact(value: unknown, depth = 0): unknown {
-    if (depth > MAX_DEPTH) return value;
     if (typeof value === "string") return this.redactText(value);
+    // Past the cap the node's shape is unknown, so drop it rather than persist it unredacted.
+    if (depth > MAX_DEPTH) return REDACTED;
     if (Array.isArray(value)) return value.map((item) => this.redact(item, depth + 1));
     if (value !== null && typeof value === "object") {
       const out: Record<string, unknown> = {};
-      for (const [key, item] of Object.entries(value)) out[key] = this.redact(item, depth + 1);
+      for (const [key, item] of Object.entries(value)) {
+        Object.defineProperty(out, key, { value: this.redact(item, depth + 1), enumerable: true, writable: true, configurable: true });
+      }
       return out;
     }
     return value;

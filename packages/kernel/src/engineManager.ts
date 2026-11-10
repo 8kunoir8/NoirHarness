@@ -13,6 +13,7 @@ import {
 } from "@noir/engine-acp";
 import {
   ErrorCodes,
+  PayloadSchemas,
   RpcFault,
   type PermissionOption,
   type SessionPromptParams,
@@ -765,9 +766,12 @@ export class EngineManager {
       turnId: turn.turnId,
       provenance: PROVENANCE,
     });
+    // The store validated and redacted the payload; project what it persisted so the approvals
+    // row cannot keep a secret the event stream dropped.
+    const persisted = PayloadSchemas["permission.requested"].parse(event.payload);
     this.deps.db
       .prepare("INSERT INTO approvals (id, session_id, event_id, kind, payload_json, options_json) VALUES (?,?,?,?,?,?)")
-      .run(approvalId, state.sessionId, event.id, payload.category, JSON.stringify(payload), JSON.stringify(effectiveOptions));
+      .run(approvalId, state.sessionId, event.id, persisted.category, JSON.stringify(persisted), JSON.stringify(persisted.options));
 
     this.setStatus(state.sessionId, "waiting");
 
