@@ -5,6 +5,8 @@ import { ClientRequestHandler } from "./terminals.js";
 
 const DEFAULT_TURN_TIMEOUT_MS = 120_000;
 const DEFAULT_CANCEL_GRACE_MS = 5_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+const CLOSE_TIMEOUT_MS = 1_000;
 
 /** Provenance version stamped on events this adapter produces. Keep in sync with package.json. */
 export const ADAPTER_VERSION = "0.0.0";
@@ -469,7 +471,11 @@ class AcpSessionImpl implements AcpSession {
     if (this.#closed) return;
     this.#closed = true;
     this.#owner.forgetSession(this.sessionId);
-    await this.#owner.client.request("session/close", { sessionId: this.sessionId });
+    try {
+      await this.#owner.client.request("session/close", { sessionId: this.sessionId }, CLOSE_TIMEOUT_MS);
+    } catch {
+      // Teardown must never hang or throw: the agent may already be gone or ignoring this frame.
+    }
   }
 
   applyUpdate(raw: unknown): void {
@@ -553,7 +559,7 @@ class AcpRuntime implements AcpClient {
     this.#disposed = true;
     for (const session of this.#sessions.values()) {
       try {
-        await this.client.request("session/close", { sessionId: session.sessionId }, 1_000);
+        await this.client.request("session/close", { sessionId: session.sessionId }, CLOSE_TIMEOUT_MS);
       } catch {
         // Best effort: the agent may already be gone.
       }
@@ -636,10 +642,12 @@ export async function createAcpClient(opts: CreateAcpClientOptions): Promise<Acp
     opts.args,
     opts.env === undefined ? { cwd: opts.cwd } : { cwd: opts.cwd, env: opts.env },
   );
-  const client = new JsonRpcClient(
-    transport,
-    opts.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: opts.requestTimeoutMs },
-  );
+  // Bound every non-prompt request (initialize, session/new, config, …): a spawned agent that never
+  // speaks ACP must fail fast instead of wedging the caller. Prompts pass `0` and rely on the turn
+  // watchdog instead.
+  const client = new JsonRpcClient(transport, {
+    requestTimeoutMs: opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
+  });
   const runtime = new AcpRuntime(
     transport,
     client,

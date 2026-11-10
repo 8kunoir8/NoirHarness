@@ -283,6 +283,49 @@ describe("ACP engine adapter", () => {
   );
 
   it(
+    "times out a handshake with an agent that never speaks ACP",
+    async () => {
+      const root = workspace();
+      const startedAt = Date.now();
+      await expect(
+        createAcpClient({
+          command: process.execPath,
+          args: [FAKE_SERVER],
+          cwd: root,
+          env: { FAKE_ACP_MUTE: "1" },
+          requestTimeoutMs: 150,
+        }),
+      ).rejects.toThrow(/timed out after 150ms: initialize/);
+      expect(Date.now() - startedAt).toBeLessThan(3_000);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "bounds session/close against an agent that ignores it and still reaps the child",
+    async () => {
+      const root = workspace();
+      const engine = await createAcpClient({
+        command: process.execPath,
+        args: [FAKE_SERVER],
+        cwd: root,
+        env: { FAKE_ACP_IGNORE_CLOSE: "1" },
+      });
+      cleanups.push(() => engine.dispose());
+      const session = await engine.newSession(root);
+
+      const startedAt = Date.now();
+      await session.close();
+      expect(Date.now() - startedAt).toBeLessThan(2_000);
+
+      const pid = engine.pid;
+      await engine.dispose();
+      expect(isAlive(pid)).toBe(false);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
     "parses a single ~25 KB frame",
     async () => {
       const { engine, root } = await start();

@@ -7,6 +7,10 @@ import { createInterface } from "node:readline";
 
 const SESSION_ID = "fake-session-1";
 const LOG_PATH = process.env.FAKE_ACP_LOG;
+/** Reads stdin but never answers a single frame — handshake-timeout coverage. */
+const MUTE = process.env.FAKE_ACP_MUTE === "1";
+/** Answers everything except `session/close` — teardown-timeout coverage. */
+const IGNORE_CLOSE = process.env.FAKE_ACP_IGNORE_CLOSE === "1";
 
 type JsonObject = Record<string, unknown>;
 
@@ -316,6 +320,7 @@ async function handleRequest(id: unknown, method: string, params: unknown): Prom
       return;
     }
     case "session/close":
+      if (IGNORE_CLOSE) return;
       reply(id, {});
       return;
     default:
@@ -334,6 +339,7 @@ async function handleLine(line: string): Promise<void> {
   const trimmed = line.trim();
   if (trimmed === "") return;
   recordLine("-->", trimmed);
+  if (MUTE) return;
 
   let parsed: unknown;
   try {
