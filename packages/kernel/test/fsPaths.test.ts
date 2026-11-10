@@ -25,6 +25,21 @@ function faultCode(run: () => unknown): number | undefined {
   }
 }
 
+// Probe once so a host without link rights skips the symlink cases visibly instead of passing vacuously.
+function linkRights(): boolean {
+  const base = mkdtempSync(join(tmpdir(), "noir fs probe "));
+  try {
+    mkdirSync(join(base, "target"));
+    symlinkSync(join(base, "target"), join(base, "link"), "junction");
+    return true;
+  } catch {
+    return false;
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+}
+const canLink = linkRights();
+
 describe("relativePath", () => {
   it("normalizes separators and drops empty segments", () => {
     expect(relativePath("./src//main.ts")).toBe("src/main.ts");
@@ -32,8 +47,16 @@ describe("relativePath", () => {
   });
 
   it("rejects absolute, drive-letter, UNC and parent paths", () => {
-    const bad = ["/etc/passwd", "C:/Windows", "C:\\Windows", "\\\\server\\share", "../x", "a/../../b"];
+    const bad = ["/etc/passwd", "C:/Windows", "C:\\Windows", "\\\\server\\share", "//server/share", "C:foo", "../x", "a/../../b"];
     for (const value of bad) expect(faultCode(() => relativePath(value))).toBe(ErrorCodes.invalidParams);
+  });
+
+  it("rejects backslash separators in wire paths", () => {
+    expect(faultCode(() => relativePath("src\\main.ts"))).toBe(ErrorCodes.invalidParams);
+  });
+
+  it("accepts names that merely begin with dots", () => {
+    expect(relativePath("..foo/bar")).toBe("..foo/bar");
   });
 });
 
@@ -45,15 +68,36 @@ describe("resolveInsideRoot", () => {
     expect(resolveInsideRoot(root, "")).toBe(root);
   });
 
-  it("refuses a symlink that points outside the root", () => {
+  it("accepts names that merely begin with dots", () => {
+    const root = tempRoot();
+    expect(resolveInsideRoot(root, "..foo/bar")).toBe(join(root, "..foo", "bar"));
+  });
+
+  it("rejects backslash parent payloads", () => {
+    const root = tempRoot();
+    expect(faultCode(() => resolveInsideRoot(root, "..\\..\\x"))).toBe(ErrorCodes.invalidParams);
+  });
+
+  it.runIf(canLink)("refuses a symlink that points outside the root", () => {
     const root = tempRoot();
     const outside = tempRoot();
     writeFileSync(join(outside, "secret.txt"), "nope");
-    try {
-      symlinkSync(outside, join(root, "link"), "junction");
-    } catch {
-      return; // No link rights on this host; the realpath comparison is still covered above.
-    }
+    symlinkSync(outside, join(root, "link"), "junction");
     expect(faultCode(() => resolveInsideRoot(root, "link/secret.txt"))).toBe(ErrorCodes.invalidParams);
+  });
+
+  it.runIf(canLink)("refuses a dangling symlink inside the root", () => {
+    const root = tempRoot();
+    const outside = tempRoot();
+    symlinkSync(outside, join(root, "link"), "junction");
+    rmSync(outside, { recursive: true, force: true });
+    expect(faultCode(() => resolveInsideRoot(root, "link/x"))).toBe(ErrorCodes.invalidParams);
+  });
+
+  it.runIf(canLink)("returns the canonical path through a symlink that stays inside the root", () => {
+    const root = tempRoot();
+    mkdirSync(join(root, "real"));
+    symlinkSync(join(root, "real"), join(root, "link"), "junction");
+    expect(resolveInsideRoot(root, "link/file.txt")).toBe(join(root, "real", "file.txt"));
   });
 });
