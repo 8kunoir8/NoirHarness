@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   PayloadSchemas,
   type AgentEvent,
+  type LoadedSkillState,
   type PermissionOption,
   type SessionStatus,
 } from "@noir/protocol";
@@ -77,7 +78,7 @@ export interface ChatState {
   lastTurn?: ChatTurn;
   files: ChatFile[];
   plan: ChatPlanItem[];
-  skillsLoaded: Array<{ name: string; scope: "global" | "project"; hash: string }>;
+  skillsLoaded: LoadedSkillState[];
   lastSeq: number;
 }
 

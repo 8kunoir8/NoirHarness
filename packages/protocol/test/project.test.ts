@@ -57,8 +57,16 @@ describe("reduceSession", () => {
   it("records the first skill.loaded per name and ignores repeats", () => {
     const once = reduceSession(undefined, ev(1, "skill.loaded", { name: "demo", scope: "project", hash: "h1" }));
     expect(once.skillsLoaded).toEqual([{ name: "demo", scope: "project", hash: "h1" }]);
-    const twice = reduceSession(once, ev(2, "skill.loaded", { name: "demo", scope: "project", hash: "h1" }));
-    expect(twice.skillsLoaded).toHaveLength(1);
+
+    const twice = reduceSession(once, ev(2, "skill.loaded", { name: "demo", scope: "global", hash: "h2" }));
+    expect(twice).toBe(once);
+    expect(twice.skillsLoaded).toEqual([{ name: "demo", scope: "project", hash: "h1" }]);
+
+    const appended = reduceSession(twice, ev(3, "skill.loaded", { name: "other", scope: "global", hash: "h3" }));
+    expect(appended.skillsLoaded).toEqual([
+      { name: "demo", scope: "project", hash: "h1" },
+      { name: "other", scope: "global", hash: "h3" },
+    ]);
   });
 
   it("rejects a payload that does not match its event type", () => {
