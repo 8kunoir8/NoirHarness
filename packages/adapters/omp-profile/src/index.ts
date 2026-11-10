@@ -178,6 +178,7 @@ export function renderModelsYaml(
 export function renderConfigYaml(input: {
   roles?: ProfileRoles;
   defaultThinkingLevel?: ThinkingLevel;
+  skillDirectories?: readonly string[];
 }): string {
   const doc: Record<string, unknown> = {};
   if (input.roles !== undefined) {
@@ -191,6 +192,9 @@ export function renderConfigYaml(input: {
     doc.modelRoles = modelRoles;
   }
   if (input.defaultThinkingLevel !== undefined) doc.defaultThinkingLevel = input.defaultThinkingLevel;
+  if (input.skillDirectories !== undefined && input.skillDirectories.length > 0) {
+    doc.skills = { customDirectories: [...input.skillDirectories] };
+  }
   return stringify(doc, { lineWidth: 0 });
 }
 
@@ -232,6 +236,11 @@ export interface MaterializeProfileInput {
   models: readonly ProfileModel[];
   defaultModel: ModelRef;
   roles?: ProfileRoles;
+  /**
+   * Directories omp loads skills from, resolved against the session cwd (the workspace root).
+   * `SkillService.materialize` writes the directories these entries point at.
+   */
+  skillDirectories?: readonly string[];
 }
 
 /**
@@ -241,7 +250,10 @@ export interface MaterializeProfileInput {
 export async function materializeProfile(input: MaterializeProfileInput): Promise<void> {
   assertSafeDir(input.dir);
   const modelsYaml = renderModelsYaml(input.providers, input.models, input.defaultModel);
-  const configYaml = renderConfigYaml(input.roles === undefined ? {} : { roles: input.roles });
+  const configYaml = renderConfigYaml({
+    ...(input.roles === undefined ? {} : { roles: input.roles }),
+    ...(input.skillDirectories === undefined ? {} : { skillDirectories: input.skillDirectories }),
+  });
 
   try {
     await mkdir(input.dir, { recursive: true });

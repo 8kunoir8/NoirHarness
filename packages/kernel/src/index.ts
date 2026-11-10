@@ -5,7 +5,17 @@ import type Database from "better-sqlite3";
 import WebSocket from "ws";
 import { z } from "zod";
 import {
+  AnnotationAddParams,
+  AnnotationDeleteParams,
+  AnnotationListParams,
   ApprovalRespondParams,
+  ErrorCodes,
+  FsFilesParams,
+  FsListParams,
+  FsReadParams,
+  FsWriteParams,
+  GitDiffParams,
+  GitStatusParams,
   Methods,
   ModelCreateParams,
   ModelDeleteParams,
@@ -13,6 +23,7 @@ import {
   ProjectAddParams,
   ProviderCreateParams,
   ProviderDeleteParams,
+  RpcFault,
   SessionCloseParams,
   SessionCreateParams,
   SessionCancelQueuedParams,
@@ -20,18 +31,26 @@ import {
   SessionPromptParams,
   SessionSetModelParams,
   SessionSubscribeParams,
+  SkillListParams,
+  SkillReadParams,
+  SkillSetEnabledParams,
   WorkspaceCreateParams,
   type AgentEvent,
 } from "@noir/protocol";
 import { dataDir as defaultDataDir } from "./appdata.js";
+import { addAnnotation, deleteAnnotation, listAnnotations } from "./annotations.js";
 import { openDb } from "./db.js";
 import { EngineManager } from "./engineManager.js";
 import { EventStore } from "./eventStore.js";
+import { findFiles, listDirectory, readFileText, writeFileText } from "./fsService.js";
+import { gitDiff, gitStatus } from "./gitService.js";
 import { ModelService } from "./models.js";
 import { clearProfileModels, profileAgentDir, syncProfile } from "./profile.js";
 import { ProjectService } from "./projects.js";
 import { ProviderService } from "./providers.js";
+import { parseRedactionPatterns, Redactor } from "./redact.js";
 import { startRpcServer, type RpcServer } from "./rpcServer.js";
+import { SkillService } from "./skills.js";
 import {
   lockFilePath,
   isProcessAlive,
@@ -154,6 +173,7 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
   const file = runtimeFilePath(dir);
   const lockFile = lockFilePath(dir);
   mkdirSync(join(dir, "runtime"), { recursive: true });
+  mkdirSync(join(dir, "skills"), { recursive: true });
 
   const token = randomBytes(32).toString("hex");
   const claim: LockInfo = { pid: process.pid, token, startedAt: Date.now() };
@@ -170,21 +190,35 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
     let server: RpcServer | undefined;
     let engines: EngineManager | undefined;
     try {
-      db = openDb(join(dir, "noir.db"));
+      const database = openDb(join(dir, "noir.db"));
+      db = database;
       // Bound after the server starts so events raised earlier are not lost silently.
       let broadcast: (event: AgentEvent) => void = () => {};
-      const events = new EventStore(db, (event) => broadcast(event));
+      const redactor = new Redactor({
+        env: process.env,
+        patterns: parseRedactionPatterns(process.env.NOIR_REDACT_PATTERNS),
+      });
+      const events = new EventStore(db, (event) => broadcast(event), redactor);
       const projects = new ProjectService(db);
       const workspaces = new WorkspaceService(db, projects);
+      const workspaceRoot = (workspaceId: string): string => {
+        const workspace = workspaces.list().find((candidate) => candidate.id === workspaceId);
+        if (workspace === undefined) throw new RpcFault(ErrorCodes.notFound, "Workspace not found");
+        return workspace.path;
+      };
       const sessions = new SessionService(db, events);
       const providers = new ProviderService(db, new KeyringSecrets());
+      for (const key of providers.secretValues()) redactor.addSecret(key);
       const models = new ModelService(db);
+      // Task 5 shares this instance with EngineManager so enabled flags match what is materialized.
+      const skills = new SkillService(database, dir);
       const engineManager = new EngineManager({
         db,
         events,
         sessions,
         models,
         providers,
+        skills,
         dataDir: dir,
       });
       engines = engineManager;
@@ -206,6 +240,52 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
         [Methods.projectList]: async () => ({ projects: projects.list() }),
         [Methods.workspaceCreate]: async (params) => workspaces.createLocal(WorkspaceCreateParams.parse(params).projectId),
         [Methods.workspaceList]: async () => ({ workspaces: workspaces.list() }),
+        [Methods.fsList]: async (params) => {
+          const { workspaceId, path } = FsListParams.parse(params);
+          return listDirectory(workspaceRoot(workspaceId), path);
+        },
+        [Methods.fsRead]: async (params) => {
+          const { workspaceId, path } = FsReadParams.parse(params);
+          return readFileText(workspaceRoot(workspaceId), path);
+        },
+        [Methods.fsWrite]: async (params) => {
+          const { workspaceId, path, content, expectedMtimeMs } = FsWriteParams.parse(params);
+          return writeFileText(workspaceRoot(workspaceId), path, content, expectedMtimeMs);
+        },
+        [Methods.fsFiles]: async (params) => findFiles(workspaceRoot(FsFilesParams.parse(params).workspaceId)),
+        [Methods.gitStatus]: async (params) => gitStatus(workspaceRoot(GitStatusParams.parse(params).workspaceId)),
+        [Methods.gitDiff]: async (params) => {
+          const { workspaceId, path } = GitDiffParams.parse(params);
+          return { diff: await gitDiff(workspaceRoot(workspaceId), path) };
+        },
+        [Methods.skillList]: async (params) => {
+          const { workspaceId } = SkillListParams.parse(params ?? {});
+          if (workspaceId === undefined) return skills.list("", undefined);
+          return skills.list(workspaceId, workspaceRoot(workspaceId));
+        },
+        [Methods.skillSetEnabled]: async (params) => {
+          const { workspaceId, scope, name, enabled } = SkillSetEnabledParams.parse(params);
+          const root = workspaceId === undefined ? undefined : workspaceRoot(workspaceId);
+          await skills.setEnabled(workspaceId ?? "", root, scope, name, enabled);
+          return { ok: true };
+        },
+        [Methods.skillRead]: async (params) => {
+          const { workspaceId, scope, name } = SkillReadParams.parse(params);
+          const root = workspaceId === undefined ? undefined : workspaceRoot(workspaceId);
+          return skills.read(workspaceId ?? "", root, scope, name);
+        },
+        [Methods.annotationList]: async (params) => {
+          const { workspaceId, path } = AnnotationListParams.parse(params);
+          return listAnnotations(database, workspaceRoot(workspaceId), workspaceId, path);
+        },
+        [Methods.annotationAdd]: async (params) => {
+          const parsed = AnnotationAddParams.parse(params);
+          return addAnnotation(database, workspaceRoot(parsed.workspaceId), parsed);
+        },
+        [Methods.annotationDelete]: async (params) => {
+          deleteAnnotation(database, AnnotationDeleteParams.parse(params).id);
+          return { ok: true };
+        },
         [Methods.sessionCreate]: async (params) => {
           const { workspaceId, modelId } = SessionCreateParams.parse(params);
           await sync();
@@ -247,7 +327,9 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
           return { ok: true };
         },
         [Methods.providerCreate]: async (params) => {
-          const created = providers.create(ProviderCreateParams.parse(params));
+          const parsed = ProviderCreateParams.parse(params);
+          redactor.addSecret(parsed.apiKey);
+          const created = providers.create(parsed);
           try {
             await sync();
           } catch (error) {
@@ -272,6 +354,7 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
       const started = await startRpcServer({ token, handlers });
       server = started;
       broadcast = (event) => started.broadcast(event);
+      engineManager.reconcileAll();
       writeRuntimeFile(file, { pid: process.pid, port: started.port, token });
     } catch (error) {
       if (engines) {

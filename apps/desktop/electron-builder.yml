@@ -1,0 +1,31 @@
+appId: dev.noirharness.app
+productName: NoirHarness
+directories:
+  output: ../../release
+  buildResources: build
+files:
+  - dist/**/*
+  - package.json
+extraResources:
+  - from: ../../build/kernel
+    to: kernel
+    filter: ["**/*"]
+  # electron-builder always skips a `node_modules` directory at the root of an
+  # extraResources source, so copy the deployed dependencies on their own.
+  - from: ../../build/kernel/node_modules
+    to: kernel/node_modules
+    filter: ["**/*", "!**/.modules.yaml", "!**/.pnpm/**"]
+  - from: ../../build/runtime
+    to: runtime
+    filter: ["**/*"]
+asar: true
+# The bundled kernel runs under the shipped Node runtime, whose ABI its native
+# modules were built for; rebuilding them for Electron would break that pairing.
+npmRebuild: false
+win:
+  target: nsis
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  shortcutName: NoirHarness

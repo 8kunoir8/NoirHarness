@@ -13,6 +13,7 @@ import {
 } from "@noir/engine-acp";
 import {
   ErrorCodes,
+  PayloadSchemas,
   RpcFault,
   type PermissionOption,
   type SessionPromptParams,
@@ -24,13 +25,14 @@ import type { ModelService } from "./models.js";
 import { profileAgentDir, syncProfile } from "./profile.js";
 import type { ProviderService } from "./providers.js";
 import type { SessionService } from "./sessions.js";
+import type { SkillScope, SkillService } from "./skills.js";
 
 const DEFAULT_TURN_TIMEOUT_MS = 120_000;
 const PROVENANCE = { engine: "acp", engineName: "omp", adapterVersion: ADAPTER_VERSION } as const;
 
 const sessionQuery = `
   SELECT s.id AS id, s.agent_id AS agent_id, s.status AS status, s.model_id AS model_id,
-         w.path AS workspace_path
+         s.workspace_id AS workspace_id, w.path AS workspace_path
   FROM sessions s
   JOIN workspaces w ON w.id = s.workspace_id
   WHERE s.id = ?`;
@@ -48,6 +50,7 @@ interface SessionRow {
   agent_id: string;
   status: SessionStatus;
   model_id: string | null;
+  workspace_id: string;
   workspace_path: string;
 }
 
@@ -61,6 +64,8 @@ interface TurnContext extends QueuedTurn {
   openMessages: Map<string, true>;
   nextMessageSeq: number;
   cancelRequested: boolean;
+  /** Skills already attributed this turn, so a repeated read does not duplicate the event. */
+  loadedSkills: Set<string>;
 }
 
 interface PendingApproval {
@@ -74,7 +79,10 @@ interface PendingApproval {
 interface SessionState {
   sessionId: string;
   agentId: string;
+  workspaceId: string;
   workspaceRoot: string;
+  /** What `materialize` wrote for this workspace; empty when materialization failed. */
+  skillIndex: Map<string, { scope: SkillScope; hash: string }>;
   engine: AcpClient | undefined;
   engineSession: AcpSession | undefined;
   selector: string | undefined;
@@ -156,6 +164,30 @@ function planStatus(status: string): "pending" | "active" | "done" {
   }
 }
 
+/** Filesystem failures a workspace normally produces when it cannot be written to. */
+const WORKSPACE_WRITE_FAILURES: Record<string, true> = {
+  EACCES: true,
+  EPERM: true,
+  EROFS: true,
+  ENOSPC: true,
+  ENOTDIR: true,
+};
+
+function isWorkspaceWriteFailure(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("code" in error)) return false;
+  return typeof error.code === "string" && WORKSPACE_WRITE_FAILURES[error.code] === true;
+}
+
+/** `skill://<name>` and `skill://<name>/<subpath>` both name the skill. */
+function skillNameFromRawInput(raw: unknown): string | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  if (!("path" in raw) || typeof raw.path !== "string" || !raw.path.startsWith("skill://")) return undefined;
+  // Skill names are URI-unreserved (`[A-Za-z0-9._-]`), so `%` never encodes and no percent-decoding
+  // may be applied — a literal name is the name the manifest carries.
+  const name = raw.path.slice("skill://".length).split(/[/?#]/, 1)[0] ?? "";
+  return name === "" ? undefined : name;
+}
+
 export class EngineManager {
   private readonly command: string;
   private readonly baseArgs: string[];
@@ -173,6 +205,7 @@ export class EngineManager {
       sessions: SessionService;
       models: ModelService;
       providers: ProviderService;
+      skills: SkillService;
       dataDir: string;
       ompCommand?: string;
       turnTimeoutMs?: number;
@@ -353,6 +386,24 @@ export class EngineManager {
     this.reconcile({ sessionId: row.id, agentId: row.agent_id });
   }
 
+  /** Fails sessions a previous kernel left active; the next prompt resumes them from `error`. */
+  reconcileAll(): void {
+    const rows = this.deps.db
+      .prepare(
+        `SELECT s.id, s.agent_id FROM sessions s
+         WHERE s.status IN ('starting','running','waiting')
+           AND (s.status <> 'starting' OR EXISTS (SELECT 1 FROM turns t WHERE t.session_id = s.id))
+         ORDER BY s.created_at ASC`,
+      )
+      .all() as Array<{ id: string; agent_id: string }>;
+    for (const row of rows) {
+      this.reconcile({ sessionId: row.id, agentId: row.agent_id });
+      // A crashed mid-turn session stays `starting` until it accepted a turn; only then is the
+      // stale `starting` a lie worth resolving. A session with no turn was never live.
+      this.setStatus(row.id, "error", "kernel_restart");
+    }
+  }
+
   /**
    * First touch after a kernel restart: turns persisted as queued/running have no live engine
    * behind them, so fail them, resolve orphaned approvals, and release a stale status.
@@ -379,7 +430,7 @@ export class EngineManager {
       | { status: SessionStatus }
       | undefined;
     if (row !== undefined && (row.status === "running" || row.status === "waiting")) {
-      this.setStatus(target.sessionId, "idle");
+      this.setStatus(target.sessionId, "error", "kernel_restart");
     }
   }
 
@@ -389,7 +440,9 @@ export class EngineManager {
     const state: SessionState = {
       sessionId: row.id,
       agentId: row.agent_id,
+      workspaceId: row.workspace_id,
       workspaceRoot: row.workspace_path,
+      skillIndex: new Map(),
       engine: undefined,
       engineSession: undefined,
       selector: undefined,
@@ -429,6 +482,16 @@ export class EngineManager {
       dataDir: this.dataDir,
     });
 
+    // Materialization is a filesystem write, so an unwritable workspace must not gate the engine:
+    // a read-only workspace still has to answer chat. Any other failure is a real fault and
+    // surfaces from the turn rather than being hidden.
+    try {
+      await this.deps.skills.materialize(state.workspaceId, state.workspaceRoot);
+    } catch (error) {
+      if (!isWorkspaceWriteFailure(error)) throw error;
+      // Keep whatever the last turn read; a fresh state simply has nothing yet.
+    }
+
     const args = [
       ...this.baseArgs,
       "--session-dir",
@@ -458,7 +521,13 @@ export class EngineManager {
   }
 
   private async startTurn(state: SessionState, turn: QueuedTurn): Promise<void> {
-    const context: TurnContext = { ...turn, openMessages: new Map(), nextMessageSeq: 0, cancelRequested: false };
+    const context: TurnContext = {
+      ...turn,
+      openMessages: new Map(),
+      nextMessageSeq: 0,
+      cancelRequested: false,
+      loadedSkills: new Set(),
+    };
     state.turn = context;
     state.usage = undefined;
     try {
@@ -482,6 +551,10 @@ export class EngineManager {
         await engineSession.setConfigOption("model", selector);
         state.selector = selector;
       }
+      // Materialization only writes at spawn, but the index must follow toggles and sibling
+      // materializations: read it right before the turn so this tool call set is attributed
+      // against the manifest the engine can actually see now, not the one from spawn time.
+      state.skillIndex = await this.deps.skills.manifestFor(state.workspaceRoot);
       this.setStatus(state.sessionId, "running");
       this.emit(state, "turn.started", { turnId: turn.turnId, index: turn.idx }, turn.turnId);
       const result = await engineSession.prompt(turn.content, {
@@ -566,13 +639,13 @@ export class EngineManager {
     }
   }
 
-  private setStatus(sessionId: string, status: SessionStatus): void {
+  private setStatus(sessionId: string, status: SessionStatus, reason?: string): void {
     const row = this.deps.db.prepare("SELECT status FROM sessions WHERE id = ?").get(sessionId) as
       | { status: SessionStatus }
       | undefined;
     if (row === undefined || row.status === status) return;
     if (row.status === "closed") return;
-    this.deps.sessions.setStatus(sessionId, status);
+    this.deps.sessions.setStatus(sessionId, status, reason === undefined ? undefined : { reason });
   }
 
   private emit(
@@ -611,6 +684,12 @@ export class EngineManager {
       }
       case "tool.started": {
         this.emit(state, "tool.started", { toolCallId: update.toolCallId, title: update.title }, turn.turnId);
+        const skillName = skillNameFromRawInput(update.rawInput);
+        const meta = skillName === undefined ? undefined : state.skillIndex.get(skillName);
+        if (skillName !== undefined && meta !== undefined && !turn.loadedSkills.has(skillName)) {
+          turn.loadedSkills.add(skillName);
+          this.emit(state, "skill.loaded", { name: skillName, scope: meta.scope, hash: meta.hash }, turn.turnId);
+        }
         if (update.toolKind === "execute") {
           const raw = update.rawInput;
           const command =
@@ -693,9 +772,12 @@ export class EngineManager {
       turnId: turn.turnId,
       provenance: PROVENANCE,
     });
+    // The store validated and redacted the payload; project what it persisted so the approvals
+    // row cannot keep a secret the event stream dropped.
+    const persisted = PayloadSchemas["permission.requested"].parse(event.payload);
     this.deps.db
       .prepare("INSERT INTO approvals (id, session_id, event_id, kind, payload_json, options_json) VALUES (?,?,?,?,?,?)")
-      .run(approvalId, state.sessionId, event.id, payload.category, JSON.stringify(payload), JSON.stringify(effectiveOptions));
+      .run(approvalId, state.sessionId, event.id, persisted.category, JSON.stringify(persisted), JSON.stringify(persisted.options));
 
     this.setStatus(state.sessionId, "waiting");
 

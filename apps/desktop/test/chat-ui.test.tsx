@@ -93,6 +93,13 @@ describe("reduceChat", () => {
     expect(unknown.lastSeq).toBe(6);
     expect(unknown.messages).toHaveLength(1);
   });
+
+  it("keeps the first skill.loaded per name", () => {
+    let state = reduceChat(emptyChatState(), makeEvent(1, "skill.loaded", { name: "demo", scope: "project", hash: "first" }));
+    state = reduceChat(state, makeEvent(2, "skill.loaded", { name: "demo", scope: "global", hash: "second" }));
+
+    expect(state.skillsLoaded).toEqual([{ name: "demo", scope: "project", hash: "first" }]);
+  });
 });
 
 
@@ -134,6 +141,7 @@ describe("Chat", () => {
     expect(await screen.findByText("Hello world")).toBeTruthy();
     expect(screen.getByText("Run tests")).toBeTruthy();
     expect(screen.getByRole("dialog", { name: "Permission required" })).toBeTruthy();
+    expect(screen.queryByRole("group", { name: "Skills loaded" })).toBeNull();
 
     await userEvent.click(screen.getByRole("button", { name: "Allow always" }));
     expect(request).toHaveBeenCalledWith("approval.respond", { approvalId: "ap1", decision: "allow_always" });
@@ -173,6 +181,30 @@ describe("Chat", () => {
     expect(sent[0]?.content).toEqual([{ type: "text", text: "hello" }]);
     expect(sent[1]?.content).toEqual([{ type: "text", text: "a\nb" }]);
     expect(sent[0]?.requestId).not.toBe(sent[1]?.requestId);
+  });
+
+  it("shows loaded skills above the transcript", async () => {
+    const request = vi.fn(async (method: string, _params?: unknown): Promise<unknown> => {
+      if (method === "session.subscribe") {
+        return {
+          events: [
+            makeEvent(1, "session.status", { status: "running" }),
+            makeEvent(2, "skill.loaded", { name: "demo", scope: "project", hash: "a".repeat(64) }),
+          ],
+          lastSeq: 2,
+        };
+      }
+      throw new Error(method);
+    });
+
+    render(<ChatHarness request={request as unknown as RequestFn} />);
+    const skills = await screen.findByRole("group", { name: "Skills loaded" });
+    expect(skills.textContent).toContain("demo");
+    expect(screen.getByTitle("a".repeat(12)).textContent).toBe("demo");
+
+    const transcript = document.querySelector("ol.messages");
+    expect(transcript).not.toBeNull();
+    expect(skills.compareDocumentPosition(transcript!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("shows a failed request and keeps the draft", async () => {

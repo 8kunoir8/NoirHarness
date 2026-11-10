@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ModelView, PermissionOption, SessionPromptResult, SessionView } from "@noir/protocol";
 import type { RequestFn } from "./api.js";
-import { ChatHeader } from "./ChatHeader.js";
+import { ChatHeader, type DiffStats } from "./ChatHeader.js";
 import { Composer, type ComposerStatus } from "./Composer.js";
 import { errorMessage, type SessionEvents } from "./events.js";
 import { ToolCard } from "./ToolCard.js";
@@ -17,12 +17,14 @@ export function Chat({
   models,
   request,
   events,
+  diffStats,
   onSessionChange,
 }: {
   session: SessionView;
   models: ModelView[];
   request: RequestFn;
   events: SessionEvents;
+  diffStats?: DiffStats | undefined;
   onSessionChange?: (() => void) | undefined;
 }) {
   const { state, appendUser } = events;
@@ -164,12 +166,29 @@ export function Chat({
         modelId={session.modelId}
         models={models}
         usage={state.usage}
+        diffStats={diffStats}
         turnStartedAt={state.turnStartedAt}
         lastTurn={state.lastTurn}
         canInterrupt={canInterrupt}
         onInterrupt={() => void interrupt()}
         onModelChange={(modelId) => void changeModel(modelId)}
       />
+
+      {state.skillsLoaded.length === 0 ? null : (
+        <div className="chat-skills" role="group" aria-label="Skills loaded">
+          {state.skillsLoaded.map((skill) => (
+            <span key={skill.name} className="chat-skill" title={skill.hash.slice(0, 12)}>
+              {skill.name}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {state.status === "error" ? (
+        <p role="status" className="session-stopped">
+          Session stopped. Send a prompt to resume.
+        </p>
+      ) : null}
 
       <ol className="messages">
         {state.messages.map((message) => (

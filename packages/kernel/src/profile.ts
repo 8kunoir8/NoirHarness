@@ -65,6 +65,7 @@ export async function syncProfile(deps: SyncProfileDeps): Promise<void> {
 
   if (providers.length === 0 || models.length === 0) {
     // Nothing can be rendered; drop the old file so a deleted provider's key does not linger on disk.
+    // `config.yml` is deliberately left alone here, so its skill entry is only refreshed on the full path.
     await clearProfileModels(deps.dataDir);
     return;
   }
@@ -82,5 +83,8 @@ export async function syncProfile(deps: SyncProfileDeps): Promise<void> {
     providers,
     models,
     defaultModel: { providerName: defaultModel.providerName, modelId: defaultModel.modelId },
+    // The engine runs with cwd = workspace root, and `SkillService.materialize` writes the skills
+    // it enables into `.noir/skills-engine` there, so the path stays cwd-relative.
+    skillDirectories: [".noir/skills-engine"],
   });
 }

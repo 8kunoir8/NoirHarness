@@ -37,6 +37,7 @@ const ConfigDoc = z
   .object({
     modelRoles: z.record(z.string(), z.string()).optional(),
     defaultThinkingLevel: z.enum(["off", "low", "medium", "high"]).optional(),
+    skills: z.object({ customDirectories: z.array(z.string()) }).optional(),
   })
   .strict();
 
@@ -394,6 +395,18 @@ describe("renderConfigYaml", () => {
     expect(parseConfig(renderConfigYaml({ roles: { default: "a/b", plan: "a/c" } }))).toEqual({
       modelRoles: { default: "a/b", plan: "a/c" },
     });
+  });
+
+  it("writes the workspace-relative skill directory into config.yml", () => {
+    const parsed = parseConfig(
+      renderConfigYaml({ roles: { default: "mock/mock-1" }, skillDirectories: [".noir/skills-engine"] }),
+    );
+    expect(parsed.skills).toEqual({ customDirectories: [".noir/skills-engine"] });
+    expect(parsed.modelRoles?.default).toBe("mock/mock-1");
+  });
+
+  it("omits skills when no directory is given", () => {
+    expect(renderConfigYaml({ roles: { default: "mock/mock-1" } })).not.toContain("skills:");
   });
 
   it("rejects a role reference that is not <provider>/<model>", () => {

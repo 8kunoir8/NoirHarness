@@ -1,7 +1,8 @@
 # NoirHarness
 
-Local-first desktop agent harness. This repository currently contains the M1.1 agent runtime:
-kernel, protocol, provider registry, the `omp` ACP engine adapter, and the Electron shell.
+Local-first desktop agent harness. This repository currently contains the M1.3 chat shell and
+editor: kernel, protocol, provider registry, the `omp` ACP engine adapter, the Electron shell, and
+the workspace editor — file tree, Monaco, quick open, and diffs with line notes.
 
 The app talks to the real `omp` binary over ACP; NoirHarness owns the provider registry, the
 model selection, the workspaces, and the chat surface. Nothing leaves the machine except the
@@ -13,6 +14,9 @@ provider calls `omp` makes.
 - pnpm 10+ (`corepack enable`)
 - `omp` on `PATH` (`omp --version`). Every chat turn spawns `omp … acp`; without the binary the UI
   loads but a prompt fails with an engine-spawn error.
+- `git` 2.13+ on `PATH` (`git --version`), for the status and diff RPCs. A workspace that is not a
+  repository, or a machine without `git`, shows no diff stats and still edits and saves;
+  `NOIR_GIT_COMMAND` points the kernel at another binary.
 
 ## Develop
 
@@ -75,7 +79,8 @@ The **Chats** view is five regions:
   `Earlier` from the last event time.
 - **Main pane** — tab strip, chat header (session status, model picker, token usage, `Interrupt`),
   transcript (assistant text, tool cards, permission cards, diffs), and the composer.
-- **Inspector** — optional right panel with usage, files touched, the plan, and pending approvals.
+- **Inspector** — optional right panel with usage, the changed files (git's uncommitted changes plus
+  the files the session reported), the plan, and pending approvals.
 - **Status bar** — kernel health, turns running, approvals waiting, and the engine directory in use.
 
 Filters read kernel session metadata, not the transcript: `All`; `Needs you` (a pending approval or
@@ -89,6 +94,8 @@ session title, with untitled chats matching `untitled chat`.
 | --- | --- |
 | `⌘K` / `Ctrl+K` | Command palette |
 | `⌘N` / `Ctrl+N` | New chat on the selected workspace and model |
+| `⌘P` / `Ctrl+P` | Quick open |
+| `⌘S` / `Ctrl+S` | Save the active file |
 | `⌘W` / `Ctrl+W` | Close the active tab |
 | `⌘B` / `Ctrl+B` | Toggle the inspector |
 | `⌘J` / `Ctrl+J` | Focus the composer |
@@ -99,7 +106,8 @@ session title, with untitled chats matching `untitled chat`.
 The palette lists available commands with their shortcut, filters on label and keywords as you type,
 and greys out commands whose preconditions are unmet (no workspace, no active chat, no running turn).
 It only dispatches actions that already exist — kernel RPCs such as `session.interrupt` and shell
-actions such as `new-chat` — so nothing is reachable from the palette that a button cannot do.
+actions such as `new-chat`. `Reload file from disk` is palette-only; otherwise nothing is reachable
+from the palette that a button cannot do.
 
 In the composer, `Enter` sends, `⇧Enter` inserts a newline, and `⌘Enter` queues the draft while a turn
 runs. `Esc` interrupts a streaming turn. While a permission card is open it owns the keyboard: `1`–`9`
@@ -111,7 +119,72 @@ Queued turns live in kernel memory. They survive an interrupt — the turn ahead
 queue drains — but not a kernel restart: turns persisted as `running` or `queued` are reported as
 failed the next time the app touches that session, with any open approval rejected. Open tabs, the
 active tab, and the theme (`noir.theme` in `localStorage`, applied as `<html data-theme>`) are
-restored on launch, and each restored tab replays its transcript from sequence 0.
+restored on launch, and each restored chat tab replays its transcript from sequence 0.
+
+## Editing
+
+`Chat list` / `File list` switch what the list pane shows: sessions, or the workspace tree. `⌘P`
+searches the whole workspace by path; opening a file adds an editor tab beside the chat tabs.
+`Show diff` adds a diff tab the same way, and `⌘W` closes whichever tab is active — a dirty editor
+tab refuses to close until it is saved. Restored editor and diff tabs belong to the workspace they
+were opened in: when the selected workspace differs they are dropped and the chat tabs stay, and
+chat tabs whose session no longer exists are dropped too.
+
+**Saving.** `⌘S` writes the buffer through `fs.write`, which is atomic: the kernel writes a temp file
+beside the target, fsyncs it, and renames it over the file, so a crash mid-write cannot leave a torn
+file. The write carries the `mtimeMs` the file had when it was read, so a file changed in the
+meantime by the agent or another program is refused with a conflict and the draft stays in the tab;
+a file deleted on disk is a conflict too, not a new file. `Reload file from disk` (palette only) is
+the way back: it re-reads the file and drops whatever was typed.
+
+**Large files.** A file over 2 MiB is refused for editing rather than opened as a prefix: the alert
+reads `<path> is larger than 2 MiB; not opened for editing`, and the tab shows that reason instead
+of an editor. The read itself stops at 2 MiB.
+
+**Diff stats.** The chat header and the inspector read `git.status` — line adds and deletes against
+`HEAD` — refreshed after each save, when the workspace changes, and shortly after a kernel event
+that can change files (`file.changed`, `tool.completed` / `tool.failed`, `turn.completed` /
+`turn.failed`), batched with a 250 ms debounce. A workspace that is not a git repository shows no
+stats and still edits and saves.
+
+**Diffs and notes.** `Show diff` opens a unified diff tab for the file. Clicking a line number opens
+an inline input: `Enter` stores the note, `Esc` cancels. The note carries the hash of the diff it was
+rendered from, so if the file changed meanwhile the add is refused and the diff reloads. A note
+written against an older diff is listed under `Notes from an earlier version` rather than pointing
+at unrelated lines; that check runs when the diff loads again.
+
+**Limits.** A directory listing stops at 2 000 entries — the cap is per directory, and the tree notes
+truncation for the root only today — a read at 2 MiB (larger files are refused for editing), a write
+at 5 000 000 characters, and quick open at 5 000 files. Files that are not UTF-8 text and symlinks
+are refused or skipped rather than rendered.
+
+## Skills
+
+Each workspace gets a skill set from two directories: `<data dir>/skills` (Windows default
+`%APPDATA%/NoirHarness/skills`, overridable by `NOIR_DATA_DIR`) and `<workspace>/.noir/skills`
+(project). A skill is a directory with a `SKILL.md` whose frontmatter carries `name` and
+`description`. When both scopes define a name, the project copy wins and the global one is marked
+shadowed.
+
+The kernel hashes each skill directory, copies the enabled effective set into
+`<workspace>/.noir/skills-engine`, and points the generated `config.yml` at it with a cwd-relative
+`skills.customDirectories` entry. Global skills are copied into each workspace that uses them, so a
+name claimed by a project skill stays claimed even when that project skill is disabled. Disabling a
+skill removes it from the materialized copy — never from its source — and applies to the next
+session started in that workspace. Global skill toggles are machine-wide: the flag is stored once
+and affects every workspace. A `skill://` read by the engine becomes a `skill.loaded` event
+carrying the name, scope and hash; the chat shows a `Skills loaded` group.
+
+The manifest beside that directory, `<workspace>/.noir/skills-engine.json`, is rewritten atomically
+and records `version: 1` plus one entry per materialized skill with `name`, `scope`, `hash` and
+`description`. A workspace that cannot be written gets an engine with no skills until it becomes
+writable; the `Skills` view still lists the sources.
+
+The `Skills` view lists both scopes with a hash, a live toggle, and a read-only `SKILL.md` viewer.
+Scanning skips anything it cannot trust rather than failing: a skill with more than 200 files or
+8 MiB of content, a `SKILL.md` over 1 MiB, or a directory without valid frontmatter is reported as
+a warning and skipped; a symlinked `SKILL.md` is reported as a warning; symlinked skill directories
+and links inside a skill are skipped silently and do not enter the hash.
 
 ## Configuration
 
@@ -120,6 +193,7 @@ restored on launch, and each restored tab replays its transcript from sequence 0
 | `NOIR_OMP_COMMAND` | `omp` | binary to spawn |
 | `NOIR_OMP_ARGS_JSON` | `[]` | JSON array of strings inserted before the generated `--session-dir … acp` flags |
 | `NOIR_TURN_TIMEOUT_MS` | `120000` | per-turn watchdog; on expiry the kernel sends `session/cancel` and reports the turn as failed |
+| `NOIR_GIT_COMMAND` | `git` | binary used for `git.status` and `git.diff`; set it when `git` is not on `PATH` |
 
 The desktop shell also honours `NOIR_DATA_DIR`, `NOIR_KERNEL_ENTRY`, and `NOIR_NODE_BIN`.
 
@@ -132,11 +206,31 @@ pnpm --filter @noir/desktop test
 pnpm --filter @noir/desktop test:e2e
 ```
 
-`test:e2e` builds the app and drives Electron with Playwright against a local mock provider: it
-streams a reply, completes a permission-approved tool call, and runs the shell lifecycle spec — a
-tool turn, a prompt queued behind a slow turn, an interrupt, the queued turn draining after it, and
-an app restart that replays the transcript. Each spec uses its own temporary data directory, so
-engine state stays inside it.
+`test:e2e` builds the app and drives Electron with Playwright against a local mock provider. Eight
+specs cover: `smoke` (2) — boot, process spawn, health, and a provider surviving an app restart;
+`chat` (2) — a streamed reply and a permission-approved tool call; `shell` (1) — a tool turn that
+survives the restart, a prompt queued behind a slow turn, an interrupt, the queued turn draining
+after it, and a restart that replays the transcript; `editor` (2) — open a file, edit it, save
+through the kernel, assert the file on disk, check the diff stats and `Show diff` from the
+inspector, and refuse a file larger than the read cap; `skills` (1) — list a project skill, view its
+body, materialize it through a turn, then disable it and assert the manifest entry and materialized
+directory drop it.
+Each spec gets its own temporary data directory and its own Electron profile
+(`--user-data-dir` inside that directory), so engine state and restored tabs stay inside it.
+
+## Installer
+
+Build a Windows installer from a clean checkout:
+
+```sh
+pnpm install
+pnpm --filter @noir/desktop package
+```
+
+`release/NoirHarness Setup <version>.exe` installs per user; `release/win-unpacked/NoirHarness.exe` is
+the same app without the NSIS wrapper. The package ships its own Node runtime
+(`resources/runtime/node.exe`) and the bundled kernel (`resources/kernel`), so a machine without Node
+can run it.
 
 ## Layout
 

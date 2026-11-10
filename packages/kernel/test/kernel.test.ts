@@ -102,6 +102,8 @@ describe("startKernel", () => {
     expect(created.error).toBeUndefined();
     const rendered = readFileSync(join(profileAgentDir(dir), "models.yml"), "utf8");
     expect(rendered).toContain("id: openai/gpt-4o");
+    const config = readFileSync(join(profileAgentDir(dir), "config.yml"), "utf8");
+    expect(config).toContain("- .noir/skills-engine");
     const listed = await call(kernel.port, kernel.token, "model.list");
     expect(listed.result.models.map((model: { modelId: string }) => model.modelId)).toEqual(["openai/gpt-4o"]);
     await kernel.close();
@@ -226,5 +228,20 @@ describe("startKernel", () => {
     writeFileSync(file, JSON.stringify(foreign));
     await kernel.close();
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(foreign);
+  });
+
+  it("rejects a second workspace for the same path", async () => {
+    const dir = tempDir();
+    const root = tempDir();
+    const kernel = await startKernel({ dataDir: dir });
+    const project = await call(kernel.port, kernel.token, "project.add", { path: root });
+    const first = await call(kernel.port, kernel.token, "workspace.create", { projectId: project.result.id });
+    expect(first.error).toBeUndefined();
+    const second = await call(kernel.port, kernel.token, "workspace.create", { projectId: project.result.id });
+    expect(second.error.code).toBe(ErrorCodes.conflict);
+    const listed = await call(kernel.port, kernel.token, "workspace.list");
+    expect(listed.result.workspaces).toHaveLength(1);
+    expect(listed.result.workspaces[0].id).toBe(first.result.id);
+    await kernel.close();
   });
 });

@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { app, BrowserWindow, ipcMain } from "electron";
+import { packagedKernelEntry, packagedNodeBinary } from "./packagedPaths.js";
 
 interface KernelInfo {
   port: number;
@@ -32,7 +33,11 @@ function readRuntimeFile(file: string): { pid: number; port: number; token: stri
 }
 
 const dataDir = process.env.NOIR_DATA_DIR ?? app.getPath("userData");
-const kernelEntry = process.env.NOIR_KERNEL_ENTRY ?? join(app.getAppPath(), "..", "kernel", "dist", "index.cjs");
+const packaged = app.isPackaged;
+const kernelEntry = process.env.NOIR_KERNEL_ENTRY
+  ?? (packaged ? packagedKernelEntry(process.resourcesPath) : join(app.getAppPath(), "..", "kernel", "dist", "index.cjs"));
+const nodeBin = process.env.NOIR_NODE_BIN
+  ?? (packaged ? packagedNodeBinary(process.resourcesPath) : process.env.npm_node_execpath ?? "node");
 
 let kernel: ChildProcess | undefined;
 let info: KernelInfo | undefined;
@@ -55,10 +60,6 @@ async function waitForKernel(file: string, timeoutMs = 20_000): Promise<KernelIn
 
 function startKernel(): Promise<KernelInfo> {
   mkdirSync(dataDir, { recursive: true });
-  // The kernel's native modules (better-sqlite3) are built for the installed Node ABI.
-  // Packaging must either supply NOIR_NODE_BIN or rebuild better-sqlite3 for Electron's ABI;
-  // ELECTRON_RUN_AS_NODE stays set so a rebuilt runtime can use process.execPath directly.
-  const nodeBin = process.env.NOIR_NODE_BIN ?? process.env.npm_node_execpath ?? "node";
   const child = spawn(nodeBin, [kernelEntry], {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", NOIR_DATA_DIR: dataDir },
     stdio: ["ignore", "inherit", "inherit"],

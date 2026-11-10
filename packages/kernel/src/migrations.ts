@@ -70,6 +70,38 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
       ALTER TABLE models ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0;
     `,
   },
+  {
+    id: 3,
+    sql: `
+      CREATE TABLE annotations (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        path TEXT NOT NULL,
+        line INTEGER NOT NULL,
+        note TEXT NOT NULL,
+        diff_hash TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX annotations_lookup ON annotations (workspace_id, path);
+    `,
+  },
+  {
+    id: 4,
+    sql: `
+      DROP TABLE skills;
+      CREATE TABLE skills (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL DEFAULT '',
+        scope TEXT NOT NULL,
+        name TEXT NOT NULL,
+        dir TEXT NOT NULL,
+        hash TEXT NOT NULL,
+        manifest_json TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        UNIQUE (workspace_id, scope, name)
+      );
+    `,
+  },
 ];
 
 export function migrate(db: Database.Database): void {

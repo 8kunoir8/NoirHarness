@@ -4,5 +4,8 @@ dist/
 .noir/
 .env
 
+/build/
+/release/
+
 test-results/
 playwright-report/

@@ -1,5 +1,5 @@
 import { once } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -19,12 +19,14 @@ import {
 import { openDb } from "../src/db.js";
 import { EngineManager } from "../src/engineManager.js";
 import { EventStore } from "../src/eventStore.js";
+import { REDACTED, Redactor } from "../src/redact.js";
 import { startKernel, type Kernel } from "../src/index.js";
 import { ModelService } from "../src/models.js";
 import { profileAgentDir } from "../src/profile.js";
 import { ProjectService } from "../src/projects.js";
 import { ProviderService, type Secrets } from "../src/providers.js";
 import { SessionService } from "../src/sessions.js";
+import { SkillService } from "../src/skills.js";
 import { WorkspaceService } from "../src/workspaces.js";
 
 const FAKE_SERVER = fileURLToPath(new URL("../../engines/acp/test/fakeAcpServer.ts", import.meta.url));
@@ -74,12 +76,14 @@ async function waitForEvent(
   }
 }
 
-function setup(opts: { turnTimeoutMs?: number; acpArgs?: string[] } = {}) {
+function setup(
+  opts: { turnTimeoutMs?: number; acpArgs?: string[]; acpSkill?: string; acpPermissionTitle?: string; redactor?: Redactor } = {},
+) {
   const root = tempDir();
   const dataDir = tempDir();
   const db = openDb(join(dataDir, "noir.db"));
   dbs.push(db);
-  const events = new EventStore(db);
+  const events = new EventStore(db, undefined, opts.redactor);
   const projects = new ProjectService(db);
   const workspaces = new WorkspaceService(db, projects);
   const sessions = new SessionService(db, events);
@@ -97,20 +101,35 @@ function setup(opts: { turnTimeoutMs?: number; acpArgs?: string[] } = {}) {
   });
   const model = models.create({ providerId: provider.id, modelId: "fake-1", contextWindow: 200_000, enabled: true });
   const session = sessions.create(workspace.id, model.id);
+  const skills = new SkillService(db, dataDir);
 
   // The manager parses its launch argv at construction time.
   process.env.NOIR_OMP_ARGS_JSON = JSON.stringify(opts.acpArgs ?? [FAKE_SERVER]);
+  // The adapter merges opts.env over process.env, so the fake server inherits this switch.
+  if (opts.acpSkill === undefined) delete process.env.FAKE_ACP_SKILL;
+  else process.env.FAKE_ACP_SKILL = opts.acpSkill;
+  if (opts.acpPermissionTitle === undefined) delete process.env.FAKE_ACP_PERMISSION_TITLE;
+  else process.env.FAKE_ACP_PERMISSION_TITLE = opts.acpPermissionTitle;
   const manager = new EngineManager({
     db,
     events,
     sessions,
     models,
     providers,
+    skills,
     dataDir,
     ompCommand: process.execPath,
     ...(opts.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: opts.turnTimeoutMs }),
   });
-  return { db, events, sessions, providers, models, manager, session, dataDir, root };
+  return { db, events, sessions, providers, models, skills, manager, session, workspaceId: workspace.id, dataDir, root };
+}
+
+function writeProjectSkill(root: string, name = "demo"): void {
+  mkdirSync(join(root, ".noir", "skills", name), { recursive: true });
+  writeFileSync(
+    join(root, ".noir", "skills", name, "SKILL.md"),
+    `---\nname: ${name}\ndescription: ${name}\n---\n\nBODY\n`,
+  );
 }
 
 function isAlive(pid: number): boolean {
@@ -132,7 +151,7 @@ const IdResult = z.object({ id: z.string() });
 const SubscribeResult = z.object({ events: z.array(AgentEvent), lastSeq: z.number().int() });
 
 beforeAll(() => {
-  for (const key of ["NOIR_OMP_COMMAND", "NOIR_OMP_ARGS_JSON", "NOIR_TURN_TIMEOUT_MS"]) {
+  for (const key of ["NOIR_OMP_COMMAND", "NOIR_OMP_ARGS_JSON", "NOIR_TURN_TIMEOUT_MS", "FAKE_ACP_SKILL", "FAKE_ACP_PERMISSION_TITLE"]) {
     savedEnv[key] = process.env[key];
   }
   process.env.NOIR_OMP_COMMAND = process.execPath;
@@ -221,6 +240,96 @@ describe("EngineManager over the fake ACP server", () => {
       expect(state?.messages).toHaveLength(1);
       expect(state?.messages[0]).toMatchObject({ id: "msg-fake-1", role: "assistant", status: "done" });
       expect(state?.status).toBe("idle");
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "attributes a skill:// read to the materialized skill's scope and hash",
+    async () => {
+      const { events, manager, session, root } = setup({ acpSkill: "demo" });
+      writeProjectSkill(root);
+      await manager.prompt({ sessionId: session.id, requestId: "skill-1", content: [{ type: "text", text: "stream" }] });
+      await waitForEvent(events, session.id, (event) => event.type === "turn.completed");
+      const loaded = events.list(session.id).filter((event) => event.type === "skill.loaded");
+      expect(loaded).toHaveLength(1);
+      expect(loaded[0]?.payload).toMatchObject({ name: "demo", scope: "project" });
+      expect(eventPayload(loaded[0]!, "skill.loaded").hash).toMatch(/^[0-9a-f]{64}$/);
+      expect(loaded[0]?.turnId).toBe(events.list(session.id).find((event) => event.type === "turn.started")?.turnId);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "does not attribute a skill:// read for a disabled skill",
+    async () => {
+      const { events, manager, skills, session, workspaceId, root } = setup({ acpSkill: "demo" });
+      writeProjectSkill(root);
+      await skills.setEnabled(workspaceId, root, "project", "demo", false);
+
+      const result = await manager.prompt({
+        sessionId: session.id,
+        requestId: "skill-disabled-1",
+        content: [{ type: "text", text: "stream" }],
+      });
+      await waitForEvent(events, session.id, (event) => event.type === "turn.completed" && event.turnId === result.turnId);
+      expect(events.list(session.id).filter((event) => event.type === "skill.loaded")).toHaveLength(0);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "stops attributing a skill disabled between turns on one live engine",
+    async () => {
+      const { events, manager, skills, session, workspaceId, root } = setup({ acpSkill: "demo" });
+      writeProjectSkill(root);
+
+      const first = await manager.prompt({
+        sessionId: session.id,
+        requestId: "skill-toggle-1",
+        content: [{ type: "text", text: "stream" }],
+      });
+      await waitForEvent(events, session.id, (event) => event.type === "turn.completed" && event.turnId === first.turnId);
+      expect(events.list(session.id).filter((event) => event.type === "skill.loaded")).toHaveLength(1);
+
+      await skills.setEnabled(workspaceId, root, "project", "demo", false);
+
+      const second = await manager.prompt({
+        sessionId: session.id,
+        requestId: "skill-toggle-2",
+        content: [{ type: "text", text: "stream" }],
+      });
+      await waitForEvent(events, session.id, (event) => event.type === "turn.completed" && event.turnId === second.turnId);
+
+      const loaded = events.list(session.id).filter((event) => event.type === "skill.loaded");
+      expect(loaded).toHaveLength(1);
+      expect(loaded.filter((event) => event.turnId === second.turnId)).toHaveLength(0);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "attributes one skill.loaded per turn so the dedupe set resets between turns",
+    async () => {
+      const { events, manager, session, root } = setup({ acpSkill: "demo" });
+      writeProjectSkill(root);
+
+      const first = await manager.prompt({
+        sessionId: session.id,
+        requestId: "skill-turn-1",
+        content: [{ type: "text", text: "stream" }],
+      });
+      await waitForEvent(events, session.id, (event) => event.type === "turn.completed" && event.turnId === first.turnId);
+      const second = await manager.prompt({
+        sessionId: session.id,
+        requestId: "skill-turn-2",
+        content: [{ type: "text", text: "stream" }],
+      });
+      await waitForEvent(events, session.id, (event) => event.type === "turn.completed" && event.turnId === second.turnId);
+
+      const loaded = events.list(session.id).filter((event) => event.type === "skill.loaded");
+      expect(loaded).toHaveLength(2);
+      expect(loaded.map((event) => event.turnId)).toEqual([first.turnId, second.turnId]);
     },
     TEST_TIMEOUT_MS,
   );
@@ -363,6 +472,34 @@ describe("EngineManager over the fake ACP server", () => {
       expect(
         eventPayload(events.list(session.id).find((event) => event.type === "turn.completed")!, "turn.completed").status,
       ).toBe("completed");
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "projects the redacted approval title into the approvals table",
+    async () => {
+      const secret = "noir-approval-secret-9d2c";
+      const { db, events, manager, session } = setup({
+        acpPermissionTitle: `echo ${secret}`,
+        redactor: new Redactor({ secrets: [secret] }),
+      });
+      const prompt = manager.prompt({
+        sessionId: session.id,
+        requestId: "permission-redact",
+        content: [{ type: "text", text: "permission" }],
+      });
+      const requested = await waitForEvent(events, session.id, (event) => event.type === "permission.requested");
+      const approval = eventPayload(requested, "permission.requested");
+      expect(approval.title).toBe(`echo ${REDACTED}`);
+
+      const rows = JSON.stringify(db.prepare("SELECT payload_json, options_json FROM approvals").all());
+      expect(rows).toContain(`echo ${REDACTED}`);
+      expect(rows).not.toContain(secret);
+
+      await manager.respond(approval.approvalId, "allow_once");
+      await waitForEvent(events, session.id, (event) => event.type === "turn.completed");
+      expect((await prompt).queued).toBe(false);
     },
     TEST_TIMEOUT_MS,
   );
@@ -689,7 +826,79 @@ describe("EngineManager over the fake ACP server", () => {
       const turn = db.prepare("SELECT status FROM turns WHERE id = ?").get(turnId) as { status: string };
       expect(turn.status).toBe("failed");
       const row = db.prepare("SELECT status FROM sessions WHERE id = ?").get(session.id) as { status: string };
-      expect(row.status).toBe("idle");
+      expect(row.status).toBe("error");
+      const stopped = events.list(session.id).filter((event) => event.type === "session.status").at(-1)!;
+      expect(stopped.payload).toEqual({ status: "error", reason: "kernel_restart" });
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it("sweeps sessions a crashed kernel left active in one boot pass", () => {
+    const db = openDb(":memory:");
+    dbs.push(db);
+    db.prepare("INSERT INTO projects (id, name, root_path, created_at) VALUES ('p','p','/tmp/p',1)").run();
+    db.prepare("INSERT INTO workspaces (id, project_id, path, branch, kind, status, created_at) VALUES ('w','p','/tmp/p','main','local','ready',1)").run();
+    db.prepare("INSERT INTO agents (id, name, role, engine_id) VALUES ('a','A','default','acp')").run();
+    db.prepare("INSERT INTO sessions (id, workspace_id, agent_id, engine, status, created_at) VALUES ('run','w','a','acp','running',1)").run();
+    db.prepare("INSERT INTO sessions (id, workspace_id, agent_id, engine, status, created_at) VALUES ('wait','w','a','acp','waiting',2)").run();
+    db.prepare("INSERT INTO sessions (id, workspace_id, agent_id, engine, status, created_at) VALUES ('done','w','a','acp','closed',3)").run();
+    db.prepare("INSERT INTO sessions (id, workspace_id, agent_id, engine, status, created_at) VALUES ('start','w','a','acp','starting',4)").run();
+    db.prepare("INSERT INTO sessions (id, workspace_id, agent_id, engine, status, created_at) VALUES ('fresh','w','a','acp','starting',5)").run();
+    db.prepare("INSERT INTO turns (id, session_id, idx, status, started_at) VALUES ('t1','run',1,'running',1)").run();
+    db.prepare("INSERT INTO turns (id, session_id, idx, status, started_at) VALUES ('t2','start',2,'running',4)").run();
+
+    const events = new EventStore(db);
+    const manager = new EngineManager({ db, events, sessions: new SessionService(db, events), models: new ModelService(db), providers: new ProviderService(db, memorySecrets()), skills: new SkillService(db, tempDir()), dataDir: tempDir() });
+    managers.push(manager);
+    manager.reconcileAll();
+    const statuses = db.prepare("SELECT id, status FROM sessions ORDER BY id").all();
+    expect(statuses).toEqual([
+      { id: "done", status: "closed" },
+      { id: "fresh", status: "starting" },
+      { id: "run", status: "error" },
+      { id: "start", status: "error" },
+      { id: "wait", status: "error" },
+    ]);
+    const turn = db.prepare("SELECT id, status FROM turns ORDER BY id").all();
+    expect(turn).toEqual([
+      { id: "t1", status: "failed" },
+      { id: "t2", status: "failed" },
+    ]);
+    expect(events.list("run").some((event) => event.type === "session.status" && PayloadSchemas["session.status"].safeParse(event.payload).data?.reason === "kernel_restart")).toBe(true);
+    expect(events.list("done")).toHaveLength(0);
+    // A session that never accepted a turn is still starting, not a failed crash victim.
+    expect(events.list("fresh")).toHaveLength(0);
+  });
+
+  it(
+    "fails the turn but leaves a resumable error session untouched when its model is gone",
+    async () => {
+      const { db, events, sessions, manager, session } = setup();
+      sessions.setStatus(session.id, "error");
+      if (session.modelId === null) throw new Error("fixture session has no model");
+      db.prepare("UPDATE models SET enabled = 0 WHERE id = ?").run(session.modelId);
+      const before = events.list(session.id).length;
+
+      const result = await manager.prompt({
+        sessionId: session.id,
+        requestId: "resume-gone-1",
+        content: [{ type: "text", text: "resume" }],
+      });
+      expect(result.queued).toBe(false);
+
+      const failed = await waitForEvent(events, session.id, (event) => event.type === "turn.failed");
+      const failedPayload = eventPayload(failed, "turn.failed");
+      expect(failedPayload.turnId).toBe(result.turnId);
+      expect(failedPayload.message).toBe("The session model is disabled or missing");
+
+      const turn = db.prepare("SELECT status FROM turns WHERE id = ?").get(result.turnId) as { status: string };
+      expect(turn.status).toBe("failed");
+      const row = db.prepare("SELECT status FROM sessions WHERE id = ?").get(session.id) as { status: string };
+      expect(row.status).toBe("error");
+      // No zombie `running` and no status flap: the only new event is the failure itself.
+      expect(events.list(session.id).slice(before).map((event) => event.type)).toEqual(["turn.failed"]);
+      expect(events.list(session.id).some((event) => event.type === "turn.started")).toBe(false);
+      expect(manager.enginePid(session.id)).toBeUndefined();
     },
     TEST_TIMEOUT_MS,
   );
@@ -780,6 +989,109 @@ describe("kernel RPC over the fake ACP server", () => {
       } finally {
         socket?.close();
         if (kernel !== undefined) await kernel.close();
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "seeds the ingest redactor from a provider key created at runtime",
+    async () => {
+      const KEY = "plain-provider-secret-9d2c";
+      const dataDir = tempDir();
+      const root = tempDir();
+      process.env.NOIR_OMP_COMMAND = process.execPath;
+      process.env.NOIR_OMP_ARGS_JSON = JSON.stringify([FAKE_SERVER]);
+      process.env.NOIR_TURN_TIMEOUT_MS = "20000";
+
+      const previousTitle = process.env.FAKE_ACP_PERMISSION_TITLE;
+      process.env.FAKE_ACP_PERMISSION_TITLE = KEY;
+
+      let kernel: Kernel | undefined;
+      let socket: WebSocket | undefined;
+      try {
+        kernel = await startKernel({ dataDir });
+        socket = new WebSocket(`ws://127.0.0.1:${kernel.port}/?token=${kernel.token}`);
+        await once(socket, "open");
+        interface Frame { id?: number; method?: string; result?: unknown; params?: unknown }
+        const frames: Frame[] = [];
+        socket.on("message", (data) => frames.push(JSON.parse(String(data)) as Frame));
+
+        let nextId = 1;
+        const call = async (method: string, params: unknown): Promise<Frame> => {
+          const id = nextId++;
+          socket!.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
+          const deadline = Date.now() + TEST_TIMEOUT_MS;
+          for (;;) {
+            const frame = frames.find((candidate) => candidate.id === id);
+            if (frame !== undefined) return frame;
+            if (Date.now() >= deadline) throw new Error(`timed out waiting for ${method}`);
+            await tick();
+          }
+        };
+
+        const providerId = IdResult.parse((await call("provider.create", {
+          name: "Plain",
+          baseUrl: "http://127.0.0.1:9/v1",
+          apiKind: "openai-completions",
+          apiKey: KEY,
+        })).result).id;
+        const modelId = IdResult.parse((await call("model.create", { providerId, modelId: "fake-1" })).result).id;
+        const projectId = IdResult.parse((await call("project.add", { path: root })).result).id;
+        const workspaceId = IdResult.parse((await call("workspace.create", { projectId })).result).id;
+        const sessionId = IdResult.parse((await call("session.create", { workspaceId, modelId })).result).id;
+
+        const prompt = await call("session.prompt", {
+          sessionId,
+          requestId: "redact-rpc-1",
+          content: [{ type: "text", text: "tool" }],
+        });
+        expect(SessionPromptResult.parse(prompt.result).queued).toBe(false);
+
+        const replayAll = async (): Promise<AgentEvent[]> =>
+          SubscribeResult.parse((await call("session.subscribe", { sessionId, sinceSeq: 0 })).result).events;
+        const waitForReplay = async (predicate: (events: AgentEvent[]) => boolean): Promise<AgentEvent[]> => {
+          const deadline = Date.now() + TEST_TIMEOUT_MS;
+          for (;;) {
+            const events = await replayAll();
+            if (predicate(events)) return events;
+            if (Date.now() >= deadline) throw new Error("timed out waiting for session events");
+            await tick();
+          }
+        };
+
+        const requestedEvents = await waitForReplay((events) => events.some((event) => event.type === "permission.requested"));
+        const requested = requestedEvents.find((event) => event.type === "permission.requested")!;
+        const approval = eventPayload(requested, "permission.requested");
+        expect(approval.title).toBe(REDACTED);
+        expect(JSON.stringify(requestedEvents)).not.toContain(KEY);
+
+        const respond = await call("approval.respond", { approvalId: approval.approvalId, decision: "allow_once" });
+        expect(respond.result).toEqual({ ok: true });
+        await waitForReplay((events) => events.some((event) => event.type === "turn.completed"));
+
+        const finalEvents = await replayAll();
+        expect(JSON.stringify(finalEvents)).toContain(REDACTED);
+        expect(JSON.stringify(finalEvents)).not.toContain(KEY);
+
+        socket.close();
+        socket = undefined;
+        await kernel.close();
+        kernel = undefined;
+
+        const verify = openDb(join(dataDir, "noir.db"));
+        try {
+          const rows = JSON.stringify(verify.prepare("SELECT payload_json, options_json FROM approvals").all());
+          expect(rows).toContain(REDACTED);
+          expect(rows).not.toContain(KEY);
+        } finally {
+          verify.close();
+        }
+      } finally {
+        socket?.close();
+        if (kernel !== undefined) await kernel.close();
+        if (previousTitle === undefined) delete process.env.FAKE_ACP_PERMISSION_TITLE;
+        else process.env.FAKE_ACP_PERMISSION_TITLE = previousTitle;
       }
     },
     TEST_TIMEOUT_MS,

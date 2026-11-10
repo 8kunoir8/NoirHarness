@@ -22,6 +22,18 @@ export const Methods = {
   providerCreate: "provider.create",
   providerList: "provider.list",
   providerDelete: "provider.delete",
+  fsList: "fs.list",
+  fsRead: "fs.read",
+  fsWrite: "fs.write",
+  fsFiles: "fs.files",
+  gitStatus: "git.status",
+  gitDiff: "git.diff",
+  annotationList: "annotation.list",
+  annotationAdd: "annotation.add",
+  annotationDelete: "annotation.delete",
+  skillList: "skill.list",
+  skillSetEnabled: "skill.setEnabled",
+  skillRead: "skill.read",
 } as const;
 
 /** `system.health` result. `engineDir` is the agent directory the kernel materializes and omp reads. */
@@ -92,6 +104,137 @@ export const SessionSetModelParams = z.object({ sessionId: z.string().min(1), mo
 export type SessionSetModelParams = z.infer<typeof SessionSetModelParams>;
 export const ApprovalRespondParams = z.object({ approvalId: z.string().min(1), decision: PermissionDecision });
 export type ApprovalRespondParams = z.infer<typeof ApprovalRespondParams>;
+
+export const FsEntry = z.object({
+  name: z.string(),
+  path: z.string(),
+  kind: z.enum(["file", "dir"]),
+  size: z.number().int().nonnegative(),
+});
+export type FsEntry = z.infer<typeof FsEntry>;
+
+export const FsListParams = z.object({
+  workspaceId: z.string().min(1),
+  path: z.string().default(""),
+});
+export type FsListParams = z.infer<typeof FsListParams>;
+export const FsListResult = z.object({ entries: z.array(FsEntry), truncated: z.boolean() });
+export type FsListResult = z.infer<typeof FsListResult>;
+
+export const FsReadParams = z.object({ workspaceId: z.string().min(1), path: z.string() });
+export type FsReadParams = z.infer<typeof FsReadParams>;
+export const FsReadResult = z.object({
+  content: z.string(),
+  size: z.number().int().nonnegative(),
+  mtimeMs: z.number().int(),
+  truncated: z.boolean(),
+});
+export type FsReadResult = z.infer<typeof FsReadResult>;
+
+export const FsWriteParams = z.object({
+  workspaceId: z.string().min(1),
+  path: z.string().min(1),
+  content: z.string().max(5_000_000),
+  expectedMtimeMs: z.number().int().optional(),
+});
+export type FsWriteParams = z.infer<typeof FsWriteParams>;
+export const FsWriteResult = z.object({ mtimeMs: z.number().int() });
+export type FsWriteResult = z.infer<typeof FsWriteResult>;
+
+export const FsFilesParams = z.object({ workspaceId: z.string().min(1) });
+export type FsFilesParams = z.infer<typeof FsFilesParams>;
+export const FsFilesResult = z.object({ files: z.array(z.string()), truncated: z.boolean() });
+export type FsFilesResult = z.infer<typeof FsFilesResult>;
+
+export const GitFileStatus = z.object({
+  path: z.string(),
+  change: z.enum(["created", "modified", "deleted"]),
+  add: z.number().int().nonnegative(),
+  del: z.number().int().nonnegative(),
+});
+export type GitFileStatus = z.infer<typeof GitFileStatus>;
+
+export const GitStatusParams = z.object({ workspaceId: z.string().min(1) });
+export type GitStatusParams = z.infer<typeof GitStatusParams>;
+export const GitStatusResult = z.object({
+  isRepo: z.boolean(),
+  branch: z.string().nullable(),
+  files: z.array(GitFileStatus),
+});
+export type GitStatusResult = z.infer<typeof GitStatusResult>;
+export const GitDiffParams = z.object({ workspaceId: z.string().min(1), path: z.string().min(1) });
+export type GitDiffParams = z.infer<typeof GitDiffParams>;
+export const GitDiffResult = z.object({ diff: z.string() });
+export type GitDiffResult = z.infer<typeof GitDiffResult>;
+
+export const AnnotationView = z.object({
+  id: z.string(),
+  line: z.number().int().positive(),
+  note: z.string(),
+  createdAt: z.number().int(),
+  stale: z.boolean(),
+});
+export type AnnotationView = z.infer<typeof AnnotationView>;
+
+export const AnnotationListParams = z.object({ workspaceId: z.string().min(1), path: z.string().min(1) });
+export type AnnotationListParams = z.infer<typeof AnnotationListParams>;
+export const AnnotationListResult = z.object({ diffHash: z.string(), annotations: z.array(AnnotationView) });
+export type AnnotationListResult = z.infer<typeof AnnotationListResult>;
+
+export const AnnotationAddParams = z.object({
+  workspaceId: z.string().min(1),
+  path: z.string().min(1),
+  line: z.number().int().positive(),
+  note: z.string().trim().min(1).max(2_000),
+  // The hash the note was written against, so a note cannot be stored against a newer diff.
+  expectedDiffHash: z.string().optional(),
+});
+export type AnnotationAddParams = z.infer<typeof AnnotationAddParams>;
+
+export const AnnotationDeleteParams = z.object({ id: z.string().min(1) });
+export type AnnotationDeleteParams = z.infer<typeof AnnotationDeleteParams>;
+export const AnnotationDeleteResult = z.object({ ok: z.literal(true) });
+export type AnnotationDeleteResult = z.infer<typeof AnnotationDeleteResult>;
+
+export const SkillScopeSchema = z.enum(["global", "project"]);
+export type SkillScopeSchema = z.infer<typeof SkillScopeSchema>;
+
+export const SkillView = z.object({
+  scope: SkillScopeSchema,
+  name: z.string(),
+  description: z.string(),
+  hash: z.string(),
+  enabled: z.boolean(),
+});
+export type SkillView = z.infer<typeof SkillView>;
+
+export const SkillListParams = z.object({ workspaceId: z.string().min(1).optional() });
+export type SkillListParams = z.infer<typeof SkillListParams>;
+export const SkillListResult = z.object({
+  skills: z.array(SkillView),
+  shadowed: z.array(z.string()),
+  warnings: z.array(z.string()),
+});
+export type SkillListResult = z.infer<typeof SkillListResult>;
+
+export const SkillSetEnabledParams = z.object({
+  workspaceId: z.string().min(1).optional(),
+  scope: SkillScopeSchema,
+  name: z.string().min(1),
+  enabled: z.boolean(),
+});
+export type SkillSetEnabledParams = z.infer<typeof SkillSetEnabledParams>;
+export const SkillSetEnabledResult = z.object({ ok: z.literal(true) });
+export type SkillSetEnabledResult = z.infer<typeof SkillSetEnabledResult>;
+
+export const SkillReadParams = z.object({
+  workspaceId: z.string().min(1).optional(),
+  scope: SkillScopeSchema,
+  name: z.string().min(1),
+});
+export type SkillReadParams = z.infer<typeof SkillReadParams>;
+export const SkillReadResult = z.object({ content: z.string(), hash: z.string(), truncated: z.literal(false) });
+export type SkillReadResult = z.infer<typeof SkillReadResult>;
 
 export const EventNotificationParams = z.object({ event: AgentEvent });
 export type EventNotificationParams = z.infer<typeof EventNotificationParams>;

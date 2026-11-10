@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { PayloadSchemas } from "../src/events.js";
-import { ModelCreateParams, ProviderCreateParams, RpcFault, SessionPromptParams, toRpcFailure } from "../src/rpc.js";
+import { ModelCreateParams, ProviderCreateParams, RpcFault, SessionPromptParams, SkillListParams, SkillReadParams, SkillSetEnabledParams, toRpcFailure } from "../src/rpc.js";
 
 describe("provider params", () => {
   it("trims and accepts a valid provider", () => {
@@ -81,5 +81,36 @@ describe("error mapping", () => {
     const failure = toRpcFailure(8, new Error("secret sk-123"));
     expect(failure.error.code).toBe(-32603);
     expect(failure.error.message).toBe("Internal error");
+  });
+});
+
+describe("skill params", () => {
+  const valid = { scope: "project" as const, name: "demo", enabled: true };
+
+  it("accepts an omitted workspaceId", () => {
+    expect(SkillSetEnabledParams.parse(valid)).toEqual(valid);
+    expect(SkillListParams.parse({})).toEqual({});
+    expect(SkillReadParams.parse({ scope: "global", name: "demo" })).toEqual({ scope: "global", name: "demo" });
+  });
+
+  it("rejects an empty skill name", () => {
+    expect(() => SkillSetEnabledParams.parse({ ...valid, name: "" })).toThrow();
+    expect(() => SkillReadParams.parse({ scope: "global", name: "" })).toThrow();
+  });
+
+  it("rejects an unknown scope", () => {
+    expect(() => SkillSetEnabledParams.parse({ ...valid, scope: "nope" })).toThrow();
+    expect(() => SkillReadParams.parse({ scope: "nope", name: "demo" })).toThrow();
+  });
+
+  it("rejects a missing enabled flag", () => {
+    expect(() => SkillSetEnabledParams.parse({ scope: "project", name: "demo" })).toThrow();
+    expect(() => SkillSetEnabledParams.parse({ scope: "project", name: "demo", enabled: "yes" })).toThrow();
+  });
+
+  it("rejects an empty-string workspaceId", () => {
+    expect(() => SkillListParams.parse({ workspaceId: "" })).toThrow();
+    expect(() => SkillSetEnabledParams.parse({ ...valid, workspaceId: "" })).toThrow();
+    expect(() => SkillReadParams.parse({ scope: "global", name: "demo", workspaceId: "" })).toThrow();
   });
 });

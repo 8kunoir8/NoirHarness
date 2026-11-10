@@ -4,12 +4,19 @@ import type { ChatTurn, ChatUsage } from "./events.js";
 import { formatDuration } from "./format.js";
 import { UsageMeter } from "./UsageMeter.js";
 
+/** Added and deleted line counts for the changed-file set. */
+export interface DiffStats {
+  add: number;
+  del: number;
+}
+
 export interface ChatHeaderProps {
   title: string;
   status: SessionStatus;
   modelId: string | null;
   models: readonly ModelView[];
   usage?: ChatUsage | undefined;
+  diffStats?: DiffStats | undefined;
   turnStartedAt?: number | undefined;
   lastTurn?: ChatTurn | undefined;
   canInterrupt: boolean;
@@ -35,6 +42,7 @@ export function ChatHeader({
   modelId,
   models,
   usage,
+  diffStats,
   turnStartedAt,
   lastTurn,
   canInterrupt,
@@ -73,6 +81,11 @@ export function ChatHeader({
           : `${formatDuration(elapsed)}`}
       </span>
       <UsageMeter usage={usage} />
+      {diffStats === undefined ? null : (
+        <span className="chat-diff" role="group" aria-label="Diff stats">
+          <span className="diff-add">+{diffStats.add}</span> <span className="diff-del">−{diffStats.del}</span>
+        </span>
+      )}
       {canInterrupt ? (
         <button type="button" onClick={onInterrupt}>
           Interrupt
