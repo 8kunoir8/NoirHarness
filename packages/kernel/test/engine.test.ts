@@ -77,7 +77,6 @@ async function waitForEvent(
 function setup(opts: { turnTimeoutMs?: number; acpArgs?: string[] } = {}) {
   const root = tempDir();
   const dataDir = tempDir();
-  const home = tempDir();
   const db = openDb(join(dataDir, "noir.db"));
   dbs.push(db);
   const events = new EventStore(db);
@@ -108,12 +107,10 @@ function setup(opts: { turnTimeoutMs?: number; acpArgs?: string[] } = {}) {
     models,
     providers,
     dataDir,
-    home,
     ompCommand: process.execPath,
     ...(opts.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: opts.turnTimeoutMs }),
   });
-  managers.push(manager);
-  return { db, events, sessions, providers, models, manager, session, home, root };
+  return { db, events, sessions, providers, models, manager, session, dataDir, root };
 }
 
 function isAlive(pid: number): boolean {
@@ -135,7 +132,7 @@ const IdResult = z.object({ id: z.string() });
 const SubscribeResult = z.object({ events: z.array(AgentEvent), lastSeq: z.number().int() });
 
 beforeAll(() => {
-  for (const key of ["NOIR_OMP_COMMAND", "NOIR_OMP_ARGS_JSON", "NOIR_PROFILE_HOME", "NOIR_TURN_TIMEOUT_MS"]) {
+  for (const key of ["NOIR_OMP_COMMAND", "NOIR_OMP_ARGS_JSON", "NOIR_TURN_TIMEOUT_MS"]) {
     savedEnv[key] = process.env[key];
   }
   process.env.NOIR_OMP_COMMAND = process.execPath;
@@ -458,7 +455,7 @@ describe("EngineManager over the fake ACP server", () => {
   it(
     "never puts an API key in a database row or an event",
     async () => {
-      const { db, events, manager, session, home } = setup();
+      const { db, events, manager, session, dataDir } = setup();
       await manager.prompt({
         sessionId: session.id,
         requestId: "secret-1",
@@ -468,7 +465,7 @@ describe("EngineManager over the fake ACP server", () => {
       await manager.respond(eventPayload(requested, "permission.requested").approvalId, "allow_once");
       await waitForEvent(events, session.id, (event) => event.type === "turn.completed");
 
-      const profile = readFileSync(join(profileAgentDir(home), "models.yml"), "utf8");
+      const profile = readFileSync(join(profileAgentDir(dataDir), "models.yml"), "utf8");
       expect(profile).toContain(SECRET);
       expect(JSON.stringify(events.list(session.id))).not.toContain(SECRET);
 
@@ -632,11 +629,9 @@ describe("kernel RPC over the fake ACP server", () => {
     "replays before a prompt and broadcasts the live turn",
     async () => {
       const dataDir = tempDir();
-      const home = tempDir();
       const root = tempDir();
       process.env.NOIR_OMP_COMMAND = process.execPath;
       process.env.NOIR_OMP_ARGS_JSON = JSON.stringify([FAKE_SERVER]);
-      process.env.NOIR_PROFILE_HOME = home;
       process.env.NOIR_TURN_TIMEOUT_MS = "20000";
 
       let kernel: Kernel | undefined;

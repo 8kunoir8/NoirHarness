@@ -2,27 +2,14 @@ import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 import { ErrorCodes } from "@noir/protocol";
 import { startKernel, type Kernel } from "../src/index.js";
 import { profileAgentDir } from "../src/profile.js";
 
 const dirs: string[] = [];
-let priorProfileHome: string | undefined;
-let profileHome = "";
 function tempDir(): string { const d = mkdtempSync(join(tmpdir(), "noir kernel ünïcode ")); dirs.push(d); return d; }
-// The kernel materializes the engine profile under the profile home; never touch the real one in tests.
-beforeAll(() => {
-  priorProfileHome = process.env.NOIR_PROFILE_HOME;
-  profileHome = mkdtempSync(join(tmpdir(), "noir profile ünïcode "));
-  process.env.NOIR_PROFILE_HOME = profileHome;
-});
-afterAll(() => {
-  if (priorProfileHome === undefined) delete process.env.NOIR_PROFILE_HOME;
-  else process.env.NOIR_PROFILE_HOME = priorProfileHome;
-  rmSync(profileHome, { recursive: true, force: true });
-});
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
 
 async function call(port: number, token: string, method: string, params?: unknown): Promise<any> {
@@ -104,7 +91,8 @@ describe("startKernel", () => {
   });
 
   it("removes models.yml when a rolled-back create cannot re-sync", async () => {
-    const kernel = await startKernel({ dataDir: tempDir() });
+    const dataDir = tempDir();
+    const kernel = await startKernel({ dataDir });
     const good = await call(kernel.port, kernel.token, "provider.create", {
       name: "Good", baseUrl: "http://localhost:11434/v1", apiKind: "openai-completions", apiKey: "sk-good-round2",
     });
@@ -112,11 +100,11 @@ describe("startKernel", () => {
     const model = await call(kernel.port, kernel.token, "model.create", { providerId: good.result.id, modelId: "gpt-ok" });
     expect(model.error).toBeUndefined();
 
-    const profileFile = join(profileAgentDir(profileHome), "models.yml");
+    const profileFile = join(profileAgentDir(dataDir), "models.yml");
     expect(readFileSync(profileFile, "utf8")).toContain("sk-good-round2");
 
     // Make the second half of materializeProfile fail after models.yml has been rewritten.
-    const blockedConfig = join(profileAgentDir(profileHome), "config.yml");
+    const blockedConfig = join(profileAgentDir(dataDir), "config.yml");
     rmSync(blockedConfig, { force: true });
     mkdirSync(blockedConfig, { recursive: true });
     try {

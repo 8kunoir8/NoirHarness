@@ -11,8 +11,8 @@ provider calls `omp` makes.
 
 - Node 24+
 - pnpm 10+ (`corepack enable`)
-- `omp` on `PATH` (`omp --version`). Every chat turn spawns `omp --profile noir … acp`; without
-  the binary the UI loads but a prompt fails with an engine-spawn error.
+- `omp` on `PATH` (`omp --version`). Every chat turn spawns `omp … acp`; without the binary the UI
+  loads but a prompt fails with an engine-spawn error.
 
 ## Develop
 
@@ -35,34 +35,38 @@ the **Setup** page (the app opens there until a model exists); the last two live
 3. **Workspace.** Add a project path, create a workspace for it, then select that workspace.
 4. **Chat.** Create a new chat on the workspace with a model, type a prompt, and press send.
 
-The first turn spawns the engine: the kernel regenerates the `omp` profile, launches
-`omp --profile noir --session-dir <workspace>/.noir/sessions --model <provider>/<model> acp` with
-the workspace as `cwd`, then streams assistant text, tool calls, approvals, and usage into the
-chat. Tool calls block on a permission prompt; approving runs `omp`'s terminal round-trip and
-streams the result.
+The first turn spawns the engine: the kernel regenerates its agent directory, launches
+`omp --session-dir <workspace>/.noir/sessions --model <provider>/<model> acp` with the workspace
+as `cwd` and `PI_CODING_AGENT_DIR` pointing at that directory, then streams assistant text, tool
+calls, approvals, and usage into the chat. Tool calls block on a permission prompt; approving runs
+`omp`'s terminal round-trip and streams the result.
 
-### The generated profile
+### The engine directory
 
-`~/.omp/profiles/noir/agent/` is owned by the kernel:
+`<data dir>/engine/` is owned by NoirHarness and is the only configuration `omp` reads when it runs
+as this app's engine. `<data dir>` is Electron's `userData` directory (on Windows
+`%APPDATA%\NoirHarness`), overridable with `NOIR_DATA_DIR`. The user's own `~/.omp` profile is never
+read or written.
 
 - `models.yml` — the enabled providers and models, with the session default declared first (omp
   treats the first model of a provider as the default) and the current model selector applied
   again via `--model`.
 - `config.yml` — model role bindings (empty unless the kernel sets roles).
+- session and cache files that `omp` writes for that directory.
 
-Both files are written atomically with mode `0600` and contain the provider API keys. They are
-rewritten (overwritten) whenever a provider or model is created or deleted, whenever a chat is
-created, and again before each engine start, so edits take effect on the next chat/turn.
-Deleting the last enabled provider or model deletes `models.yml`, so a removed key does not
-linger on disk. Use `NOIR_PROFILE_HOME` to point the whole tree somewhere else (tests do this).
+`models.yml` and `config.yml` are written atomically with mode `0600` and contain the provider API
+keys. They are rewritten (overwritten) whenever a provider or model is created or deleted, whenever
+a chat is created, and again before each engine start, so edits take effect on the next chat/turn.
+Deleting the last enabled provider or model deletes `models.yml`, so a removed key does not linger
+on disk. The format is omp's own, so a `models.yml` copied from an existing omp profile works
+verbatim.
 
 ## Configuration
 
 | variable | default | meaning |
 | --- | --- | --- |
 | `NOIR_OMP_COMMAND` | `omp` | binary to spawn |
-| `NOIR_OMP_ARGS_JSON` | `[]` | JSON array of strings inserted before the generated `--profile … acp` flags |
-| `NOIR_PROFILE_HOME` | `os.homedir()` | root of `.omp/profiles/noir/agent` |
+| `NOIR_OMP_ARGS_JSON` | `[]` | JSON array of strings inserted before the generated `--session-dir … acp` flags |
 | `NOIR_TURN_TIMEOUT_MS` | `120000` | per-turn watchdog; on expiry the kernel sends `session/cancel` and reports the turn as failed |
 
 The desktop shell also honours `NOIR_DATA_DIR`, `NOIR_KERNEL_ENTRY`, and `NOIR_NODE_BIN`.
@@ -77,9 +81,8 @@ pnpm --filter @noir/desktop test:e2e
 ```
 
 `test:e2e` builds the app and drives Electron with Playwright against a local mock provider: it
-streams a reply and completes a permission-approved tool call. The app rewrites the real
-`~/.omp/profiles/noir/agent` while the specs run; the suite snapshots the directory first and
-restores it afterwards, so a run leaves your profile as it found it.
+streams a reply and completes a permission-approved tool call. Each spec uses its own temporary
+data directory, so engine state stays inside it.
 
 ## Layout
 

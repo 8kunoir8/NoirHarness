@@ -2,12 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
-import {
-  deleteProviderThroughKernel,
-  removeDir,
-  snapshotProfileAgentDir,
-  waitForKernelExit,
-} from "./helpers.js";
+import { deleteProviderThroughKernel, removeDir, waitForKernelExit } from "./helpers.js";
 import { startMockProvider, type MockProvider } from "./mock-provider.js";
 
 interface Harness {
@@ -66,13 +61,12 @@ async function sendPrompt(page: Page, text: string): Promise<void> {
   await page.getByRole("button", { name: "Send" }).click();
 }
 
-/** Runs one chat against the mock. Teardown removes the keyring entry, the mock, and the profile. */
+/** Runs one chat against the mock. Teardown removes the keyring entry, the mock, and the data dir. */
 async function runChat(
   body: (page: Page, mock: MockProvider, harness: Harness) => Promise<void>,
 ): Promise<void> {
   test.setTimeout(120_000);
   const harness = createDirs();
-  const snapshot = snapshotProfileAgentDir();
   try {
     const mock = await startMockProvider();
     let app: ElectronApplication | undefined;
@@ -89,12 +83,8 @@ async function runChat(
     }
   } finally {
     await waitForKernelExit(harness.dataDir).catch(() => undefined);
-    try {
-      await snapshot.restore();
-    } finally {
-      await removeDir(harness.dataDir);
-      await removeDir(harness.workspacePath);
-    }
+    await removeDir(harness.dataDir);
+    await removeDir(harness.workspacePath);
   }
 }
 

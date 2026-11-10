@@ -5,23 +5,27 @@ import { ErrorCodes, RpcFault } from "@noir/protocol";
 import type { ModelService } from "./models.js";
 import type { ProviderService } from "./providers.js";
 
-/** The omp profile directory the kernel owns: `~/.omp/profiles/noir/agent`. */
-export function profileAgentDir(home: string): string {
-  return join(home, ".omp", "profiles", "noir", "agent");
+/**
+ * The engine's agent directory, owned by NoirHarness: `<dataDir>/engine`.
+ *
+ * `omp` reads it because `EngineManager` spawns the engine with `PI_CODING_AGENT_DIR` pointing
+ * here, so nothing under the user's `~/.omp` is read or written. The layout inside is omp's own
+ * (`models.yml`, `config.yml`, session state), which is why `--profile` is not used.
+ */
+export function profileAgentDir(dataDir: string): string {
+  return join(dataDir, "engine");
 }
 
 /** Removes the rendered models file (and with it every key) without touching config.yml. */
-export async function clearProfileModels(home: string): Promise<void> {
-  await rm(join(profileAgentDir(home), "models.yml"), { force: true });
+export async function clearProfileModels(dataDir: string): Promise<void> {
+  await rm(join(profileAgentDir(dataDir), "models.yml"), { force: true });
 }
 
 export interface SyncProfileDeps {
   providers: ProviderService;
   models: ModelService;
-  /** Kernel data dir. Reserved for future profile state; never holds provider keys. */
+  /** Kernel data dir; the profile lives in `<dataDir>/engine`. */
   dataDir: string;
-  /** Profile home (`NOIR_PROFILE_HOME` or the user's home directory). */
-  home: string;
 }
 
 /**
@@ -61,7 +65,7 @@ export async function syncProfile(deps: SyncProfileDeps): Promise<void> {
 
   if (providers.length === 0 || models.length === 0) {
     // Nothing can be rendered; drop the old file so a deleted provider's key does not linger on disk.
-    await clearProfileModels(deps.home);
+    await clearProfileModels(deps.dataDir);
     return;
   }
 
@@ -74,7 +78,7 @@ export async function syncProfile(deps: SyncProfileDeps): Promise<void> {
   }
 
   await materializeProfile({
-    dir: profileAgentDir(deps.home),
+    dir: profileAgentDir(deps.dataDir),
     providers,
     models,
     defaultModel: { providerName: defaultModel.providerName, modelId: defaultModel.modelId },

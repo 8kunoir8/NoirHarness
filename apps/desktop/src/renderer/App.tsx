@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { SystemHealthResult } from "@noir/protocol";
 import { connect, request } from "./api.js";
 import { Setup } from "./Setup.js";
 import { Workspace } from "./Workspace.js";
@@ -14,11 +15,7 @@ export function App() {
     void (async () => {
       try {
         await connect();
-        const health = await request<{ status: string }>("system.health");
-        if (health.status !== "ok") {
-          setStatus("kernel error");
-          return;
-        }
+        SystemHealthResult.parse(await request("system.health"));
         setStatus("kernel ok");
         // First run has nothing to chat with, so land on Setup; afterwards land on the chat.
         const { models } = await request<{ models: unknown[] }>("model.list");

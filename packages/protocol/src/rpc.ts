@@ -22,6 +22,14 @@ export const Methods = {
   providerDelete: "provider.delete",
 } as const;
 
+/** `system.health` result. `engineDir` is the agent directory the kernel materializes and omp reads. */
+export const SystemHealthResult = z.object({
+  status: z.literal("ok"),
+  pid: z.number().int(),
+  engineDir: z.string(),
+});
+export type SystemHealthResult = z.infer<typeof SystemHealthResult>;
+
 export const ProjectAddParams = z.object({ path: z.string().min(1) });
 export const WorkspaceCreateParams = z.object({ projectId: z.string().min(1) });
 export const SessionCreateParams = z.object({ workspaceId: z.string().min(1), modelId: z.string().optional() });

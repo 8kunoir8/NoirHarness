@@ -2,16 +2,10 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { _electron as electron, expect, test, type ElectronApplication } from "@playwright/test";
-import {
-  deleteProviderThroughKernel,
-  removeDir,
-  snapshotProfileAgentDir,
-  waitForKernelExit,
-} from "./helpers.js";
+import { deleteProviderThroughKernel, removeDir, waitForKernelExit } from "./helpers.js";
 
 test("boots, spawns the kernel, and reaches health", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "noir e2e "));
-  const snapshot = snapshotProfileAgentDir();
   let app: ElectronApplication | undefined;
   try {
     app = await electron.launch({ args: ["."], env: { ...process.env, NOIR_DATA_DIR: dataDir } });
@@ -20,18 +14,13 @@ test("boots, spawns the kernel, and reaches health", async () => {
   } finally {
     await app?.close().catch(() => undefined);
     await waitForKernelExit(dataDir).catch(() => undefined);
-    try {
-      await snapshot.restore();
-    } finally {
-      await removeDir(dataDir);
-    }
+    await removeDir(dataDir);
   }
 });
 
 test("a provider survives an app restart", async () => {
   test.setTimeout(120_000);
   const dataDir = mkdtempSync(join(tmpdir(), "noir persist "));
-  const snapshot = snapshotProfileAgentDir();
   const launch = () => electron.launch({ args: ["."], env: { ...process.env, NOIR_DATA_DIR: dataDir } });
 
   try {
@@ -62,10 +51,6 @@ test("a provider survives an app restart", async () => {
     }
     await waitForKernelExit(dataDir);
   } finally {
-    try {
-      await snapshot.restore();
-    } finally {
-      await removeDir(dataDir);
-    }
+    await removeDir(dataDir);
   }
 });

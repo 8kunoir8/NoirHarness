@@ -3,6 +3,7 @@ import {
   ModelListResult,
   ProviderDeleteParams,
   ProviderListResult,
+  SystemHealthResult,
   type ApiKind,
   type ModelCreateParams,
   type ModelView,
@@ -11,8 +12,6 @@ import {
 } from "@noir/protocol";
 import type { RequestFn } from "./api.js";
 import { errorMessage } from "./events.js";
-
-const PROFILE_PATH = "~/.omp/profiles/noir/agent/models.yml";
 
 const API_KIND_LABEL: Record<ApiKind, string> = {
   "openai-completions": "OpenAI-compatible",
@@ -41,17 +40,20 @@ export function Setup({ request, onOpenChat }: SetupProps) {
   const [modelId, setModelId] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [contextWindow, setContextWindow] = useState("200000");
+  const [engineDir, setEngineDir] = useState("");
   const [error, setError] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(false);
 
   async function load(): Promise<void> {
     try {
-      const [providerResult, modelResult] = await Promise.all([
+      const [providerResult, modelResult, health] = await Promise.all([
         request("provider.list").then((value) => ProviderListResult.parse(value)),
         request("model.list").then((value) => ModelListResult.parse(value)),
+        request("system.health").then((value) => SystemHealthResult.parse(value)),
       ]);
       setProviders(providerResult.providers);
       setModels(modelResult.models);
+      setEngineDir(health.engineDir);
       setError(undefined);
     } catch (loadError) {
       setError(errorMessage(loadError));
@@ -149,9 +151,11 @@ export function Setup({ request, onOpenChat }: SetupProps) {
     <section className="setup" aria-label="Setup">
       <h2>Setup</h2>
       <p className="hint">
-        Your API key is sent once to the local kernel and kept in the OS keychain. It is written only to{" "}
-        <code>{PROFILE_PATH}</code> (owner-only permissions) so the engine can use it; it is never
-        stored in the database, logs, or read back into this window.
+        Your API key is sent once to the local kernel and kept in the OS keychain. It is written only
+        to <code>{engineDir === "" ? "models.yml" : `${engineDir}/models.yml`}</code> (owner-only
+        permissions) so the engine can use it; it is never stored in the database, logs, or read back
+        into this window. That directory belongs to NoirHarness — your own omp profile is not read or
+        modified.
       </p>
       {error === undefined ? null : <p role="alert">{error}</p>}
 

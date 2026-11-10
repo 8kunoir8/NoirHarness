@@ -1,6 +1,5 @@
 import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
 import WebSocket from "ws";
@@ -27,7 +26,7 @@ import { openDb } from "./db.js";
 import { EngineManager } from "./engineManager.js";
 import { EventStore } from "./eventStore.js";
 import { ModelService } from "./models.js";
-import { clearProfileModels, syncProfile } from "./profile.js";
+import { clearProfileModels, profileAgentDir, syncProfile } from "./profile.js";
 import { ProjectService } from "./projects.js";
 import { ProviderService } from "./providers.js";
 import { startRpcServer, type RpcServer } from "./rpcServer.js";
@@ -178,7 +177,6 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
       const sessions = new SessionService(db, events);
       const providers = new ProviderService(db, new KeyringSecrets());
       const models = new ModelService(db);
-      const home = process.env.NOIR_PROFILE_HOME ?? homedir();
       const engineManager = new EngineManager({
         db,
         events,
@@ -186,23 +184,22 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
         models,
         providers,
         dataDir: dir,
-        home,
       });
       engines = engineManager;
-      const sync = () => syncProfile({ providers, models, dataDir: dir, home });
+      const sync = () => syncProfile({ providers, models, dataDir: dir });
       const rollbackProfileRow = async (remove: () => void, cause: unknown): Promise<never> => {
         remove();
         try {
           await sync();
         } catch {
           // A partial materialize may have written the rejected key before failing; drop the file.
-          await clearProfileModels(home);
+          await clearProfileModels(dir);
         }
         throw cause;
       };
 
       const handlers: Record<string, (params: unknown) => Promise<unknown>> = {
-        [Methods.systemHealth]: async () => ({ status: "ok", pid: process.pid }),
+        [Methods.systemHealth]: async () => ({ status: "ok", pid: process.pid, engineDir: profileAgentDir(dir) }),
         [Methods.projectAdd]: async (params) => projects.add(ProjectAddParams.parse(params).path),
         [Methods.projectList]: async () => ({ projects: projects.list() }),
         [Methods.workspaceCreate]: async (params) => workspaces.createLocal(WorkspaceCreateParams.parse(params).projectId),

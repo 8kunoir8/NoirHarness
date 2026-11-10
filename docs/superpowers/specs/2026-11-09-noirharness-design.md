@@ -38,7 +38,7 @@ Four ownership layers. The kernel owns all state; Electron main owns OS integrat
 │  · SQLite WAL: metadata + append-only event log             │
 │  · provider registry · workspaces/git · sessions · skills   │
 │  · fs / git / PTY services (LSP in M2)                      │
-│  · engine registry ─► ACP adapter ─► `omp --profile noir acp`
+│  · engine registry ─► ACP adapter ─► `omp acp`              │
 │                   └► native engine (M2)                     │
 └───────────────┬─────────────────────────────────────────────┘
                 │ events (append-only) + RPC
@@ -179,16 +179,17 @@ interface AgentEngine {
 
 `EngineSession` emits normalized `AgentEvent`s and exposes `prompt`, `steer`, `interrupt`, `setModel`, `dispose`. The M1 implementation is the ACP adapter; the M2 native engine implements the same interface.
 
-### 7.2 Managed OMP profile
+### 7.2 Managed engine directory
 
-OMP's ACP mode takes credentials from its own configuration and advertises per-session model/thinking selection. The kernel therefore materializes a NoirHarness-owned profile:
+OMP's ACP mode takes credentials from its own configuration and advertises per-session model/thinking selection. The kernel therefore materializes an agent directory it owns at `<dataDir>/engine`:
 
 - Provider changes → `models.yml` (OpenAI-compatible, Anthropic, Google, local kinds; mapped by the adapter).
 - Agent model policy → `config.yml` role mapping.
-- Skills → the profile's skill directory, linked with hash stamps (copy fallback where links are unavailable).
-- Launch: `omp --profile noir --session-dir <workspace>/.noir/sessions acp`, cwd = workspace. `.noir/` is kernel-created and added to the workspace `.gitignore` on first use.
-- The profile directory is generated; manual edits are overwritten. The user's own `~/.omp` is never touched.
-- Exact profile path resolution and `--profile` isolation of `models.yml` are verified in the M1.1 spike; fallback is `--config` overlay plus `--session-dir`.
+- Skills → the directory's skill folder, linked with hash stamps (copy fallback where links are unavailable).
+- Launch: `omp --session-dir <workspace>/.noir/sessions --model <provider>/<model> acp`, cwd = workspace, with `PI_CODING_AGENT_DIR=<dataDir>/engine` in the child environment. `.noir/` is kernel-created and added to the workspace `.gitignore` on first use.
+- `--profile` is not passed: named profiles resolve under omp's own home (`~/.omp/profiles/<name>`), which would put the app's state inside the user's omp tree. `PI_CODING_AGENT_DIR` relocates omp's agent directory itself, and a profile flag would override it.
+- The directory is generated; manual edits are overwritten. The user's own `~/.omp` is never read or written.
+- Verified on omp 18.18.3: `PI_CODING_AGENT_DIR` moves `omp config path`, and `omp models` reads `models.yml` from that directory; `--profile` takes precedence when both are given. The format is omp's own, so a `models.yml` copied from an existing profile works verbatim.
 
 ### 7.3 Provider registry
 
@@ -276,7 +277,7 @@ Direction after M1: M2 native engine + Office view + agents dashboard; M3 skill 
 
 ## 14. Risks and open verification items
 
-1. **OMP profile isolation** — verify the profile directory and whether `--profile` isolates `models.yml`. Fallback: `--config` overlay + `--session-dir`. Verify before M1.1 code.
+1. **OMP engine-directory isolation** — resolved in M1.1: omp reads `<dataDir>/engine` via `PI_CODING_AGENT_DIR`; `--profile` would resolve under `~/.omp` and is not used.
 2. **ACP session configuration** — verify the model/thinking selection payload against a live `omp acp` handshake.
 3. **ACP permission shape** — verify how shell/delete/rename requests arrive; the policy model depends on it.
 4. **ACP richness** — OMP's ACP surface may expose less than its native RPC stream. The adapter must upgrade to `--mode rpc` without changing the kernel contract.

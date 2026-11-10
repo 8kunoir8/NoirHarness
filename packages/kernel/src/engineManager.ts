@@ -21,7 +21,7 @@ import {
 } from "@noir/protocol";
 import type { EventStore } from "./eventStore.js";
 import type { ModelService } from "./models.js";
-import { syncProfile } from "./profile.js";
+import { profileAgentDir, syncProfile } from "./profile.js";
 import type { ProviderService } from "./providers.js";
 import type { SessionService } from "./sessions.js";
 
@@ -159,7 +159,6 @@ function planStatus(status: string): "pending" | "active" | "done" {
 export class EngineManager {
   private readonly command: string;
   private readonly baseArgs: string[];
-  private readonly home: string;
   private readonly dataDir: string;
   private readonly turnTimeoutMs: number;
   private readonly states = new Map<string, SessionState>();
@@ -175,14 +174,12 @@ export class EngineManager {
       models: ModelService;
       providers: ProviderService;
       dataDir: string;
-      home: string;
       ompCommand?: string;
       turnTimeoutMs?: number;
     },
   ) {
     this.command = deps.ompCommand ?? process.env.NOIR_OMP_COMMAND ?? "omp";
     this.baseArgs = parseArgs(process.env.NOIR_OMP_ARGS_JSON);
-    this.home = deps.home;
     this.dataDir = deps.dataDir;
     this.turnTimeoutMs = deps.turnTimeoutMs ?? parseTimeout(process.env.NOIR_TURN_TIMEOUT_MS) ?? DEFAULT_TURN_TIMEOUT_MS;
   }
@@ -415,13 +412,10 @@ export class EngineManager {
       providers: this.deps.providers,
       models: this.deps.models,
       dataDir: this.dataDir,
-      home: this.home,
     });
 
     const args = [
       ...this.baseArgs,
-      "--profile",
-      "noir",
       "--session-dir",
       join(state.workspaceRoot, ".noir", "sessions"),
       "--model",
@@ -432,6 +426,8 @@ export class EngineManager {
       command: this.command,
       args,
       cwd: state.workspaceRoot,
+      // PI_CODING_AGENT_DIR makes omp read and write only NoirHarness's own agent directory.
+      env: { PI_CODING_AGENT_DIR: profileAgentDir(this.dataDir) },
       turnTimeoutMs: this.turnTimeoutMs,
     });
     state.engine = engine;

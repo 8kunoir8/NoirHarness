@@ -1,15 +1,5 @@
-import { createHash } from "node:crypto";
-import {
-  cpSync,
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  renameSync,
-  rmSync,
-} from "node:fs";
-import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 /** Retries because Windows keeps handles on SQLite files and omp session files briefly after exit. */
@@ -140,74 +130,3 @@ export async function deleteProviderThroughKernel(dataDir: string, name: string)
   }
 }
 
-/** `~/.omp/profiles/noir/agent` — the profile the kernel generates and `omp` reads. */
-export function profileAgentDir(): string {
-  return join(homedir(), ".omp", "profiles", "noir", "agent");
-}
-
-export interface ProfileSnapshot {
-  restore(): Promise<void>;
-}
-
-/** Relative path → SHA-256 of every regular file under `root`. */
-function fileHashes(root: string): Map<string, string> {
-  const hashes = new Map<string, string>();
-  const walk = (current: string, prefix: string): void => {
-    for (const entry of readdirSync(current, { withFileTypes: true })) {
-      const path = join(current, entry.name);
-      const relative = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
-      if (entry.isDirectory()) walk(path, relative);
-      else if (entry.isFile()) hashes.set(relative, createHash("sha256").update(readFileSync(path)).digest("hex"));
-    }
-  };
-  walk(root, "");
-  return hashes;
-}
-
-function sameTree(left: Map<string, string>, right: Map<string, string>): boolean {
-  if (left.size !== right.size) return false;
-  for (const [path, hash] of left) {
-    if (right.get(path) !== hash) return false;
-  }
-  return true;
-}
-
-/**
- * The app rewrites the real `~/.omp/profiles/noir/agent` on every provider/model change, so an
- * e2e run must put back whatever the developer had (including "nothing") before it started.
- *
- * Restore copies the backup to a sibling staging directory, verifies it, and only then swaps it
- * into place; the live directory is never deleted while the backup is the only remaining copy.
- */
-export function snapshotProfileAgentDir(dir = profileAgentDir()): ProfileSnapshot {
-  const backupRoot = mkdtempSync(join(tmpdir(), "noir profile backup "));
-  const backup = join(backupRoot, "agent");
-  const existed = existsSync(dir);
-  if (existed) cpSync(dir, backup, { recursive: true });
-  return {
-    async restore(): Promise<void> {
-      if (!existed) {
-        await removeDir(dir);
-        await removeDir(backupRoot);
-        return;
-      }
-      const stagingRoot = mkdtempSync(join(dirname(dir), ".agent-restore-"));
-      try {
-        const staging = join(stagingRoot, "agent");
-        cpSync(backup, staging, { recursive: true });
-        if (!sameTree(fileHashes(backup), fileHashes(staging))) {
-          throw new Error("staged profile copy does not match the backup");
-        }
-        await removeDir(dir);
-        renameSync(staging, dir);
-      } catch (error) {
-        await removeDir(stagingRoot).catch(() => undefined);
-        const reason = error instanceof Error ? error.message : String(error);
-        throw new Error(`profile restore failed; backup kept at ${backupRoot}: ${reason}`);
-      }
-      await removeDir(stagingRoot).catch(() => undefined);
-      // The live profile is already replaced; a cleanup failure must not read as a failed restore.
-      await removeDir(backupRoot).catch(() => undefined);
-    },
-  };
-}

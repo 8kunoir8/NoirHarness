@@ -12,6 +12,7 @@ function makeRequest(overrides: Record<string, (params?: unknown) => unknown> = 
     if (override !== undefined) return override(params);
     if (method === "provider.list") return { providers: [] };
     if (method === "model.list") return { models: [] };
+    if (method === "system.health") return { status: "ok", pid: 1, engineDir: "C:/data/engine" };
     throw new Error(`unexpected ${method}`);
   });
   return request as unknown as RequestMock;
@@ -53,6 +54,8 @@ describe("Setup", () => {
     expect(await screen.findByText("key stored")).toBeTruthy();
     // The key is never echoed back into the form or the list.
     expect(screen.queryByDisplayValue("sk-secret")).toBeNull();
+    // The hint names the real owner directory reported by the kernel, not a hardcoded omp path.
+    expect(await screen.findByText(/C:\/data\/engine\/models\.yml/)).toBeTruthy();
   });
 
   it("creates a model for the selected provider with a numeric context window", async () => {
