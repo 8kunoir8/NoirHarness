@@ -320,7 +320,13 @@ export function App() {
               {workspaces.length === 0 ? "Add a workspace to start." : "Create a chat to start talking to the agent."}
             </p>
           ) : (
-            <Chat key={activeSession.id} session={activeSession} models={models} request={request} />
+            <Chat
+              key={activeSession.id}
+              session={activeSession}
+              models={models}
+              request={request}
+              onSessionChange={() => void loadSessions().catch(() => undefined)}
+            />
           )}
         </>
       }

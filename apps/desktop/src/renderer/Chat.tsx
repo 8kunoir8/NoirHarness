@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import type { ModelView, PermissionOption, SessionPromptResult, SessionView } from "@noir/protocol";
 import type { RequestFn } from "./api.js";
+import { ChatHeader } from "./ChatHeader.js";
 import { errorMessage, useSessionEvents } from "./events.js";
+import { ToolCard } from "./ToolCard.js";
 
 function newId(): string {
   const source = globalThis.crypto;
@@ -9,7 +11,17 @@ function newId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`;
 }
 
-export function Chat({ session, models, request }: { session: SessionView; models: ModelView[]; request: RequestFn }) {
+export function Chat({
+  session,
+  models,
+  request,
+  onSessionChange,
+}: {
+  session: SessionView;
+  models: ModelView[];
+  request: RequestFn;
+  onSessionChange?: (() => void) | undefined;
+}) {
   const { state, appendUser } = useSessionEvents(session.id, request);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -27,7 +39,6 @@ export function Chat({ session, models, request }: { session: SessionView; model
   const busy = sending || queued;
   const error = actionError ?? state.error;
   const canInterrupt = state.status === "running" || state.status === "waiting";
-  const knownModel = models.some((model) => model.id === session.modelId);
 
   async function send(): Promise<void> {
     const text = draft.trim();
@@ -71,22 +82,32 @@ export function Chat({ session, models, request }: { session: SessionView; model
     }
   }
 
+  async function changeModel(modelId: string): Promise<void> {
+    if (modelId === "" || modelId === session.modelId) return;
+    try {
+      await request("session.setModel", { sessionId: session.id, modelId });
+      setActionError(undefined);
+      onSessionChange?.();
+    } catch (modelError) {
+      setActionError(errorMessage(modelError));
+    }
+  }
+
   const title = state.title ?? session.title;
   return (
     <section className="chat" aria-label="Chat">
-      <header className="chat-header">
-        <h2>{title === "" ? "Untitled session" : title}</h2>
-        <span data-testid="session-status">{state.status}</span>
-        <label>
-          Model
-          <select aria-label="Model" value={session.modelId ?? ""} disabled>
-            <option value="">Default</option>
-            {session.modelId !== null && !knownModel ? <option value={session.modelId}>{session.modelId}</option> : null}
-            {models.map((model) => <option key={model.id} value={model.id}>{model.displayName}</option>)}
-          </select>
-        </label>
-        {canInterrupt ? <button type="button" onClick={() => void interrupt()}>Interrupt</button> : null}
-      </header>
+      <ChatHeader
+        title={title}
+        status={state.status}
+        modelId={session.modelId}
+        models={models}
+        usage={state.usage}
+        turnStartedAt={state.turnStartedAt}
+        lastTurn={state.lastTurn}
+        canInterrupt={canInterrupt}
+        onInterrupt={() => void interrupt()}
+        onModelChange={(modelId) => void changeModel(modelId)}
+      />
 
       {error === undefined ? null : <p role="alert">{error}</p>}
 
@@ -94,12 +115,18 @@ export function Chat({ session, models, request }: { session: SessionView; model
         {state.messages.map((message) => (
           <li key={message.id} className={`message message-${message.role}`} data-testid={message.role === "assistant" ? "message-assistant" : undefined}>
             <strong>{message.role === "user" ? "You" : "Assistant"}</strong>
-            {message.blocks.map((block, index) => (
-              <div key={`${message.id}-${index}`} className={block.kind === "reasoning" ? "reasoning" : "text"}>
-                {block.kind === "reasoning" ? <span className="label">Reasoning</span> : null}
-                <p>{block.text}</p>
-              </div>
-            ))}
+            {message.blocks.map((block, index) =>
+              block.kind === "reasoning" ? (
+                <details key={`${message.id}-${index}`} className="reasoning">
+                  <summary>Reasoning</summary>
+                  <p>{block.text}</p>
+                </details>
+              ) : (
+                <div key={`${message.id}-${index}`} className="text">
+                  <p>{block.text}</p>
+                </div>
+              ),
+            )}
           </li>
         ))}
       </ol>
@@ -109,11 +136,7 @@ export function Chat({ session, models, request }: { session: SessionView; model
           <h3>Tools</h3>
           <ul className="tools">
             {state.tools.map((tool) => (
-              <li key={tool.id} className="tool" data-testid="tool-card">
-                <strong>{tool.title === "" ? tool.id : tool.title}</strong>
-                <span className="status">{tool.status}</span>
-                {tool.output === "" ? null : <pre>{tool.output}</pre>}
-              </li>
+              <ToolCard key={tool.id} tool={tool} />
             ))}
           </ul>
         </section>
@@ -130,9 +153,7 @@ export function Chat({ session, models, request }: { session: SessionView; model
         </div>
       )}
 
-      {state.usage === undefined ? null : (
-        <p className="usage">Context {state.usage.used}/{state.usage.size} · ${state.usage.costUsd.toFixed(4)}</p>
-      )}
+
 
       <form
         className="composer"

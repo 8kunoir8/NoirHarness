@@ -35,6 +35,8 @@ export interface ChatTool {
 export interface ChatUsage {
   used: number;
   size: number;
+  inputTokens: number;
+  outputTokens: number;
   costUsd: number;
 }
 
@@ -42,6 +44,23 @@ export interface ChatApproval {
   approvalId: string;
   title: string;
   options: PermissionOption[];
+}
+
+export interface ChatFile {
+  path: string;
+  change: "created" | "modified" | "deleted";
+  add: number;
+  del: number;
+}
+
+export interface ChatPlanItem {
+  text: string;
+  status: "pending" | "active" | "done";
+}
+
+export interface ChatTurn {
+  status: "completed" | "interrupted" | "failed";
+  ms: number;
 }
 
 export interface ChatState {
@@ -54,11 +73,15 @@ export interface ChatState {
   usage?: ChatUsage;
   error?: string;
   activeTurnId?: string;
+  turnStartedAt?: number;
+  lastTurn?: ChatTurn;
+  files: ChatFile[];
+  plan: ChatPlanItem[];
   lastSeq: number;
 }
 
 export function emptyChatState(sessionId?: string): ChatState {
-  const base: ChatState = { messages: [], tools: [], status: "idle", lastSeq: 0 };
+  const base: ChatState = { messages: [], tools: [], files: [], plan: [], status: "idle", lastSeq: 0 };
   return sessionId === undefined ? base : { ...base, sessionId };
 }
 
@@ -66,10 +89,11 @@ export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Request failed";
 }
 
-function without(state: ChatState, key: "error" | "activeTurnId" | "approval"): ChatState {
+function without(state: ChatState, key: "error" | "activeTurnId" | "approval" | "turnStartedAt"): ChatState {
   const copy: ChatState = { ...state };
   if (key === "error") delete copy.error;
   else if (key === "activeTurnId") delete copy.activeTurnId;
+  else if (key === "turnStartedAt") delete copy.turnStartedAt;
   else delete copy.approval;
   return copy;
 }
@@ -123,13 +147,26 @@ export function reduceChat(state: ChatState, event: AgentEvent): ChatState {
       return { ...next, status: "closed" };
     case "turn.started": {
       const parsed = PayloadSchemas["turn.started"].safeParse(event.payload);
-      return parsed.success ? { ...without(next, "error"), activeTurnId: parsed.data.turnId } : next;
+      return parsed.success
+        ? { ...without(next, "error"), activeTurnId: parsed.data.turnId, turnStartedAt: event.ts }
+        : next;
     }
-    case "turn.completed":
-      return without(next, "activeTurnId");
+    case "turn.completed": {
+      const parsed = PayloadSchemas["turn.completed"].safeParse(event.payload);
+      if (!parsed.success) return without(next, "activeTurnId");
+      return {
+        ...without(without(next, "activeTurnId"), "turnStartedAt"),
+        lastTurn: { status: parsed.data.status, ms: event.ts - (next.turnStartedAt ?? event.ts) },
+      };
+    }
     case "turn.failed": {
       const parsed = PayloadSchemas["turn.failed"].safeParse(event.payload);
-      return parsed.success ? { ...without(next, "activeTurnId"), error: parsed.data.message } : next;
+      if (!parsed.success) return without(next, "activeTurnId");
+      return {
+        ...without(without(next, "activeTurnId"), "turnStartedAt"),
+        error: parsed.data.message,
+        lastTurn: { status: "failed", ms: event.ts - (next.turnStartedAt ?? event.ts) },
+      };
     }
     case "message.delta": {
       const parsed = PayloadSchemas["message.delta"].safeParse(event.payload);
@@ -204,9 +241,22 @@ export function reduceChat(state: ChatState, event: AgentEvent): ChatState {
     }
     case "usage.updated": {
       const parsed = PayloadSchemas["usage.updated"].safeParse(event.payload);
-      return parsed.success
-        ? { ...next, usage: { used: parsed.data.contextUsed, size: parsed.data.contextWindow, costUsd: parsed.data.costUsd } }
-        : next;
+      if (!parsed.success) return next;
+      const { inputTokens, outputTokens, contextUsed, contextWindow, costUsd } = parsed.data;
+      return { ...next, usage: { used: contextUsed, size: contextWindow, inputTokens, outputTokens, costUsd } };
+    }
+    case "file.changed": {
+      const parsed = PayloadSchemas["file.changed"].safeParse(event.payload);
+      if (!parsed.success) return next;
+      const { path, change, add, del } = parsed.data;
+      const index = next.files.findIndex((file) => file.path === path);
+      const files = index === -1 ? [...next.files, { path, change, add, del }] : [...next.files];
+      if (index !== -1) files[index] = { path, change, add, del };
+      return { ...next, files };
+    }
+    case "plan.updated": {
+      const parsed = PayloadSchemas["plan.updated"].safeParse(event.payload);
+      return parsed.success ? { ...next, plan: parsed.data.items } : next;
     }
     default:
       return next;

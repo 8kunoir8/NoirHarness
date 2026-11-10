@@ -98,6 +98,7 @@ function renderList(sessions: SessionView[], read: ReadState = {}, query = "") {
     <SessionList
       sessions={sessions}
       models={[model]}
+      read={read}
       query={query}
       filter="all"
       onFilterChange={() => undefined}

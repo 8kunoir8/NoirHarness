@@ -305,7 +305,16 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; colo
 .message strong { font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
 .message p { margin: 4px 0 0; white-space: pre-wrap; }
 .reasoning { color: var(--muted); font-style: italic; }
-.reasoning .label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; display: block; }
+.reasoning summary {
+  cursor: pointer;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  list-style: none;
+}
+.reasoning summary::before { content: "▸ "; }
+.reasoning[open] summary::before { content: "▾ "; }
+.reasoning p { margin: 4px 0 0; }
 
 .tools { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
 .tool {
@@ -314,7 +323,19 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; colo
   padding: 6px 10px;
   background: var(--surface-raised);
 }
-.tool .status { margin-left: 8px; color: var(--muted); font-size: 0.78rem; }
+.tool summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+}
+.tool summary::before { content: "▸"; color: var(--muted); font-size: 0.7rem; }
+.tool details[open] > summary::before { content: "▾"; }
+.tool-status { margin-left: auto; color: var(--muted); font-size: 0.78rem; }
+.tool[data-status="failed"] .tool-status { color: var(--danger); }
+.tool[data-status="running"] .tool-status { color: var(--accent); }
+.tool-empty { color: var(--muted); margin: 6px 0 0; font-size: 0.78rem; }
 .tool pre {
   margin: 6px 0 0;
   white-space: pre-wrap;
@@ -335,7 +356,39 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; colo
 .approval p { margin: 0 0 8px; }
 .approval-options { display: flex; gap: 8px; flex-wrap: wrap; }
 
-.usage { color: var(--muted); font-size: 0.8rem; margin: 0; }
+.chat-title { display: flex; align-items: baseline; gap: 8px; flex: 1; min-width: 12ch; }
+.chat-title h2 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-status {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.chat-status[data-status="running"],
+.chat-status[data-status="starting"] { border-color: var(--accent); color: var(--accent); }
+.chat-status[data-status="waiting"] { border-color: var(--warning); color: var(--warning); }
+.chat-status[data-status="error"] { border-color: var(--danger); color: var(--danger); }
+.chat-status[data-status="closed"] { border-color: var(--border-strong); }
+
+.model-picker { flex-direction: row; align-items: center; gap: 6px; }
+.model-picker select { max-width: 24ch; }
+.turn-timer { color: var(--muted); font-size: 0.78rem; font-variant-numeric: tabular-nums; min-width: 8ch; text-align: right; }
+
+.usage-meter { display: flex; align-items: center; gap: 8px; font-size: 0.74rem; color: var(--muted); }
+.usage-bar {
+  width: 84px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.usage-bar > span { display: block; height: 100%; background: var(--accent); }
+.usage-bar > span[data-tone="warn"] { background: var(--warning); }
 
 .composer { display: flex; flex-direction: column; gap: 6px; position: sticky; bottom: 0; background: var(--surface); padding: 8px 0 10px; }
 .composer textarea {
