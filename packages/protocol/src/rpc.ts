@@ -31,6 +31,9 @@ export const Methods = {
   annotationList: "annotation.list",
   annotationAdd: "annotation.add",
   annotationDelete: "annotation.delete",
+  skillList: "skill.list",
+  skillSetEnabled: "skill.setEnabled",
+  skillRead: "skill.read",
 } as const;
 
 /** `system.health` result. `engineDir` is the agent directory the kernel materializes and omp reads. */
@@ -192,6 +195,46 @@ export const AnnotationDeleteParams = z.object({ id: z.string().min(1) });
 export type AnnotationDeleteParams = z.infer<typeof AnnotationDeleteParams>;
 export const AnnotationDeleteResult = z.object({ ok: z.literal(true) });
 export type AnnotationDeleteResult = z.infer<typeof AnnotationDeleteResult>;
+
+export const SkillScopeSchema = z.enum(["global", "project"]);
+export type SkillScopeSchema = z.infer<typeof SkillScopeSchema>;
+
+export const SkillView = z.object({
+  scope: SkillScopeSchema,
+  name: z.string(),
+  description: z.string(),
+  hash: z.string(),
+  enabled: z.boolean(),
+});
+export type SkillView = z.infer<typeof SkillView>;
+
+export const SkillListParams = z.object({ workspaceId: z.string().optional() });
+export type SkillListParams = z.infer<typeof SkillListParams>;
+export const SkillListResult = z.object({
+  skills: z.array(SkillView),
+  shadowed: z.array(z.string()),
+  warnings: z.array(z.string()),
+});
+export type SkillListResult = z.infer<typeof SkillListResult>;
+
+export const SkillSetEnabledParams = z.object({
+  workspaceId: z.string().optional(),
+  scope: SkillScopeSchema,
+  name: z.string().min(1),
+  enabled: z.boolean(),
+});
+export type SkillSetEnabledParams = z.infer<typeof SkillSetEnabledParams>;
+export const SkillSetEnabledResult = z.object({ ok: z.literal(true) });
+export type SkillSetEnabledResult = z.infer<typeof SkillSetEnabledResult>;
+
+export const SkillReadParams = z.object({
+  workspaceId: z.string().optional(),
+  scope: SkillScopeSchema,
+  name: z.string().min(1),
+});
+export type SkillReadParams = z.infer<typeof SkillReadParams>;
+export const SkillReadResult = z.object({ content: z.string(), hash: z.string(), truncated: z.literal(false) });
+export type SkillReadResult = z.infer<typeof SkillReadResult>;
 
 export const EventNotificationParams = z.object({ event: AgentEvent });
 export type EventNotificationParams = z.infer<typeof EventNotificationParams>;

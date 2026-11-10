@@ -31,6 +31,9 @@ import {
   SessionPromptParams,
   SessionSetModelParams,
   SessionSubscribeParams,
+  SkillListParams,
+  SkillReadParams,
+  SkillSetEnabledParams,
   WorkspaceCreateParams,
   type AgentEvent,
 } from "@noir/protocol";
@@ -46,6 +49,7 @@ import { clearProfileModels, profileAgentDir, syncProfile } from "./profile.js";
 import { ProjectService } from "./projects.js";
 import { ProviderService } from "./providers.js";
 import { startRpcServer, type RpcServer } from "./rpcServer.js";
+import { SkillService } from "./skills.js";
 import {
   lockFilePath,
   isProcessAlive,
@@ -199,6 +203,8 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
       const sessions = new SessionService(db, events);
       const providers = new ProviderService(db, new KeyringSecrets());
       const models = new ModelService(db);
+      // Task 5 shares this instance with EngineManager so enabled flags match what is materialized.
+      const skills = new SkillService(database, dir);
       const engineManager = new EngineManager({
         db,
         events,
@@ -243,6 +249,22 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
         [Methods.gitDiff]: async (params) => {
           const { workspaceId, path } = GitDiffParams.parse(params);
           return { diff: await gitDiff(workspaceRoot(workspaceId), path) };
+        },
+        [Methods.skillList]: async (params) => {
+          const { workspaceId } = SkillListParams.parse(params ?? {});
+          if (workspaceId === undefined) return skills.list("", undefined);
+          return skills.list(workspaceId, workspaceRoot(workspaceId));
+        },
+        [Methods.skillSetEnabled]: async (params) => {
+          const { workspaceId, scope, name, enabled } = SkillSetEnabledParams.parse(params);
+          const root = workspaceId === undefined ? undefined : workspaceRoot(workspaceId);
+          await skills.setEnabled(workspaceId ?? "", root, scope, name, enabled);
+          return { ok: true };
+        },
+        [Methods.skillRead]: async (params) => {
+          const { workspaceId, scope, name } = SkillReadParams.parse(params);
+          const root = workspaceId === undefined ? undefined : workspaceRoot(workspaceId);
+          return skills.read(workspaceId ?? "", root, scope, name);
         },
         [Methods.annotationList]: async (params) => {
           const { workspaceId, path } = AnnotationListParams.parse(params);
