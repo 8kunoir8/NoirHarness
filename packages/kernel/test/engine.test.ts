@@ -793,10 +793,36 @@ describe("EngineManager over the fake ACP server", () => {
       const turn = db.prepare("SELECT status FROM turns WHERE id = ?").get(turnId) as { status: string };
       expect(turn.status).toBe("failed");
       const row = db.prepare("SELECT status FROM sessions WHERE id = ?").get(session.id) as { status: string };
-      expect(row.status).toBe("idle");
+      expect(row.status).toBe("error");
+      const stopped = events.list(session.id).filter((event) => event.type === "session.status").at(-1)!;
+      expect(stopped.payload).toEqual({ status: "error", reason: "kernel_restart" });
     },
     TEST_TIMEOUT_MS,
   );
+
+  it("sweeps sessions a crashed kernel left active in one boot pass", () => {
+    const db = openDb(":memory:");
+    dbs.push(db);
+    db.prepare("INSERT INTO projects (id, name, root_path, created_at) VALUES ('p','p','/tmp/p',1)").run();
+    db.prepare("INSERT INTO workspaces (id, project_id, path, branch, kind, status, created_at) VALUES ('w','p','/tmp/p','main','local','ready',1)").run();
+    db.prepare("INSERT INTO agents (id, name, role, engine_id) VALUES ('a','A','default','acp')").run();
+    db.prepare("INSERT INTO sessions (id, workspace_id, agent_id, engine, status, created_at) VALUES ('run','w','a','acp','running',1)").run();
+    db.prepare("INSERT INTO sessions (id, workspace_id, agent_id, engine, status, created_at) VALUES ('wait','w','a','acp','waiting',2)").run();
+    db.prepare("INSERT INTO sessions (id, workspace_id, agent_id, engine, status, created_at) VALUES ('done','w','a','acp','closed',3)").run();
+
+    const events = new EventStore(db);
+    const manager = new EngineManager({ db, events, sessions: new SessionService(db, events), models: new ModelService(db), providers: new ProviderService(db, memorySecrets()), skills: new SkillService(db, tempDir()), dataDir: tempDir() });
+    managers.push(manager);
+    manager.reconcileAll();
+    const statuses = db.prepare("SELECT id, status FROM sessions ORDER BY id").all();
+    expect(statuses).toEqual([
+      { id: "done", status: "closed" },
+      { id: "run", status: "error" },
+      { id: "wait", status: "error" },
+    ]);
+    expect(events.list("run").some((event) => event.type === "session.status" && PayloadSchemas["session.status"].safeParse(event.payload).data?.reason === "kernel_restart")).toBe(true);
+    expect(events.list("done")).toHaveLength(0);
+  });
 });
 
 describe("kernel RPC over the fake ACP server", () => {

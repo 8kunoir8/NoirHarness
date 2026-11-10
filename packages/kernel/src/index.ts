@@ -346,6 +346,7 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
       const started = await startRpcServer({ token, handlers });
       server = started;
       broadcast = (event) => started.broadcast(event);
+      engineManager.reconcileAll();
       writeRuntimeFile(file, { pid: process.pid, port: started.port, token });
     } catch (error) {
       if (engines) {

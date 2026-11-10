@@ -385,6 +385,18 @@ export class EngineManager {
     this.reconcile({ sessionId: row.id, agentId: row.agent_id });
   }
 
+  /** Fails sessions a previous kernel left active; the next prompt resumes them from `error`. */
+  reconcileAll(): void {
+    const rows = this.deps.db
+      .prepare("SELECT id, agent_id FROM sessions WHERE status IN ('starting','running','waiting') ORDER BY created_at ASC")
+      .all() as Array<{ id: string; agent_id: string }>;
+    for (const row of rows) {
+      this.reconcile({ sessionId: row.id, agentId: row.agent_id });
+      // A crash during startup leaves the session `starting`; `reconcile` only fails live statuses.
+      this.setStatus(row.id, "error", "kernel_restart");
+    }
+  }
+
   /**
    * First touch after a kernel restart: turns persisted as queued/running have no live engine
    * behind them, so fail them, resolve orphaned approvals, and release a stale status.
@@ -411,7 +423,7 @@ export class EngineManager {
       | { status: SessionStatus }
       | undefined;
     if (row !== undefined && (row.status === "running" || row.status === "waiting")) {
-      this.setStatus(target.sessionId, "idle");
+      this.setStatus(target.sessionId, "error", "kernel_restart");
     }
   }
 
@@ -620,13 +632,13 @@ export class EngineManager {
     }
   }
 
-  private setStatus(sessionId: string, status: SessionStatus): void {
+  private setStatus(sessionId: string, status: SessionStatus, reason?: string): void {
     const row = this.deps.db.prepare("SELECT status FROM sessions WHERE id = ?").get(sessionId) as
       | { status: SessionStatus }
       | undefined;
     if (row === undefined || row.status === status) return;
     if (row.status === "closed") return;
-    this.deps.sessions.setStatus(sessionId, status);
+    this.deps.sessions.setStatus(sessionId, status, reason === undefined ? undefined : { reason });
   }
 
   private emit(

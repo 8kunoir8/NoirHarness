@@ -41,7 +41,7 @@ export type EventType = z.infer<typeof EventType>;
 export const PayloadSchemas = {
   "session.created": z.object({ title: z.string() }),
   "session.updated": z.object({ title: z.string() }),
-  "session.status": z.object({ status: SessionStatus }),
+  "session.status": z.object({ status: SessionStatus, reason: z.string().min(1).optional() }),
   "session.closed": z.object({ reason: z.string().optional() }),
   "turn.started": z.object({ turnId: z.string(), index: z.number().int().nonnegative() }),
   "turn.completed": z.object({
