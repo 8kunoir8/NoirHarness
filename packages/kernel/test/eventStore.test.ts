@@ -2,17 +2,18 @@ import type Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { openDb } from "../src/db.js";
 import { EventStore } from "../src/eventStore.js";
+import { REDACTED, Redactor } from "../src/redact.js";
 
 /** Private-field introspection: no public accessor exists for the store's db handle. */
 type StoreInternals = { readonly db: Database.Database };
 
-function makeStore() {
+function makeStore(redactor?: Redactor) {
   const db = openDb(":memory:");
   db.prepare("INSERT INTO projects (id, name, root_path, created_at) VALUES ('p1','p','/tmp/p',1)").run();
   db.prepare("INSERT INTO workspaces (id, project_id, path, branch, kind, status, created_at) VALUES ('w1','p1','/tmp/p','main','local','ready',1)").run();
   db.prepare("INSERT INTO agents (id, name, role, engine_id) VALUES ('a1','A','default','acp')").run();
   db.prepare("INSERT INTO sessions (id, workspace_id, agent_id, engine, status, created_at) VALUES ('s1','w1','a1','acp','starting',1)").run();
-  return new EventStore(db);
+  return new EventStore(db, undefined, redactor);
 }
 
 const provenance = { engine: "acp" as const, engineName: "fake", adapterVersion: "0" };
@@ -48,6 +49,22 @@ describe("EventStore", () => {
     const store = makeStore();
     expect(() => store.append({ sessionId: "s1", agentId: "a1", type: "session.status", payload: { status: "bogus" }, provenance })).toThrow();
     expect(store.list("s1")).toHaveLength(0);
+  });
+
+  it("redacts before persisting and stays schema-valid", () => {
+    const store = makeStore(new Redactor({ secrets: ["sk-live-1234567890"] }));
+    store.append({ sessionId: "s1", agentId: "a1", type: "message.delta", payload: { messageId: "m", role: "user", block: { type: "text", text: "sk-live-1234567890" } }, provenance });
+    expect(store.list("s1")[0]!.payload).toEqual({ messageId: "m", role: "user", block: { type: "text", text: REDACTED } });
+    const { db } = store as unknown as StoreInternals;
+    const dump = JSON.stringify(db.prepare("SELECT payload_json FROM events").all());
+    expect(dump).not.toContain("sk-live-1234567890");
+  });
+
+  it("still rejects an invalid payload after redaction", () => {
+    const store = makeStore();
+    expect(() => store.append({ sessionId: "s1", agentId: "a1", type: "session.status", payload: { status: "bogus", note: "sk-live-1234567890" }, provenance })).toThrow();
+    const { db } = store as unknown as StoreInternals;
+    expect(db.prepare("SELECT COUNT(*) AS count FROM events").get()).toEqual({ count: 0 });
   });
 
   it("projects the turn status from the turn.completed payload", () => {

@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { v7 as uuidv7 } from "uuid";
 import { AgentEvent as AgentEventSchema, PayloadSchemas, type AgentEvent, type EventType } from "@noir/protocol";
+import { Redactor } from "./redact.js";
 
 export interface AppendInput {
   sessionId: string;
@@ -14,10 +15,14 @@ export interface AppendInput {
 }
 
 export class EventStore {
-  constructor(private readonly db: Database.Database, private readonly onEvent?: (event: AgentEvent) => void) {}
+  constructor(
+    private readonly db: Database.Database,
+    private readonly onEvent?: (event: AgentEvent) => void,
+    private readonly redactor: Redactor = new Redactor(),
+  ) {}
 
   append(input: AppendInput): AgentEvent {
-    const payload = PayloadSchemas[input.type].parse(input.payload);
+    const payload = PayloadSchemas[input.type].parse(this.redactor.redact(input.payload));
     const tx = this.db.transaction(() => {
       const { seq } = this.db.prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM events WHERE session_id = ?").get(input.sessionId) as { seq: number };
       const event: AgentEvent = AgentEventSchema.parse({
