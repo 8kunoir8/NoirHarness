@@ -170,7 +170,6 @@ const WORKSPACE_WRITE_FAILURES: Record<string, true> = {
   EROFS: true,
   ENOSPC: true,
   ENOTDIR: true,
-  ENOENT: true,
 };
 
 function isWorkspaceWriteFailure(error: unknown): boolean {
@@ -465,13 +464,10 @@ export class EngineManager {
     });
 
     // Materialization is a filesystem write, so an unwritable workspace must not gate the engine:
-    // a read-only workspace still has to answer chat. Attribution is not lost outright here — every
-    // turn re-reads the on-disk manifest in `startTurn`, so only a workspace with no prior manifest
-    // ends up with an empty index and silently unattributed `skill://` reads. Any other failure is
-    // a real fault and surfaces from the turn rather than being hidden.
+    // a read-only workspace still has to answer chat. Any other failure is a real fault and
+    // surfaces from the turn rather than being hidden.
     try {
       await this.deps.skills.materialize(state.workspaceId, state.workspaceRoot);
-      state.skillIndex = await this.deps.skills.manifestFor(state.workspaceRoot);
     } catch (error) {
       if (!isWorkspaceWriteFailure(error)) throw error;
       // Keep whatever the last turn read; a fresh state simply has nothing yet.

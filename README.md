@@ -171,7 +171,8 @@ The kernel hashes each skill directory, copies the enabled effective set into
 `skills.customDirectories` entry. Global skills are copied into each workspace that uses them, so a
 name claimed by a project skill stays claimed even when that project skill is disabled. Disabling a
 skill removes it from the materialized copy — never from its source — and applies to the next
-session started in that workspace. A `skill://` read by the engine becomes a `skill.loaded` event
+session started in that workspace. Global skill toggles are machine-wide: the flag is stored once
+and affects every workspace. A `skill://` read by the engine becomes a `skill.loaded` event
 carrying the name, scope and hash; the chat shows a `Skills loaded` group.
 
 The manifest beside that directory, `<workspace>/.noir/skills-engine.json`, is rewritten atomically

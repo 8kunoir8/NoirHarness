@@ -172,6 +172,7 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
   const file = runtimeFilePath(dir);
   const lockFile = lockFilePath(dir);
   mkdirSync(join(dir, "runtime"), { recursive: true });
+  mkdirSync(join(dir, "skills"), { recursive: true });
 
   const token = randomBytes(32).toString("hex");
   const claim: LockInfo = { pid: process.pid, token, startedAt: Date.now() };

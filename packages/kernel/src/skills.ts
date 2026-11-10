@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { Dirent } from "node:fs";
-import { cp, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { ErrorCodes, RpcFault } from "@noir/protocol";
@@ -79,9 +79,12 @@ export async function hashSkillDir(dir: string): Promise<string> {
   const hash = createHash("sha256");
   let total = 0;
   for (const rel of files) {
-    const bytes = await readFile(join(dir, ...rel.split("/")));
-    total += bytes.length;
+    const absolute = join(dir, ...rel.split("/"));
+    // Size is checked before the read so a large file is never loaded to discover its size.
+    const info = await stat(absolute);
+    total += info.size;
     if (total > MAX_SKILL_BYTES) throw new Error(`more than ${MAX_SKILL_BYTES} bytes`);
+    const bytes = await readFile(absolute);
     hash.update(rel);
     hash.update("\0");
     hash.update(String(bytes.length));
@@ -95,8 +98,8 @@ async function readSkill(scope: SkillScope, dir: string): Promise<{ name: string
   const file = join(dir, "SKILL.md");
   const marker = await lstat(file);
   if (!marker.isFile() || marker.isSymbolicLink()) throw new Error("SKILL.md is not a regular file");
+  if (marker.size > MAX_SKILL_FILE_BYTES) throw new Error("SKILL.md is larger than 1 MiB");
   const body = await readFile(file);
-  if (body.length > MAX_SKILL_FILE_BYTES) throw new Error("SKILL.md is larger than 1 MiB");
   const front = parseSkillFrontmatter(body.toString("utf8"));
   if (front.name === undefined) throw new Error("SKILL.md has no name");
   if (!SKILL_NAME.test(front.name)) throw new Error(`"${front.name}" is not a valid skill name`);
@@ -111,6 +114,23 @@ async function scanRoot(
   warnings: string[],
 ): Promise<void> {
   if (rootDir === undefined) return;
+  let marker;
+  try {
+    marker = await lstat(rootDir);
+  } catch (error) {
+    const failure = error as NodeJS.ErrnoException;
+    if (failure.code === "ENOENT") return;
+    warnings.push(`${scope}:${rootDir}: ${failure.message}`);
+    return;
+  }
+  if (marker.isSymbolicLink()) {
+    warnings.push(`${scope}:${rootDir}: root is a symlink`);
+    return;
+  }
+  if (!marker.isDirectory()) {
+    warnings.push(`${scope}:${rootDir}: root is not a directory`);
+    return;
+  }
   let entries: Dirent[];
   try {
     entries = await readdir(rootDir, { withFileTypes: true });
@@ -120,15 +140,20 @@ async function scanRoot(
     warnings.push(`${scope}:${rootDir}: ${failure.message}`);
     return;
   }
+  // Windows filesystems are case-insensitive, so two names differing only by case would collide
+  // in the engine root; report the later one as a duplicate instead of overwriting the first.
+  const seen = process.platform === "win32" ? new Set<string>() : undefined;
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
     const dir = join(rootDir, entry.name);
     try {
       const read = await readSkill(scope, dir);
-      if (skills.has(read.name)) {
+      const key = read.name.toLowerCase();
+      if (skills.has(read.name) || seen?.has(key) === true) {
         warnings.push(`${scope}:${dir}: duplicate name "${read.name}"`);
         continue;
       }
+      seen?.add(key);
       skills.set(read.name, { scope, dir, ...read });
     } catch (error) {
       warnings.push(`${scope}:${dir}: ${error instanceof Error ? error.message : String(error)}`);
@@ -193,6 +218,20 @@ async function copySkill(src: string, dest: string): Promise<void> {
     if (entry.isDirectory()) await copySkill(from, to);
     else if (entry.isFile()) await cp(from, to);
   }
+}
+
+/** Ensures `path` is a real directory, creating it only when nothing exists there yet. */
+async function ensureRealDirectory(path: string, label: string): Promise<void> {
+  const marker = await lstat(path).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  });
+  if (marker === undefined) {
+    await mkdir(path, { recursive: true });
+    return;
+  }
+  if (marker.isSymbolicLink()) throw new Error(`${label} is a symlink`);
+  if (!marker.isDirectory()) throw new Error(`${label} is not a directory`);
 }
 
 export class SkillService {
@@ -293,28 +332,48 @@ export class SkillService {
    * manifest. One directory per workspace makes precedence intrinsic: `discoverSkills` never
    * yields a global copy whose name a project skill claims, even when that project skill is
    * disabled, so disabling it cannot resurrect the global one. Each winner replaces only its own
-   * `<name>` directory; anything else in the engine root is left alone. Filesystem failures
-   * propagate so the caller can decide (a read-only workspace yields no materialized skills).
+   * `<name>` directory; anything else in the engine root is left alone. The workspace and `.noir`
+   * must already be real directories (a removed workspace is never recreated, and no write goes
+   * through a symlink); filesystem failures propagate so the caller can decide.
    */
   async materialize(workspaceId: string, root: string): Promise<void> {
+    const rootMarker = await lstat(root);
+    if (rootMarker.isSymbolicLink() || !rootMarker.isDirectory()) {
+      throw new Error("Workspace root is not a directory");
+    }
     const noir = join(root, ".noir");
-    const scan = await discoverSkills(this.globalRoot, join(noir, "skills"));
+    await ensureRealDirectory(noir, "Workspace .noir");
+    const projectDir = join(noir, "skills");
+    // Created on materialize, never by `list`: listing a workspace must not write into it.
+    await mkdir(projectDir, { recursive: true });
+    const scan = await discoverSkills(this.globalRoot, projectDir);
     const flags = this.readEnabled(workspaceId);
     const target = join(noir, "skills-engine");
+    await ensureRealDirectory(target, "Skills engine root");
     const manifest: SkillManifest = { version: 1, skills: [] };
     const winners = scan.skills.filter((skill) => this.enabledFor(workspaceId, flags, skill));
     const names = new Set(winners.map((skill) => skill.name));
     // Read before writing: this is the only record of which directories this engine owns.
     const previous = await this.manifestFor(root);
-    await mkdir(target, { recursive: true });
     for (const skill of winners) {
       const temp = join(target, `.tmp-${randomUUID()}`);
+      const destination = join(target, skill.name);
+      const old = join(target, `.old-${randomUUID()}`);
+      let movedOld = false;
       try {
         await copySkill(skill.dir, temp);
-        await rm(join(target, skill.name), { recursive: true, force: true });
-        await rename(temp, join(target, skill.name));
+        // Move the old copy aside first: renaming over a non-empty directory fails on Windows.
+        try {
+          await rename(destination, old);
+          movedOld = true;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+        await rename(temp, destination);
+        if (movedOld) await rm(old, { recursive: true, force: true });
       } catch (error) {
         await rm(temp, { recursive: true, force: true }).catch(() => undefined);
+        await rm(old, { recursive: true, force: true }).catch(() => undefined);
         throw error;
       }
       manifest.skills.push({ name: skill.name, scope: skill.scope, hash: skill.hash, description: skill.description });
@@ -333,7 +392,11 @@ export class SkillService {
     const merged = new Map<string, { scope: SkillScope; hash: string }>();
     if (root === undefined) return merged;
     try {
-      const manifest = JSON.parse(await readFile(join(root, ".noir", "skills-engine.json"), "utf8")) as SkillManifest;
+      const file = join(root, ".noir", "skills-engine.json");
+      const marker = await lstat(file);
+      // A manifest replaced by a link is not one this service wrote; treat it as absent.
+      if (marker.isSymbolicLink() || !marker.isFile()) return merged;
+      const manifest = JSON.parse(await readFile(file, "utf8")) as SkillManifest;
       for (const skill of manifest.skills) merged.set(skill.name, { scope: skill.scope, hash: skill.hash });
     } catch {
       // No manifest means nothing was materialized for this workspace, so nothing is attributed.

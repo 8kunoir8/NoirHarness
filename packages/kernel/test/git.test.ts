@@ -183,4 +183,17 @@ describe("git.* RPCs", () => {
     expect(files.find((file) => file.path === "a.txt")).toBeUndefined();
     expect(files.filter((file) => file.path === "renamed.txt")).toHaveLength(1);
   });
+
+  it("hides the app's own .noir directory from status", async () => {
+    const { kernel, workspaceId, root } = await setupRepo();
+    mkdirSync(join(root, ".noir", "skills-engine", "p"), { recursive: true });
+    writeFileSync(join(root, ".noir", "skills-engine.json"), "{}");
+    writeFileSync(join(root, ".noir", "skills-engine", "p", "SKILL.md"), "materialized");
+    writeFileSync(join(root, "a.txt"), "one\ntwo\n");
+
+    const status = await call(kernel, "git.status", { workspaceId });
+    const paths = (status.result.files as Array<{ path: string }>).map((file) => file.path);
+    expect(paths).toContain("a.txt");
+    expect(paths.some((path) => path === ".noir" || path.startsWith(".noir/"))).toBe(false);
+  });
 });

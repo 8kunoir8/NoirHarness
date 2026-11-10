@@ -593,7 +593,7 @@ export function App() {
       id: "new-chat",
       label: "New chat",
       shortcut: { key: "n", mod: true },
-      enabled: workspaceId !== "",
+      enabled: workspaceId !== "" && models.length > 0,
       run: () => void newChat(),
     },
     {
@@ -828,7 +828,7 @@ export function App() {
                   onQueryChange={setQuery}
                   onSelect={openSession}
                   onNewChat={() => void newChat()}
-                  canCreate={workspaceId !== ""}
+                  canCreate={workspaceId !== "" && models.length > 0}
                 />
               </section>
             )}

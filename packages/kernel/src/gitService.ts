@@ -145,6 +145,8 @@ export async function gitStatus(root: string): Promise<GitStatusView> {
     if (renamed) index += 1;
     const path = rebase(prefix, record.slice(3));
     if (path === undefined || path === "") continue;
+    // NoirHarness's own materialized state is not a user change; `.noir` is always its own dir.
+    if (path === ".noir" || path.startsWith(".noir/")) continue;
     const change = renamed
       ? "modified"
       : code === "??"

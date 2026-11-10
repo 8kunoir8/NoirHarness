@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -11,6 +11,12 @@ function skill(root: string, name: string, description: string, body = "BODY"): 
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "SKILL.md"), `---\nname: ${name}\ndescription: ${description}\n---\n\n${body}\n`);
   return dir;
+}
+
+/** A directory link that also works without the Windows developer-mode privilege. */
+function linkDirectory(target: string, path: string): void {
+  if (process.platform === "win32") symlinkSync(target, path, "junction");
+  else symlinkSync(target, path, "dir");
 }
 
 const root = (): string => mkdtempSync(join(tmpdir(), "noir skills "));
@@ -141,6 +147,48 @@ describe("skill discovery", () => {
     expect(scan.skills).toEqual([]);
     expect(scan.warnings.join("\n")).toContain("huge");
   });
+
+  it("refuses a skill with more than 8 MiB of content", async () => {
+    const global = root();
+    const dir = skill(global, "heavy", "d");
+    for (let index = 0; index < 9; index += 1) {
+      writeFileSync(join(dir, `part-${index}.bin`), Buffer.alloc(1024 * 1024, 120));
+    }
+    const scan = await discoverSkills(global, undefined);
+    expect(scan.skills).toEqual([]);
+    expect(scan.warnings.join("\n")).toContain("heavy");
+    expect(scan.warnings.join("\n")).toContain("more than");
+  });
+
+  it("warns about a symlinked root and does not scan it", async (context) => {
+    const outside = root();
+    skill(outside, "outside", "outside");
+    const project = root();
+    mkdirSync(join(project, ".noir"), { recursive: true });
+    try {
+      linkDirectory(outside, join(project, ".noir", "skills"));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EPERM") return context.skip();
+      throw error;
+    }
+    const scan = await discoverSkills(join(project, "missing-global"), join(project, ".noir", "skills"));
+    expect(scan.skills).toEqual([]);
+    expect(scan.warnings).toHaveLength(1);
+    expect(scan.warnings[0]).toContain("symlink");
+  });
+
+  const windowsOnly = process.platform === "win32" ? it : it.skip;
+  windowsOnly("treats case-only names as duplicates on Windows", async () => {
+    const global = root();
+    const first = skill(global, "first", "one");
+    writeFileSync(join(first, "SKILL.md"), "---\nname: dup\ndescription: one\n---\n");
+    const second = skill(global, "second", "two");
+    writeFileSync(join(second, "SKILL.md"), "---\nname: DUP\ndescription: two\n---\n");
+    const scan = await discoverSkills(global, undefined);
+    expect(scan.skills.map((s) => s.name)).toEqual(["dup"]);
+    expect(scan.warnings).toHaveLength(1);
+    expect(scan.warnings[0]).toContain('duplicate name "DUP"');
+  });
 });
 
 function service(): { db: Database.Database; service: SkillService; dataDir: string } {
@@ -258,5 +306,66 @@ describe("skill enabled state and materialization", () => {
     } finally {
       rmSync(engine, { force: true });
     }
+  });
+
+  it("replaces a materialized skill in place", async () => {
+    const { service: s } = service();
+    const project = root();
+    const source = skill(projectSkills(project), "p", "first");
+    await s.list("ws-1", project);
+    await s.materialize("ws-1", project);
+    writeFileSync(join(source, "SKILL.md"), "---\nname: p\ndescription: second\n---\n");
+    await s.list("ws-1", project);
+    await s.materialize("ws-1", project);
+    const engine = join(project, ".noir", "skills-engine");
+    expect(readFileSync(join(engine, "p", "SKILL.md"), "utf8")).toContain("description: second");
+    expect(readdirSync(engine).filter((name) => name.startsWith(".tmp-") || name.startsWith(".old-"))).toEqual([]);
+  });
+
+  it("refuses to materialize through a symlinked engine root", async (context) => {
+    const { service: s } = service();
+    const project = root();
+    skill(projectSkills(project), "p", "project");
+    const outside = root();
+    try {
+      linkDirectory(outside, join(project, ".noir", "skills-engine"));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EPERM") return context.skip();
+      throw error;
+    }
+    await expect(s.materialize("ws-1", project)).rejects.toThrow(/symlink/i);
+    expect(existsSync(join(outside, "p"))).toBe(false);
+  });
+
+  it("ignores a symlinked manifest", async (context) => {
+    const { service: s } = service();
+    const project = root();
+    const outside = root();
+    const manifest = join(outside, "manifest.json");
+    writeFileSync(
+      manifest,
+      JSON.stringify({
+        version: 1,
+        skills: [{ name: "hidden", scope: "project", hash: "h".repeat(64), description: "outside" }],
+      } satisfies SkillManifest),
+    );
+    mkdirSync(join(project, ".noir"), { recursive: true });
+    try {
+      symlinkSync(manifest, join(project, ".noir", "skills-engine.json"));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EPERM") return context.skip();
+      throw error;
+    }
+    expect([...(await s.manifestFor(project)).keys()]).toEqual([]);
+  });
+
+  it("rejects materialize for a removed workspace without recreating it", async () => {
+    const { service: s } = service();
+    const project = root();
+    skill(projectSkills(project), "p", "project");
+    await s.list("ws-1", project);
+    rmSync(project, { recursive: true, force: true });
+    await expect(s.materialize("ws-1", project)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(existsSync(project)).toBe(false);
   });
 });
