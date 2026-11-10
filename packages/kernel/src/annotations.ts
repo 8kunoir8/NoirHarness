@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import { v7 as uuidv7 } from "uuid";
 import { ErrorCodes, RpcFault } from "@noir/protocol";
+import { relativePath } from "./fsPaths.js";
 import { gitDiff } from "./gitService.js";
 
 export interface AnnotationRow {
@@ -21,12 +22,13 @@ export async function listAnnotations(
 ): Promise<{ diffHash: string; annotations: AnnotationRow[] }> {
   // An unchanged, clean or non-repo workspace has an empty diff; hashing it is what makes every
   // stored note report `stale` instead of the call failing.
-  const diffHash = createHash("sha256").update(await gitDiff(root, path)).digest("hex");
+  const rel = relativePath(path);
+  const diffHash = createHash("sha256").update(await gitDiff(root, rel)).digest("hex");
   const rows = db
     .prepare(
       "SELECT id, line, note, diff_hash, created_at FROM annotations WHERE workspace_id = ? AND path = ? ORDER BY line, created_at",
     )
-    .all(workspaceId, path) as Array<Record<string, unknown>>;
+    .all(workspaceId, rel) as Array<Record<string, unknown>>;
   return {
     diffHash,
     annotations: rows.map((row) => ({
@@ -44,8 +46,9 @@ export async function addAnnotation(
   root: string,
   params: { workspaceId: string; path: string; line: number; note: string },
 ): Promise<AnnotationRow> {
-  const diff = await gitDiff(root, params.path);
-  if (diff === "") throw new RpcFault(ErrorCodes.invalidParams, `${params.path} has no diff to annotate`);
+  const rel = relativePath(params.path);
+  const diff = await gitDiff(root, rel);
+  if (diff === "") throw new RpcFault(ErrorCodes.invalidParams, `${rel} has no diff to annotate`);
   const note = params.note.trim();
   if (note === "") throw new RpcFault(ErrorCodes.invalidParams, "Annotation note cannot be empty");
   const row: AnnotationRow = {
@@ -57,7 +60,7 @@ export async function addAnnotation(
   };
   db.prepare(
     "INSERT INTO annotations (id, workspace_id, path, line, note, diff_hash, created_at) VALUES (?,?,?,?,?,?,?)",
-  ).run(row.id, params.workspaceId, params.path, row.line, row.note, createHash("sha256").update(diff).digest("hex"), row.createdAt);
+  ).run(row.id, params.workspaceId, rel, row.line, row.note, createHash("sha256").update(diff).digest("hex"), row.createdAt);
   return row;
 }
 
