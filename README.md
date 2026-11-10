@@ -89,6 +89,8 @@ session title, with untitled chats matching `untitled chat`.
 | --- | --- |
 | `⌘K` / `Ctrl+K` | Command palette |
 | `⌘N` / `Ctrl+N` | New chat on the selected workspace and model |
+| `⌘P` / `Ctrl+P` | Quick open |
+| `⌘S` / `Ctrl+S` | Save the active file |
 | `⌘W` / `Ctrl+W` | Close the active tab |
 | `⌘B` / `Ctrl+B` | Toggle the inspector |
 | `⌘J` / `Ctrl+J` | Focus the composer |
@@ -113,6 +115,31 @@ failed the next time the app touches that session, with any open approval reject
 active tab, and the theme (`noir.theme` in `localStorage`, applied as `<html data-theme>`) are
 restored on launch, and each restored tab replays its transcript from sequence 0.
 
+## Editing
+
+`Chat list` / `File list` switch what the list pane shows: sessions, or the workspace tree. `⌘P`
+searches the whole workspace by path; opening a file adds an editor tab beside the chat tabs.
+`Show diff` adds a diff tab the same way, and `⌘W` closes whichever tab is active — a dirty editor
+tab refuses to close until it is saved.
+
+**Saving.** `⌘S` writes the buffer through `fs.write`. The write carries the `mtimeMs` the file had
+when it was read, so a file changed in the meantime by the agent or another program is refused with
+a conflict and the draft stays in the tab. `Reload file from disk` (palette only) is the way back: it
+re-reads the file and drops whatever was typed.
+
+**Diff stats.** The chat header and the inspector read `git.status` — line adds and deletes against
+`HEAD` — refreshed after each save and again shortly after the kernel reports a `file.changed` event.
+A workspace that is not a git repository shows no stats and still edits and saves.
+
+**Diffs and notes.** `Show diff` opens a unified diff tab for the file. Clicking a line number in that
+tab stores a note against the diff it was read in, so the note stays attached to the lines it was
+written on. When the file changes, notes from the previous diff no longer describe the current one:
+they move to `Notes from an earlier version` instead of pointing at unrelated lines.
+
+**Limits.** A listing stops at 2 000 entries, a read at 2 MiB, a write at 5 000 000 characters, and
+quick open at 5 000 files. Files that are not UTF-8 text and symlinks are refused or skipped rather
+than rendered.
+
 ## Configuration
 
 | variable | default | meaning |
@@ -133,10 +160,11 @@ pnpm --filter @noir/desktop test:e2e
 ```
 
 `test:e2e` builds the app and drives Electron with Playwright against a local mock provider: it
-streams a reply, completes a permission-approved tool call, and runs the shell lifecycle spec — a
-tool turn, a prompt queued behind a slow turn, an interrupt, the queued turn draining after it, and
-an app restart that replays the transcript. Each spec uses its own temporary data directory, so
-engine state stays inside it.
+streams a reply, completes a permission-approved tool call, and runs the editor spec — open a file,
+edit it, save through the kernel, assert the file on disk, then check the diff stats and `Show diff`
+— and the shell lifecycle spec — a tool turn, a prompt queued behind a slow turn, an interrupt, the
+queued turn draining after it, and an app restart that replays the transcript. Each spec uses its own
+temporary data directory, so engine state stays inside it.
 
 ## Layout
 
