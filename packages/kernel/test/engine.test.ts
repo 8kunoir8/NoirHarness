@@ -119,6 +119,14 @@ function setup(opts: { turnTimeoutMs?: number; acpArgs?: string[]; acpSkill?: st
   return { db, events, sessions, providers, models, skills, manager, session, workspaceId: workspace.id, dataDir, root };
 }
 
+function writeProjectSkill(root: string, name = "demo"): void {
+  mkdirSync(join(root, ".noir", "skills", name), { recursive: true });
+  writeFileSync(
+    join(root, ".noir", "skills", name, "SKILL.md"),
+    `---\nname: ${name}\ndescription: ${name}\n---\n\nBODY\n`,
+  );
+}
+
 function isAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -235,11 +243,7 @@ describe("EngineManager over the fake ACP server", () => {
     "attributes a skill:// read to the materialized skill's scope and hash",
     async () => {
       const { events, manager, session, root } = setup({ acpSkill: "demo" });
-      mkdirSync(join(root, ".noir", "skills", "demo"), { recursive: true });
-      writeFileSync(
-        join(root, ".noir", "skills", "demo", "SKILL.md"),
-        "---\nname: demo\ndescription: demo\n---\n\nBODY\n",
-      );
+      writeProjectSkill(root);
       await manager.prompt({ sessionId: session.id, requestId: "skill-1", content: [{ type: "text", text: "stream" }] });
       await waitForEvent(events, session.id, (event) => event.type === "turn.completed");
       const loaded = events.list(session.id).filter((event) => event.type === "skill.loaded");
@@ -247,6 +251,50 @@ describe("EngineManager over the fake ACP server", () => {
       expect(loaded[0]?.payload).toMatchObject({ name: "demo", scope: "project" });
       expect(eventPayload(loaded[0]!, "skill.loaded").hash).toMatch(/^[0-9a-f]{64}$/);
       expect(loaded[0]?.turnId).toBe(events.list(session.id).find((event) => event.type === "turn.started")?.turnId);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "does not attribute a skill:// read for a disabled skill",
+    async () => {
+      const { events, manager, skills, session, workspaceId, root } = setup({ acpSkill: "demo" });
+      writeProjectSkill(root);
+      await skills.setEnabled(workspaceId, root, "project", "demo", false);
+
+      const result = await manager.prompt({
+        sessionId: session.id,
+        requestId: "skill-disabled-1",
+        content: [{ type: "text", text: "stream" }],
+      });
+      await waitForEvent(events, session.id, (event) => event.type === "turn.completed" && event.turnId === result.turnId);
+      expect(events.list(session.id).filter((event) => event.type === "skill.loaded")).toHaveLength(0);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "attributes one skill.loaded per turn so the dedupe set resets between turns",
+    async () => {
+      const { events, manager, session, root } = setup({ acpSkill: "demo" });
+      writeProjectSkill(root);
+
+      const first = await manager.prompt({
+        sessionId: session.id,
+        requestId: "skill-turn-1",
+        content: [{ type: "text", text: "stream" }],
+      });
+      await waitForEvent(events, session.id, (event) => event.type === "turn.completed" && event.turnId === first.turnId);
+      const second = await manager.prompt({
+        sessionId: session.id,
+        requestId: "skill-turn-2",
+        content: [{ type: "text", text: "stream" }],
+      });
+      await waitForEvent(events, session.id, (event) => event.type === "turn.completed" && event.turnId === second.turnId);
+
+      const loaded = events.list(session.id).filter((event) => event.type === "skill.loaded");
+      expect(loaded).toHaveLength(2);
+      expect(loaded.map((event) => event.turnId)).toEqual([first.turnId, second.turnId]);
     },
     TEST_TIMEOUT_MS,
   );

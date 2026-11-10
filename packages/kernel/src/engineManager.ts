@@ -163,10 +163,27 @@ function planStatus(status: string): "pending" | "active" | "done" {
   }
 }
 
+/** Filesystem failures a workspace normally produces when it cannot be written to. */
+const WORKSPACE_WRITE_FAILURES: Record<string, true> = {
+  EACCES: true,
+  EPERM: true,
+  EROFS: true,
+  ENOSPC: true,
+  ENOTDIR: true,
+  ENOENT: true,
+};
+
+function isWorkspaceWriteFailure(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("code" in error)) return false;
+  return typeof error.code === "string" && WORKSPACE_WRITE_FAILURES[error.code] === true;
+}
+
 /** `skill://<name>` and `skill://<name>/<subpath>` both name the skill. */
 function skillNameFromRawInput(raw: unknown): string | undefined {
   if (typeof raw !== "object" || raw === null) return undefined;
   if (!("path" in raw) || typeof raw.path !== "string" || !raw.path.startsWith("skill://")) return undefined;
+  // Skill names are URI-unreserved (`[A-Za-z0-9._-]`), so `%` never encodes and no percent-decoding
+  // may be applied — a literal name is the name the manifest carries.
   const name = raw.path.slice("skill://".length).split(/[/?#]/, 1)[0] ?? "";
   return name === "" ? undefined : name;
 }
@@ -447,13 +464,15 @@ export class EngineManager {
       dataDir: this.dataDir,
     });
 
-    // Materialization is a filesystem write, so it must not gate the engine: a read-only
-    // workspace still has to answer chat, just with nothing attributed. An empty index makes
-    // every `skill://` read silently unattributed instead of failing the turn.
+    // Materialization is a filesystem write, so an unwritable workspace must not gate the engine:
+    // a read-only workspace still has to answer chat, just with nothing attributed. An empty index
+    // makes every `skill://` read silently unattributed. Any other failure is a real fault and
+    // surfaces from the turn rather than being hidden.
     try {
       await this.deps.skills.materialize(state.workspaceId, state.workspaceRoot);
       state.skillIndex = await this.deps.skills.manifestFor(state.workspaceRoot);
-    } catch {
+    } catch (error) {
+      if (!isWorkspaceWriteFailure(error)) throw error;
       state.skillIndex = new Map();
     }
 
@@ -516,6 +535,10 @@ export class EngineManager {
         await engineSession.setConfigOption("model", selector);
         state.selector = selector;
       }
+      // Materialization only writes at spawn, but the index must follow toggles and sibling
+      // materializations: read it right before the turn so this tool call set is attributed
+      // against the manifest the engine can actually see now, not the one from spawn time.
+      state.skillIndex = await this.deps.skills.manifestFor(state.workspaceRoot);
       this.setStatus(state.sessionId, "running");
       this.emit(state, "turn.started", { turnId: turn.turnId, index: turn.idx }, turn.turnId);
       const result = await engineSession.prompt(turn.content, {
