@@ -160,10 +160,11 @@ are refused or skipped rather than rendered.
 
 ## Skills
 
-Each workspace gets a skill set from two directories: `%APPDATA%/NoirHarness/skills` (global) and
-`<workspace>/.noir/skills` (project). A skill is a directory with a `SKILL.md` whose frontmatter
-carries `name` and `description`. When both scopes define a name, the project copy wins and the
-global one is marked shadowed.
+Each workspace gets a skill set from two directories: `<data dir>/skills` (Windows default
+`%APPDATA%/NoirHarness/skills`, overridable by `NOIR_DATA_DIR`) and `<workspace>/.noir/skills`
+(project). A skill is a directory with a `SKILL.md` whose frontmatter carries `name` and
+`description`. When both scopes define a name, the project copy wins and the global one is marked
+shadowed.
 
 The kernel hashes each skill directory, copies the enabled effective set into
 `<workspace>/.noir/skills-engine`, and points the generated `config.yml` at it with a cwd-relative
@@ -173,9 +174,16 @@ skill removes it from the materialized copy — never from its source — and ap
 session started in that workspace. A `skill://` read by the engine becomes a `skill.loaded` event
 carrying the name, scope and hash; the chat shows a `Skills loaded` group.
 
+The manifest beside that directory, `<workspace>/.noir/skills-engine.json`, is rewritten atomically
+and records `version: 1` plus one entry per materialized skill with `name`, `scope`, `hash` and
+`description`. A workspace that cannot be written gets an engine with no skills until it becomes
+writable; the `Skills` view still lists the sources.
+
 The `Skills` view lists both scopes with a hash, a live toggle, and a read-only `SKILL.md` viewer.
-A directory without valid frontmatter, a symlink, or a `SKILL.md` over 1 MiB is reported as a
-warning and skipped rather than failing the scan.
+Scanning skips anything it cannot trust rather than failing: a skill with more than 200 files or
+8 MiB of content, a `SKILL.md` over 1 MiB, or a directory without valid frontmatter is reported as
+a warning and skipped; a symlinked `SKILL.md` is reported as a warning; symlinked skill directories
+and links inside a skill are skipped silently and do not enter the hash.
 
 ## Configuration
 
@@ -204,7 +212,8 @@ survives the restart, a prompt queued behind a slow turn, an interrupt, the queu
 after it, and a restart that replays the transcript; `editor` (2) — open a file, edit it, save
 through the kernel, assert the file on disk, check the diff stats and `Show diff` from the
 inspector, and refuse a file larger than the read cap; `skills` (1) — list a project skill, view its
-body, disable it, and assert the manifest and materialized directory drop it.
+body, materialize it through a turn, then disable it and assert the manifest entry and materialized
+directory drop it.
 Each spec gets its own temporary data directory and its own Electron profile
 (`--user-data-dir` inside that directory), so engine state and restored tabs stay inside it.
 
