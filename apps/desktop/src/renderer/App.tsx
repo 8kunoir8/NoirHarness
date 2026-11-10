@@ -6,6 +6,7 @@ import "./styles.css";
 
 export function App() {
   const [status, setStatus] = useState("connecting");
+  const [providersVersion, setProvidersVersion] = useState(0);
 
   useEffect(() => {
     void (async () => {
@@ -25,8 +26,8 @@ export function App() {
       <p data-testid="kernel-status">{status}</p>
       {status === "kernel ok" ? (
         <>
-          <Workspace request={request} />
-          <Settings request={request} />
+          <Workspace request={request} providersVersion={providersVersion} />
+          <Settings request={request} onProvidersChanged={() => setProvidersVersion((version) => version + 1)} />
         </>
       ) : null}
     </main>

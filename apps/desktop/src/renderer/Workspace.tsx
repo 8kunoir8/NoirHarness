@@ -26,7 +26,7 @@ interface ProjectListResult { projects: ProjectView[] }
 interface WorkspaceListResult { workspaces: WorkspaceView[] }
 interface ProviderListResult { providers: ProviderView[] }
 
-export function Workspace({ request }: { request: RequestFn }) {
+export function Workspace({ request, providersVersion }: { request: RequestFn; providersVersion?: number }) {
   const [projects, setProjects] = useState<ProjectView[]>([]);
   const [workspaces, setWorkspaces] = useState<WorkspaceView[]>([]);
   const [models, setModels] = useState<ModelView[]>([]);
@@ -93,6 +93,11 @@ export function Workspace({ request }: { request: RequestFn }) {
   useEffect(() => {
     void Promise.all([loadProjects(), loadWorkspaces(), loadModels(), loadProviders(), loadSessions()]);
   }, []);
+
+  useEffect(() => {
+    if (providersVersion === undefined || providersVersion === 0) return;
+    void loadProviders();
+  }, [providersVersion]);
 
   async function addProject(event: FormEvent): Promise<void> {
     event.preventDefault();
@@ -231,7 +236,7 @@ export function Workspace({ request }: { request: RequestFn }) {
         <button type="button" onClick={() => void newChat()} disabled={selectedWorkspaceId === ""}>New chat</button>
       </section>
 
-      {selectedSession === undefined ? <p>Select a session to chat.</p> : <Chat session={selectedSession} models={models} request={request} />}
+      {selectedSession === undefined ? <p>Select a session to chat.</p> : <Chat key={selectedSession.id} session={selectedSession} models={models} request={request} />}
     </section>
   );
 }

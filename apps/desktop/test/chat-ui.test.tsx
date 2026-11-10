@@ -1,12 +1,12 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentEvent, SessionView } from "@noir/protocol";
-import { emptyChatState, reduceChat } from "../src/renderer/events.js";
+import { emptyChatState, reduceChat, useSessionEvents } from "../src/renderer/events.js";
 
 const api = vi.hoisted(() => ({
-  connect: vi.fn(async () => undefined),
-  offEvent: vi.fn(),
+  connect: vi.fn(async (_listener?: unknown) => undefined),
+  offEvent: vi.fn((_listener?: unknown) => undefined),
   request: vi.fn(async () => {
     throw new Error("not connected");
   }),
@@ -181,5 +181,48 @@ describe("Chat", () => {
 
     expect((await screen.findByRole("alert")).textContent).toContain("engine unavailable");
     expect(prompt.value).toBe("keep me");
+  });
+});
+
+describe("useSessionEvents", () => {
+  it("merges live frames buffered before the replay and unsubscribes on unmount", async () => {
+    const listeners: Array<(event: AgentEvent) => void> = [];
+    api.connect.mockImplementationOnce(async (listener?: unknown) => {
+      listeners.push(listener as (event: AgentEvent) => void);
+    });
+    const deferred = Promise.withResolvers<unknown>();
+    const request = vi.fn((method: string) => {
+      if (method === "session.subscribe") return deferred.promise;
+      throw new Error(method);
+    });
+
+    const { result, unmount } = renderHook(() => useSessionEvents("s1", request as unknown as RequestFn));
+    await waitFor(() => expect(listeners).toHaveLength(1));
+    const listener = listeners[0]!;
+
+    act(() => {
+      listener(makeEvent(2, "message.delta", {
+        messageId: "m1", role: "assistant", block: { type: "text", text: "world" },
+      }));
+    });
+    expect(result.current.state.messages).toHaveLength(0);
+
+    await act(async () => {
+      deferred.resolve({
+        events: [makeEvent(1, "message.delta", {
+          messageId: "m1", role: "assistant", block: { type: "text", text: "Hello " },
+        })],
+        lastSeq: 1,
+      });
+      await deferred.promise;
+    });
+
+    await waitFor(() => {
+      expect(result.current.state.messages[0]?.blocks).toEqual([{ kind: "text", text: "Hello world" }]);
+    });
+    expect(result.current.state.lastSeq).toBe(2);
+
+    unmount();
+    expect(api.offEvent).toHaveBeenCalledWith(listener);
   });
 });

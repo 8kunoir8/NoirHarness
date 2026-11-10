@@ -265,7 +265,12 @@ export function useSessionEvents(sessionId: string, requestFn: RequestFn = defau
         const subscription = await requestFn<SessionSubscription>("session.subscribe", { sessionId, sinceSeq: 0 });
         if (!active) return;
         const replay = Array.isArray(subscription?.events) ? subscription.events : [];
-        setState((prev) => ordered([...replay, ...buffered]).reduce(reduceChat, prev));
+        // Snapshot the merged, ordered batch before scheduling state; the buffer is emptied
+        // immediately afterwards so no deferred updater can miss a live frame.
+        const merged = ordered([...replay, ...buffered]);
+        buffered.length = 0;
+        replaying = false;
+        setState((prev) => merged.reduce(reduceChat, prev));
       } catch (error) {
         if (active) setState((prev) => ({ ...prev, error: errorMessage(error) }));
       } finally {

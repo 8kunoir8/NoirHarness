@@ -7,7 +7,7 @@ import {
 
 export type RequestFn = <T>(method: string, params?: unknown) => Promise<T>;
 
-export function Settings({ request }: { request: RequestFn }) {
+export function Settings({ request, onProvidersChanged }: { request: RequestFn; onProvidersChanged?: () => void }) {
   const [providers, setProviders] = useState<ProviderView[]>([]);
   const [name, setName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
@@ -40,6 +40,7 @@ export function Settings({ request }: { request: RequestFn }) {
       }
       setName(""); setBaseUrl(""); setApiKey("");
       await load();
+      onProvidersChanged?.();
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : "request failed");
     }
