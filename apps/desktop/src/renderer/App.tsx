@@ -267,6 +267,10 @@ export function App() {
     void connect(listener).catch(() => undefined);
     return () => {
       if (refreshTimer.current !== undefined) window.clearTimeout(refreshTimer.current);
+      // The ref must not stay set across effect re-runs (workspace change): a stale timer id would
+      // suppress every later event's refresh for the rest of the session.
+      refreshTimer.current = undefined;
+      pendingFileChange.current = false;
       offEvent(listener);
     };
   }, [loadSessions, refreshGit]);
