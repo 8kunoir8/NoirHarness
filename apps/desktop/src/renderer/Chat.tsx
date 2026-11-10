@@ -3,7 +3,7 @@ import type { ModelView, PermissionOption, SessionPromptResult, SessionView } fr
 import type { RequestFn } from "./api.js";
 import { ChatHeader } from "./ChatHeader.js";
 import { Composer, type ComposerStatus } from "./Composer.js";
-import { errorMessage, useSessionEvents } from "./events.js";
+import { errorMessage, type SessionEvents } from "./events.js";
 import { ToolCard } from "./ToolCard.js";
 
 function newId(): string {
@@ -16,14 +16,16 @@ export function Chat({
   session,
   models,
   request,
+  events,
   onSessionChange,
 }: {
   session: SessionView;
   models: ModelView[];
   request: RequestFn;
+  events: SessionEvents;
   onSessionChange?: (() => void) | undefined;
 }) {
-  const { state, appendUser } = useSessionEvents(session.id, request);
+  const { state, appendUser } = events;
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [queuedTurnId, setQueuedTurnId] = useState<string | undefined>(undefined);
@@ -108,19 +110,6 @@ export function Chat({
       setActionError(errorMessage(modelError));
     }
   }
-
-  // ⌘. interrupts from anywhere while this chat is open, including outside the composer.
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (!(event.metaKey || event.ctrlKey) || event.key !== "." || !canInterrupt) return;
-      event.preventDefault();
-      void request("session.interrupt", { sessionId: session.id }).catch((interruptError: unknown) => {
-        setActionError(errorMessage(interruptError));
-      });
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [canInterrupt, request, session.id]);
 
   // Approval keys: Esc rejects when a reject option exists, digits pick options by position.
   useEffect(() => {

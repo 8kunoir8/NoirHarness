@@ -18,6 +18,7 @@
   --radius-sm: 6px;
   --row: 32px;
   --ease: 150ms ease-out;
+  --font-mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
   font-family: Inter, "Segoe UI", system-ui, sans-serif;
   color-scheme: light;
 }
@@ -120,7 +121,9 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; colo
 }
 
 .brand { font-weight: 650; letter-spacing: 0.01em; }
-.topbar-workspace { color: var(--muted); font-size: 0.85rem; }
+.topbar-workspace { color: var(--muted); font-size: 0.85rem; margin-right: auto; }
+.topbar-action { font-size: 0.78rem; padding: 3px 8px; }
+.topbar-action[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
 
 .shell-rail {
   grid-area: rail;
@@ -413,6 +416,35 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; colo
 .composer-hint { color: var(--muted); font-size: 0.72rem; margin-left: auto; }
 .composer-queue { border-color: var(--warning); color: var(--warning); font-size: 0.76rem; }
 .approval-hint { color: var(--muted); font-size: 0.72rem; margin: 8px 0 0; }
+
+/* --- inspector --- */
+
+.inspector { display: flex; flex-direction: column; gap: 14px; padding: 12px; overflow-y: auto; }
+.inspector-head { display: flex; align-items: baseline; gap: 8px; }
+.inspector-head strong { font-size: 0.92rem; }
+.inspector-close { margin-left: auto; }
+.inspector-summary { color: var(--muted); font-size: 0.78rem; margin: 0; }
+.inspector-section { display: flex; flex-direction: column; gap: 6px; }
+.inspector-section h3 {
+  margin: 0;
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.inspector-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 0.82rem; }
+.inspector-file { display: flex; gap: 6px; align-items: baseline; font-family: var(--font-mono); font-size: 0.76rem; }
+.inspector-file span:first-child { overflow-wrap: anywhere; }
+.inspector-file .diff-add, .inspector-file .diff-del { margin-left: auto; flex: none; }
+.inspector-file .diff-add + .diff-del { margin-left: 0; }
+.diff-add { color: var(--success); }
+.diff-del { color: var(--danger); }
+.inspector-plan li { display: flex; gap: 6px; align-items: baseline; }
+.inspector-plan li::before { content: "○"; color: var(--muted); }
+.inspector-plan li[data-status="active"]::before { content: "◐"; color: var(--accent); }
+.inspector-plan li[data-status="done"]::before { content: "●"; color: var(--success); }
+.inspector-plan li[data-status="done"] { color: var(--muted); }
+.inspector-approval { color: var(--warning); font-size: 0.8rem; }
 
 /* --- setup --- */
 

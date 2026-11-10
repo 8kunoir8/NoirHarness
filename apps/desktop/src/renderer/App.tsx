@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ModelListResult, SessionView, SystemHealthResult } from "@noir/protocol";
 import { connect, offEvent, request } from "./api.js";
 import { Chat } from "./Chat.js";
+import { useSessionEvents } from "./events.js";
+import { Inspector } from "./Inspector.js";
 import { SessionList, type ReadState, type SessionFilter } from "./SessionList.js";
 import { Setup } from "./Setup.js";
 import { Shell } from "./Shell.js";
@@ -56,6 +58,8 @@ export function App() {
   const [filter, setFilter] = useState<SessionFilter>("all");
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | undefined>(undefined);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
+  const events = useSessionEvents(activeId ?? "", request);
   const refreshTimer = useRef<number | undefined>(undefined);
 
   const loadSessions = useCallback(async (): Promise<SessionView[]> => {
@@ -220,6 +224,16 @@ export function App() {
     <>
       <span className="brand">NoirHarness</span>
       <span className="topbar-workspace">{workspaceSessions.length === 0 ? "" : `${workspaceSessions.length} chat${workspaceSessions.length === 1 ? "" : "s"}`}</span>
+      {view === "chats" && models.length > 0 ? (
+        <button
+          type="button"
+          className="topbar-action"
+          aria-pressed={inspectorOpen}
+          onClick={() => setInspectorOpen((current) => !current)}
+        >
+          Inspector
+        </button>
+      ) : null}
     </>
   );
 
@@ -325,11 +339,29 @@ export function App() {
               session={activeSession}
               models={models}
               request={request}
+              events={events}
               onSessionChange={() => void loadSessions().catch(() => undefined)}
             />
           )}
         </>
       }
+      {...(inspectorOpen
+        ? {
+            inspector: (
+              <Inspector
+                session={activeSession}
+                status={events.state.status}
+                usage={events.state.usage}
+                turnStartedAt={events.state.turnStartedAt}
+                lastTurn={events.state.lastTurn}
+                files={events.state.files}
+                plan={events.state.plan}
+                approvalTitles={events.state.approval === undefined ? [] : [events.state.approval.title]}
+                onClose={() => setInspectorOpen(false)}
+              />
+            ),
+          }
+        : {})}
       status={statusbar}
     />
   );

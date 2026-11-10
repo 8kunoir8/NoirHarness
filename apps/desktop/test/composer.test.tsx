@@ -5,6 +5,7 @@ import type { AgentEvent, SessionView } from "@noir/protocol";
 import type { RequestFn } from "../src/renderer/api.js";
 import { Chat } from "../src/renderer/Chat.js";
 import { Composer, type ComposerProps } from "../src/renderer/Composer.js";
+import { useSessionEvents } from "../src/renderer/events.js";
 
 function composerProps(patch: Partial<ComposerProps> = {}): ComposerProps {
   return {
@@ -62,6 +63,11 @@ const session: SessionView = {
   pendingApproval: false,
 };
 
+function ChatHarness({ request }: { request: RequestFn }) {
+  const events = useSessionEvents(session.id, request);
+  return <Chat session={session} models={[]} request={request} events={events} />;
+}
+
 describe("Composer", () => {
   it("sends on Enter and keeps Shift+Enter for newlines", async () => {
     const user = userEvent.setup();
@@ -107,10 +113,17 @@ describe("Composer", () => {
     await user.keyboard("{Escape}");
     expect(props.onInterrupt).toHaveBeenCalledTimes(1);
   });
+
+  it("keeps the draft and shows the failure in the composer", async () => {
+    const props = composerProps({ draft: "keep me", error: "engine unavailable", status: "error" });
+    render(<Composer {...props} />);
+    expect(screen.getByRole("alert").textContent).toBe("engine unavailable");
+    expect((screen.getByLabelText("Prompt") as HTMLTextAreaElement).value).toBe("keep me");
+  });
 });
 
-describe("Chat queue and approval keys", () => {
-  it("shows the queued turn, cancels it through the kernel, and interrupts with ⌘.", async () => {
+describe("Chat queued turn and approval keys", () => {
+  it("shows the queued turn and cancels it through the kernel", async () => {
     const user = userEvent.setup();
     const request = vi.fn(async (method: string): Promise<unknown> => {
       if (method === "session.subscribe") {
@@ -121,11 +134,10 @@ describe("Chat queue and approval keys", () => {
       }
       if (method === "session.prompt") return { turnId: "t2", queued: true };
       if (method === "session.cancelQueued") return { cancelled: true };
-      if (method === "session.interrupt") return { interrupted: true };
       throw new Error(method);
     });
 
-    render(<Chat session={session} models={[]} request={request as unknown as RequestFn} />);
+    render(<ChatHarness request={request as unknown as RequestFn} />);
 
     await waitFor(() => expect(screen.getByTestId("session-status").textContent).toBe("running"));
     await user.type(screen.getByLabelText("Prompt"), "second turn");
@@ -137,9 +149,6 @@ describe("Chat queue and approval keys", () => {
     await user.click(queuedButton);
     expect(request).toHaveBeenCalledWith("session.cancelQueued", { sessionId: "s1", turnId: "t2" });
     await waitFor(() => expect(screen.queryByText(/Queued — runs after this turn/)).toBeNull());
-
-    await user.keyboard("{Meta>}.{/Meta}");
-    expect(request).toHaveBeenCalledWith("session.interrupt", { sessionId: "s1" });
   });
 
   it("answers an approval by number and rejects on Esc", async () => {
@@ -150,7 +159,7 @@ describe("Chat queue and approval keys", () => {
       throw new Error(method);
     });
 
-    render(<Chat session={session} models={[]} request={request as unknown as RequestFn} />);
+    render(<ChatHarness request={request as unknown as RequestFn} />);
 
     await screen.findByRole("dialog", { name: "Permission required" });
     expect(screen.getByRole("button", { name: "Allow once" })).toBeTruthy();
@@ -160,5 +169,21 @@ describe("Chat queue and approval keys", () => {
 
     await user.keyboard("{Escape}");
     expect(request).toHaveBeenCalledWith("approval.respond", { approvalId: "ap1", decision: "reject" });
+  });
+
+  it("ignores digit keys while the composer has focus", async () => {
+    const user = userEvent.setup();
+    const request = vi.fn(async (method: string): Promise<unknown> => {
+      if (method === "session.subscribe") return { events: [approval], lastSeq: 1 };
+      if (method === "approval.respond") return { ok: true };
+      throw new Error(method);
+    });
+
+    render(<ChatHarness request={request as unknown as RequestFn} />);
+
+    await screen.findByRole("dialog", { name: "Permission required" });
+    await user.click(screen.getByLabelText("Prompt"));
+    await user.keyboard("1");
+    expect(request.mock.calls.filter(([method]) => method === "approval.respond")).toHaveLength(0);
   });
 });

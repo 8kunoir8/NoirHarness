@@ -295,6 +295,10 @@ export function useSessionEvents(sessionId: string, requestFn: RequestFn = defau
   const [state, setState] = useState<ChatState>(() => emptyChatState(sessionId));
 
   useEffect(() => {
+    if (sessionId === "") {
+      setState(emptyChatState());
+      return;
+    }
     let active = true;
     let replaying = true;
     const buffered: AgentEvent[] = [];
