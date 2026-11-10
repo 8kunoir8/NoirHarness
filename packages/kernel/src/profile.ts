@@ -10,6 +10,11 @@ export function profileAgentDir(home: string): string {
   return join(home, ".omp", "profiles", "noir", "agent");
 }
 
+/** Removes the rendered models file (and with it every key) without touching config.yml. */
+export async function clearProfileModels(home: string): Promise<void> {
+  await rm(join(profileAgentDir(home), "models.yml"), { force: true });
+}
+
 export interface SyncProfileDeps {
   providers: ProviderService;
   models: ModelService;
@@ -56,7 +61,7 @@ export async function syncProfile(deps: SyncProfileDeps): Promise<void> {
 
   if (providers.length === 0 || models.length === 0) {
     // Nothing can be rendered; drop the old file so a deleted provider's key does not linger on disk.
-    await rm(join(profileAgentDir(deps.home), "models.yml"), { force: true });
+    await clearProfileModels(deps.home);
     return;
   }
 

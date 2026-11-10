@@ -26,7 +26,7 @@ import { openDb } from "./db.js";
 import { EngineManager } from "./engineManager.js";
 import { EventStore } from "./eventStore.js";
 import { ModelService } from "./models.js";
-import { syncProfile } from "./profile.js";
+import { clearProfileModels, syncProfile } from "./profile.js";
 import { ProjectService } from "./projects.js";
 import { ProviderService } from "./providers.js";
 import { startRpcServer, type RpcServer } from "./rpcServer.js";
@@ -190,6 +190,16 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
       });
       engines = engineManager;
       const sync = () => syncProfile({ providers, models, dataDir: dir, home });
+      const rollbackProfileRow = async (remove: () => void, cause: unknown): Promise<never> => {
+        remove();
+        try {
+          await sync();
+        } catch {
+          // A partial materialize may have written the rejected key before failing; drop the file.
+          await clearProfileModels(home);
+        }
+        throw cause;
+      };
 
       const handlers: Record<string, (params: unknown) => Promise<unknown>> = {
         [Methods.systemHealth]: async () => ({ status: "ok", pid: process.pid }),
@@ -220,8 +230,7 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
             await sync();
           } catch (error) {
             // A profile the renderer rejects must not leave a row that poisons every later sync.
-            models.remove(created.id);
-            throw error;
+            return await rollbackProfileRow(() => models.remove(created.id), error);
           }
           return created;
         },
@@ -236,8 +245,7 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
           try {
             await sync();
           } catch (error) {
-            providers.remove(created.id);
-            throw error;
+            return await rollbackProfileRow(() => providers.remove(created.id), error);
           }
           return created;
         },

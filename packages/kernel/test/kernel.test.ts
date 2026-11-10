@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 import { ErrorCodes } from "@noir/protocol";
 import { startKernel, type Kernel } from "../src/index.js";
+import { profileAgentDir } from "../src/profile.js";
 
 const dirs: string[] = [];
 let priorProfileHome: string | undefined;
@@ -100,6 +101,37 @@ describe("startKernel", () => {
     const listed = await call(kernel.port, kernel.token, "model.list");
     expect(listed.result.models).toEqual([]);
     await kernel.close();
+  });
+
+  it("removes models.yml when a rolled-back create cannot re-sync", async () => {
+    const kernel = await startKernel({ dataDir: tempDir() });
+    const good = await call(kernel.port, kernel.token, "provider.create", {
+      name: "Good", baseUrl: "http://localhost:11434/v1", apiKind: "openai-completions", apiKey: "sk-good-round2",
+    });
+    expect(good.error).toBeUndefined();
+    const model = await call(kernel.port, kernel.token, "model.create", { providerId: good.result.id, modelId: "gpt-ok" });
+    expect(model.error).toBeUndefined();
+
+    const profileFile = join(profileAgentDir(profileHome), "models.yml");
+    expect(readFileSync(profileFile, "utf8")).toContain("sk-good-round2");
+
+    // Make the second half of materializeProfile fail after models.yml has been rewritten.
+    const blockedConfig = join(profileAgentDir(profileHome), "config.yml");
+    rmSync(blockedConfig, { force: true });
+    mkdirSync(blockedConfig, { recursive: true });
+    try {
+      const leaked = "sk-leaked-round2";
+      const second = await call(kernel.port, kernel.token, "provider.create", {
+        name: "Second", baseUrl: "http://localhost:11434/v1", apiKind: "openai-completions", apiKey: leaked,
+      });
+      expect(second.error).toBeDefined();
+      if (existsSync(profileFile)) expect(readFileSync(profileFile, "utf8")).not.toContain(leaked);
+      const listed = await call(kernel.port, kernel.token, "provider.list");
+      expect(listed.result.providers.map((provider: { name: string }) => provider.name)).toEqual(["Good"]);
+    } finally {
+      await kernel.close();
+      rmSync(blockedConfig, { recursive: true, force: true });
+    }
   });
 
   it("reports invalid params for bad provider input and malformed requests", async () => {
