@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import type * as Monaco from "monaco-editor";
 import { editorThemeFor, languageFor, loadMonaco } from "./monaco.js";
+import type { Theme } from "./theme.js";
 
 export interface MonacoEditorProps {
   path: string;
   value: string;
-  theme: "paper" | "ink";
+  theme: Theme;
   onChange: (value: string) => void;
 }
 
@@ -30,20 +31,29 @@ export function MonacoEditor({ path, value, theme, onChange }: MonacoEditorProps
     void loadMonaco().then(
       (monaco) => {
         if (disposed) return;
-        // The model outlives `editor.create`; it is disposed by hand in the cleanup below.
-        model = monaco.editor.createModel(latestValue.current, languageFor(path));
-        const instance = monaco.editor.create(element, {
-          model,
-          theme: editorThemeFor(latestTheme.current),
-          automaticLayout: true,
-          minimap: { enabled: false },
-          fontSize: 13,
-          scrollBeyondLastLine: false,
-        });
-        subscription = instance.onDidChangeModelContent(() => latest.current(instance.getValue()));
-        editor.current = instance;
+        try {
+          // The model outlives `editor.create`; it is disposed by hand in the cleanup below.
+          model = monaco.editor.createModel(latestValue.current, languageFor(path));
+          const instance = monaco.editor.create(element, {
+            model,
+            theme: editorThemeFor(latestTheme.current),
+            automaticLayout: true,
+            minimap: { enabled: false },
+            fontSize: 13,
+            scrollBeyondLastLine: false,
+          });
+          subscription = instance.onDidChangeModelContent(() => latest.current(instance.getValue()));
+          editor.current = instance;
+        } catch (error: unknown) {
+          model?.dispose();
+          model = undefined;
+          setFailure(error instanceof Error ? error.message : "Editor failed to start");
+        }
       },
-      (error: unknown) => setFailure(error instanceof Error ? error.message : "Editor failed to load"),
+      (error: unknown) => {
+        if (disposed) return;
+        setFailure(error instanceof Error ? error.message : "Editor failed to load");
+      },
     );
     return () => {
       disposed = true;

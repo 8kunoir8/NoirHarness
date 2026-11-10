@@ -47,7 +47,7 @@ let loading: Promise<typeof Monaco> | undefined;
 export function loadMonaco(): Promise<typeof Monaco> {
   loading ??= (async () => {
     const [{ default: EditorWorker }, monacoModule] = await Promise.all([
-      import("monaco-editor/esm/vs/editor/editor.worker?worker"),
+      import("monaco-editor/esm/vs/editor/editor.worker.js?worker"),
       // The package has no `main`, so its bare specifier is unresolvable outside the
       // browser resolver; the ESM entry is the same public editor API.
       import("monaco-editor/esm/vs/editor/editor.main.js"),
@@ -69,6 +69,10 @@ export function loadMonaco(): Promise<typeof Monaco> {
       colors: { "editor.background": "#16161a", "editor.lineHighlightBackground": "#1f1f25" },
     });
     return monaco;
-  })();
+  })().catch((error: unknown) => {
+    // A transient load failure must not brick the editor for the rest of the session.
+    loading = undefined;
+    throw error;
+  });
   return loading;
 }
