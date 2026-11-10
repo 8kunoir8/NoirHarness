@@ -39,12 +39,12 @@ test("a provider survives an app restart", async () => {
     try {
       const page = await first.firstWindow();
       await expect(page.getByTestId("kernel-status")).toHaveText("kernel ok", { timeout: 20_000 });
-      await page.getByLabel("Name").fill("Persisted");
-      await page.getByLabel("Base URL").fill("http://localhost:11434/v1");
-      await page.getByLabel("API key").fill("k");
-      await page.getByRole("button", { name: "Add provider" }).click();
-      const providers = page.locator("section").filter({ has: page.getByRole("heading", { name: "Providers", exact: true }) });
-      await expect(providers.getByText("Persisted")).toBeVisible();
+      const providersRegion = page.getByRole("region", { name: "Providers", exact: true });
+      await providersRegion.getByLabel("Name", { exact: true }).fill("Persisted");
+      await providersRegion.getByLabel("Base URL", { exact: true }).fill("http://localhost:11434/v1");
+      await providersRegion.getByLabel("API key", { exact: true }).fill("k");
+      await providersRegion.getByRole("button", { name: "Add provider" }).click();
+      await expect(providersRegion.getByText("Persisted")).toBeVisible();
     } finally {
       await first.close().catch(() => undefined);
     }
@@ -54,7 +54,7 @@ test("a provider survives an app restart", async () => {
     const second = await launch();
     try {
       const page = await second.firstWindow();
-      const providers = page.locator("section").filter({ has: page.getByRole("heading", { name: "Providers", exact: true }) });
+      const providers = page.getByRole("region", { name: "Providers", exact: true });
       await expect(providers.getByText("Persisted")).toBeVisible({ timeout: 20_000 });
       await deleteProviderThroughKernel(dataDir, "Persisted");
     } finally {

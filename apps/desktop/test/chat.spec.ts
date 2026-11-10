@@ -31,7 +31,7 @@ function launchApp(harness: Harness): Promise<ElectronApplication> {
 async function bootstrap(page: Page, mock: MockProvider, workspacePath: string): Promise<void> {
   await expect(page.getByTestId("kernel-status")).toHaveText("kernel ok", { timeout: 20_000 });
 
-  const providers = page.locator("section").filter({ has: page.getByRole("heading", { name: "Providers", exact: true }) });
+  const providers = page.getByRole("region", { name: "Providers", exact: true });
   await providers.getByLabel("Name", { exact: true }).fill("Mock");
   await providers.getByLabel("Base URL", { exact: true }).fill(mock.url);
   await providers.getByLabel("API key", { exact: true }).fill("sk-test");
@@ -44,6 +44,9 @@ async function bootstrap(page: Page, mock: MockProvider, workspacePath: string):
   await models.getByLabel("Context window", { exact: true }).fill("200000");
   await models.getByRole("button", { name: "Add model" }).click();
   await expect(models.locator("li").filter({ hasText: "mock-1" })).toBeVisible();
+
+  // Setup is its own page; chat, project and session controls live behind the Chat tab.
+  await page.getByRole("navigation", { name: "Main" }).getByRole("button", { name: "Chat" }).click();
 
   const projects = page.getByRole("region", { name: "Projects", exact: true });
   await projects.getByLabel("Project path", { exact: true }).fill(workspacePath);

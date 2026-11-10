@@ -13,6 +13,7 @@ import {
   ModelListParams,
   ProjectAddParams,
   ProviderCreateParams,
+  ProviderDeleteParams,
   SessionCloseParams,
   SessionCreateParams,
   SessionInterruptParams,
@@ -54,7 +55,6 @@ export interface Kernel {
   close(): Promise<void>;
 }
 
-const ProviderDeleteParams = z.object({ id: z.string().min(1) });
 const ProbeFrame = z.object({
   id: z.number().int(),
   result: z.object({ status: z.literal("ok"), pid: z.number().int() }).optional(),

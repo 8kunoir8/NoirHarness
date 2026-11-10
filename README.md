@@ -25,12 +25,13 @@ The renderer runs on `http://127.0.0.1:5173`; Electron spawns the kernel from `a
 
 ## Quick start
 
-The app is driven by one chain: **provider → model → workspace → chat**.
+The app is driven by one chain: **provider → model → workspace → chat**. The first two steps live on
+the **Setup** page (the app opens there until a model exists); the last two live on **Chat**.
 
-1. **Provider.** Enter a name, base URL, API key, and API kind. The key goes into the OS keyring
-   (never into the SQLite file, the profile, logs, or RPC responses).
-2. **Model.** Pick the provider and enter the model id, display name, context window, and optional
-   max output tokens.
+1. **Provider.** Enter a name, base URL, API kind, and API key. The key is sent once over the local
+   socket, kept in the OS keyring, and written only to the owner-only `models.yml` below so the
+   engine can use it; it never enters SQLite, logs, or any RPC response.
+2. **Model.** Pick the provider and enter the model id, display name, and context window.
 3. **Workspace.** Add a project path, create a workspace for it, then select that workspace.
 4. **Chat.** Create a new chat on the workspace with a model, type a prompt, and press send.
 

@@ -9,9 +9,9 @@ import {
   connect,
   offEvent,
   request as defaultRequest,
+  type RequestFn,
   type SessionSubscription,
 } from "./api.js";
-import type { RequestFn } from "./Settings.js";
 
 export interface ChatBlock {
   kind: "text" | "reasoning";

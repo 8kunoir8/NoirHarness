@@ -114,3 +114,73 @@ main {
   color: #666;
   font-size: 0.85rem;
 }
+
+nav[aria-label="Main"] {
+  display: flex;
+  gap: 8px;
+  margin: 12px 0 20px;
+}
+
+nav[aria-label="Main"] button[aria-pressed="true"] {
+  background: #1c1c1c;
+  color: #fff;
+  border-color: #1c1c1c;
+}
+
+.setup section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 20px 0;
+}
+
+.setup form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px;
+  align-items: end;
+}
+
+.setup form button {
+  justify-self: start;
+}
+
+.setup-list {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.setup-list li {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 8px 12px;
+  background: #fff;
+}
+
+.setup-list li span {
+  color: #666;
+  font-size: 0.9rem;
+}
+
+.hint {
+  color: #555;
+  background: #f0efe9;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.hint code {
+  font-size: 0.85rem;
+}
+
+button.primary {
+  align-self: flex-start;
+  padding: 8px 16px;
+}

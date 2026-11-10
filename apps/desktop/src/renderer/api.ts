@@ -143,6 +143,8 @@ export function offEvent(onEvent: KernelEventListener): void {
   listeners.delete(onEvent);
 }
 
+export type RequestFn = <T>(method: string, params?: unknown) => Promise<T>;
+
 export function request<T = unknown>(method: string, params?: unknown): Promise<T> {
   if (socket === undefined || socket.readyState !== WebSocket.OPEN) {
     return Promise.reject(new Error("kernel not connected"));

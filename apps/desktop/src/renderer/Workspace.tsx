@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
-import type { ModelView, ProviderView, SessionView } from "@noir/protocol";
-import type { RequestFn } from "./Settings.js";
+import type { ModelView, SessionView } from "@noir/protocol";
+import type { RequestFn } from "./api.js";
 import { Chat } from "./Chat.js";
 import { errorMessage } from "./events.js";
 
@@ -24,21 +24,17 @@ interface SessionListResult { sessions: SessionView[] }
 interface ModelListResult { models: ModelView[] }
 interface ProjectListResult { projects: ProjectView[] }
 interface WorkspaceListResult { workspaces: WorkspaceView[] }
-interface ProviderListResult { providers: ProviderView[] }
 
-export function Workspace({ request, providersVersion }: { request: RequestFn; providersVersion?: number }) {
+
+export function Workspace({ request }: { request: RequestFn }) {
   const [projects, setProjects] = useState<ProjectView[]>([]);
   const [workspaces, setWorkspaces] = useState<WorkspaceView[]>([]);
   const [models, setModels] = useState<ModelView[]>([]);
-  const [providers, setProviders] = useState<ProviderView[]>([]);
   const [sessions, setSessions] = useState<SessionView[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | undefined>(undefined);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState("");
   const [projectPath, setProjectPath] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState("");
-  const [providerId, setProviderId] = useState("");
-  const [modelId, setModelId] = useState("");
-  const [contextWindow, setContextWindow] = useState("200000");
   const [newChatModelId, setNewChatModelId] = useState("");
   const [error, setError] = useState<string | undefined>(undefined);
 
@@ -71,15 +67,6 @@ export function Workspace({ request, providersVersion }: { request: RequestFn; p
     }
   }
 
-  async function loadProviders(): Promise<void> {
-    try {
-      const result = await request<ProviderListResult>("provider.list");
-      setProviders(result.providers);
-      setProviderId((current) => current !== "" ? current : (result.providers[0]?.id ?? ""));
-    } catch (loadError) {
-      setError(errorMessage(loadError));
-    }
-  }
 
   async function loadSessions(): Promise<void> {
     try {
@@ -91,13 +78,8 @@ export function Workspace({ request, providersVersion }: { request: RequestFn; p
   }
 
   useEffect(() => {
-    void Promise.all([loadProjects(), loadWorkspaces(), loadModels(), loadProviders(), loadSessions()]);
+    void Promise.all([loadProjects(), loadWorkspaces(), loadModels(), loadSessions()]);
   }, []);
-
-  useEffect(() => {
-    if (providersVersion === undefined || providersVersion === 0) return;
-    void loadProviders();
-  }, [providersVersion]);
 
   async function addProject(event: FormEvent): Promise<void> {
     event.preventDefault();
@@ -121,26 +103,6 @@ export function Workspace({ request, providersVersion }: { request: RequestFn; p
       setError(undefined);
       await loadWorkspaces();
       if (typeof created?.id === "string") setSelectedWorkspaceId(created.id);
-    } catch (createError) {
-      setError(errorMessage(createError));
-    }
-  }
-
-  async function addModel(event: FormEvent): Promise<void> {
-    event.preventDefault();
-    const id = modelId.trim();
-    const window = Number(contextWindow);
-    if (providerId === "" || id === "" || !Number.isInteger(window) || window <= 0) return;
-    try {
-      await request("model.create", {
-        providerId,
-        modelId: id,
-        contextWindow: window,
-        enabled: true,
-      });
-      setModelId("");
-      setError(undefined);
-      await loadModels();
     } catch (createError) {
       setError(errorMessage(createError));
     }
@@ -195,24 +157,9 @@ export function Workspace({ request, providersVersion }: { request: RequestFn; p
         </label>
       </section>
 
-      <section aria-label="Models">
-        <h3>Models</h3>
-        <ul>
-          {models.map((model) => <li key={model.id}><strong>{model.displayName}</strong> — {model.modelId} ({model.contextWindow})</li>)}
-        </ul>
-        <form onSubmit={(event) => void addModel(event)}>
-          <label>
-            Provider
-            <select aria-label="Provider" value={providerId} onChange={(event) => setProviderId(event.target.value)}>
-              <option value="">Select a provider</option>
-              {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
-            </select>
-          </label>
-          <label>Model id <input aria-label="Model id" value={modelId} onChange={(event) => setModelId(event.target.value)} /></label>
-          <label>Context window <input aria-label="Context window" value={contextWindow} onChange={(event) => setContextWindow(event.target.value)} /></label>
-          <button type="submit" disabled={providerId === "" || modelId.trim() === ""}>Add model</button>
-        </form>
-      </section>
+      {models.length === 0 ? (
+        <p className="hint">No models yet — add a provider and a model on the Setup page first.</p>
+      ) : null}
 
       <section aria-label="Sessions">
         <h3>Sessions</h3>

@@ -14,7 +14,7 @@ const api = vi.hoisted(() => ({
 vi.mock("../src/renderer/api.js", () => api);
 
 import { Chat } from "../src/renderer/Chat.js";
-import type { RequestFn } from "../src/renderer/Settings.js";
+import type { RequestFn } from "../src/renderer/api.js";
 
 function makeEvent(seq: number, type: AgentEvent["type"], payload: unknown, sessionId = "s1"): AgentEvent {
   return {

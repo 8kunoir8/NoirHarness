@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ModelView, PermissionOption, SessionPromptResult, SessionView } from "@noir/protocol";
-import type { RequestFn } from "./Settings.js";
+import type { RequestFn } from "./api.js";
 import { errorMessage, useSessionEvents } from "./events.js";
 
 function newId(): string {

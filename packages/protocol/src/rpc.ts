@@ -92,6 +92,9 @@ export const ProviderView = z.object({
 });
 export type ProviderView = z.infer<typeof ProviderView>;
 export const ProviderListResult = z.object({ providers: z.array(ProviderView) });
+
+export const ProviderDeleteParams = z.object({ id: z.string().min(1) });
+export type ProviderDeleteParams = z.infer<typeof ProviderDeleteParams>;
 export const ProjectView = z.object({ id: z.string(), name: z.string(), rootPath: z.string(), createdAt: z.number().int() });
 export const ProjectListResult = z.object({ projects: z.array(ProjectView) });
 

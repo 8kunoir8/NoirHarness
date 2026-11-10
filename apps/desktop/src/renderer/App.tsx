@@ -1,19 +1,28 @@
 import { useEffect, useState } from "react";
 import { connect, request } from "./api.js";
-import { Settings } from "./Settings.js";
+import { Setup } from "./Setup.js";
 import { Workspace } from "./Workspace.js";
 import "./styles.css";
 
+type View = "setup" | "chat";
+
 export function App() {
   const [status, setStatus] = useState("connecting");
-  const [providersVersion, setProvidersVersion] = useState(0);
+  const [view, setView] = useState<View>("setup");
 
   useEffect(() => {
     void (async () => {
       try {
         await connect();
         const health = await request<{ status: string }>("system.health");
-        setStatus(health.status === "ok" ? "kernel ok" : "kernel error");
+        if (health.status !== "ok") {
+          setStatus("kernel error");
+          return;
+        }
+        setStatus("kernel ok");
+        // First run has nothing to chat with, so land on Setup; afterwards land on the chat.
+        const { models } = await request<{ models: unknown[] }>("model.list");
+        setView(models.length > 0 ? "chat" : "setup");
       } catch {
         setStatus("kernel error");
       }
@@ -24,11 +33,20 @@ export function App() {
     <main>
       <h1>NoirHarness</h1>
       <p data-testid="kernel-status">{status}</p>
+      <nav aria-label="Main">
+        <button type="button" aria-pressed={view === "setup"} onClick={() => setView("setup")}>
+          Setup
+        </button>
+        <button type="button" aria-pressed={view === "chat"} onClick={() => setView("chat")}>
+          Chat
+        </button>
+      </nav>
       {status === "kernel ok" ? (
-        <>
-          <Workspace request={request} providersVersion={providersVersion} />
-          <Settings request={request} onProvidersChanged={() => setProvidersVersion((version) => version + 1)} />
-        </>
+        view === "setup" ? (
+          <Setup request={request} onOpenChat={() => setView("chat")} />
+        ) : (
+          <Workspace request={request} />
+        )
       ) : null}
     </main>
   );
