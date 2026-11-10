@@ -63,7 +63,9 @@ export function App() {
   const [error, setError] = useState<string | undefined>(undefined);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const events = useSessionEvents(activeId ?? "", request);
+  // Subscribe only once the socket is up: a restored tab mounts before `loadAll` connects, and a
+  // subscribe request on a cold socket fails without retrying.
+  const events = useSessionEvents(status === "kernel ok" ? (activeId ?? "") : "", request);
   const refreshTimer = useRef<number | undefined>(undefined);
 
   const loadSessions = useCallback(async (): Promise<SessionView[]> => {

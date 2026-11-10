@@ -240,7 +240,8 @@ export class EngineManager {
         // The engine may already be gone; the turn settles as failed in that case.
       }
     }
-    this.dropQueue(state, "interrupted");
+    // The queue survives an interrupt: a prompt the user queued while this turn ran still runs
+    // once the engine settles. `cancelQueued` is the way to drop one.
     return { interrupted: turn !== undefined };
   }
 

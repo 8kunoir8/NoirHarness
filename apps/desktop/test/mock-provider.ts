@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { Socket } from "node:net";
+import { setTimeout as delay } from "node:timers/promises";
 
 /**
  * Minimal OpenAI-compatible completions endpoint for the e2e specs.
@@ -8,6 +9,9 @@ import type { Socket } from "node:net";
  * It exists so a real `omp acp` process can be driven through the whole app: the engine spawns,
  * reads its profile, posts here, and streams the result back over ACP. Only what the engine
  * actually sends is handled; anything else is a 404 so a wrong URL fails loudly.
+ *
+ * Prompt text selects the script: `tool` asks for a bash call, `slow` streams for ~6s so a spec
+ * can queue a second prompt and interrupt, and `queued` answers with a distinct reply.
  */
 export interface MockProvider {
   /** `http://127.0.0.1:<port>/v1` — the base URL the provider form expects. */
@@ -16,6 +20,8 @@ export interface MockProvider {
   requests: string[];
   /** True once a `role: "tool"` message reached the provider. */
   toolMessageSeen(): boolean;
+  /** Every user prompt the engine sent, in arrival order. */
+  prompts(): string[];
   close(): Promise<void>;
 }
 
@@ -88,6 +94,7 @@ function parseMessages(raw: string): WireMessage[] {
 
 export async function startMockProvider(): Promise<MockProvider> {
   const requests: string[] = [];
+  const prompts: string[] = [];
   const sockets = new Set<Socket>();
   let toolMessageSeen = false;
 
@@ -101,14 +108,34 @@ export async function startMockProvider(): Promise<MockProvider> {
     }
 
     void readBody(req)
-      .then((raw) => {
+      .then(async (raw) => {
         const messages = parseMessages(raw);
-        if (messages.some((message) => message.role === "tool")) toolMessageSeen = true;
+        const hasToolMessage = messages.some((message) => message.role === "tool");
+        if (hasToolMessage) toolMessageSeen = true;
+        const prompt = lastUserText(messages);
+        prompts.push(prompt);
 
         startSse(res);
         res.on("error", () => undefined);
 
-        if (toolMessageSeen) {
+        if (prompt.includes("slow")) {
+          // Stream long enough for a spec to queue a second prompt and interrupt this turn.
+          res.write(chunk({ role: "assistant", content: "slow " }, null));
+          for (let step = 0; step < 40 && !res.destroyed; step += 1) {
+            await delay(150);
+            if (res.destroyed) return;
+            res.write(chunk({ content: `${step} ` }, null));
+          }
+          if (res.destroyed) return;
+          res.write(chunk({}, "stop"));
+          res.write("data: [DONE]\n\n");
+          res.end();
+          return;
+        }
+
+        // The tool follow-up resends the whole transcript, so a tool result only explains this
+        // request: a later prompt still gets its own scripted reply.
+        if (hasToolMessage && prompt.includes("tool")) {
           res.write(chunk({ role: "assistant", content: "tool finished" }, null));
           res.write(chunk({}, "stop"));
           res.write("data: [DONE]\n\n");
@@ -116,7 +143,7 @@ export async function startMockProvider(): Promise<MockProvider> {
           return;
         }
 
-        if (lastUserText(messages).includes("tool")) {
+        if (prompt.includes("tool")) {
           res.write(
             chunk(
               {
@@ -138,9 +165,8 @@ export async function startMockProvider(): Promise<MockProvider> {
           return;
         }
 
-        res.write(chunk({ role: "assistant", content: "Hello " }, null));
-        res.write(chunk({ content: "from " }, null));
-        res.write(chunk({ content: "mock." }, null));
+        const reply = prompt.includes("queued") ? "queued reply." : "Hello from mock.";
+        res.write(chunk({ role: "assistant", content: reply }, null));
         res.write(chunk({}, "stop"));
         res.write("data: [DONE]\n\n");
         res.end();
@@ -175,6 +201,7 @@ export async function startMockProvider(): Promise<MockProvider> {
     url: `http://127.0.0.1:${port}/v1`,
     requests,
     toolMessageSeen: () => toolMessageSeen,
+    prompts: () => [...prompts],
     close: () => {
       const closed = Promise.withResolvers<void>();
       for (const socket of sockets) socket.destroy();

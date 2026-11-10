@@ -86,11 +86,6 @@ export function Composer({
         <button type="submit" className="primary" disabled={sendDisabled}>
           Send
         </button>
-        {streaming ? (
-          <button type="button" onClick={onInterrupt}>
-            Interrupt
-          </button>
-        ) : null}
         {queued ? (
           <button type="button" className="composer-queue" onClick={onCancelQueued}>
             Queued — runs after this turn · Cancel
