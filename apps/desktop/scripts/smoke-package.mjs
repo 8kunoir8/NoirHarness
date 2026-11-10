@@ -26,6 +26,8 @@ const child = spawn(exe, [], {
   env: { ...process.env, NOIR_DATA_DIR: dataDir },
   stdio: ["ignore", "pipe", "pipe"],
   windowsHide: false,
+  // POSIX needs its own process group so killTree can signal the whole tree.
+  detached: process.platform !== "win32",
 });
 child.stdout.on("data", (chunk) => {
   stdout += chunk;
@@ -67,12 +69,28 @@ function killTree(pid) {
   }
 }
 
-function fail(message) {
+// The app and kernel release their handles shortly after the kill, so retry before giving up.
+async function removeDataDir() {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    try {
+      rmSync(dataDir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (attempt === 19) {
+        console.warn(`smoke: could not remove ${dataDir}: ${error.message}`);
+        return;
+      }
+      await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+    }
+  }
+}
+
+async function fail(message) {
   console.error(`smoke: ${message}`);
   if (stdout.trim()) console.error(`--- stdout ---\n${stdout.trimEnd()}`);
   if (stderr.trim()) console.error(`--- stderr ---\n${stderr.trimEnd()}`);
   if (!exited) killTree(child.pid);
-  rmSync(dataDir, { recursive: true, force: true });
+  await removeDataDir();
   process.exit(1);
 }
 
@@ -95,22 +113,22 @@ while (Date.now() < deadline) {
 }
 
 if (!info) {
-  fail(
+  await fail(
     exited
       ? `app exited before writing ${runtimeFile} (code ${exited.code ?? "null"}, signal ${exited.signal ?? "null"})`
       : `timed out after ${timeoutMs}ms waiting for ${runtimeFile}`,
   );
 }
 
-if (!isAlive(info.pid)) fail(`kernel pid ${info.pid} from ${runtimeFile} is not alive`);
+if (!isAlive(info.pid)) await fail(`kernel pid ${info.pid} from ${runtimeFile} is not alive`);
 
 console.log(`smoke: kernel pid ${info.pid} listening on port ${info.port}`);
 killTree(child.pid);
 
 if (isAlive(info.pid)) {
   killTree(info.pid);
-  if (isAlive(info.pid)) fail(`kernel pid ${info.pid} survived shutdown`);
+  if (isAlive(info.pid)) await fail(`kernel pid ${info.pid} survived shutdown`);
 }
 
-rmSync(dataDir, { recursive: true, force: true });
+await removeDataDir();
 console.log("smoke: ok");

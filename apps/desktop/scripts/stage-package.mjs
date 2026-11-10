@@ -12,6 +12,7 @@ rmSync(staging, { recursive: true, force: true });
 mkdirSync(staging, { recursive: true });
 
 const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+const deployTarget = join(staging, "kernel");
 const deploy = spawnSync(
   pnpm,
   [
@@ -19,7 +20,9 @@ const deploy = spawnSync(
     // A hoisted layout has no symlinks, so electron-builder can copy the kernel
     // into resources without leaking absolute links back into this checkout.
     "--config.node-linker=hoisted",
-    join(staging, "kernel"),
+    // win32 needs `shell: true` to run pnpm.cmd, and shell mode concatenates argv
+    // without escaping, so the absolute target has to be quoted here.
+    process.platform === "win32" ? `"${deployTarget}"` : deployTarget,
   ],
   { cwd: root, stdio: "inherit", shell: process.platform === "win32" },
 );

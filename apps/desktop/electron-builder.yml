@@ -14,7 +14,7 @@ extraResources:
   # extraResources source, so copy the deployed dependencies on their own.
   - from: ../../build/kernel/node_modules
     to: kernel/node_modules
-    filter: ["**/*"]
+    filter: ["**/*", "!**/.modules.yaml", "!**/.pnpm/**"]
   - from: ../../build/runtime
     to: runtime
     filter: ["**/*"]
