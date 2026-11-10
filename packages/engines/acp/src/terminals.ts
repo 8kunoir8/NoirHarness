@@ -223,9 +223,9 @@ export class ClientRequestHandler {
   async #waitForExit(params: JsonObject): Promise<TerminalExit> {
     const entry = this.#entry(params);
     if (entry.exit !== null) return entry.exit;
-    const deferred = Promise.withResolvers<TerminalExit>();
-    entry.waiters.push(deferred.resolve);
-    return await deferred.promise;
+    return await new Promise<TerminalExit>((resolveExit) => {
+      entry.waiters.push(resolveExit);
+    });
   }
 
   #kill(params: JsonObject): Record<string, never> {

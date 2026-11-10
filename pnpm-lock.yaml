@@ -115,6 +115,12 @@ importers:
       '@napi-rs/keyring':
         specifier: ^2.1.2
         version: 2.1.2
+      '@noir/engine-acp':
+        specifier: workspace:*
+        version: link:../engines/acp
+      '@noir/omp-profile':
+        specifier: workspace:*
+        version: link:../adapters/omp-profile
       '@noir/protocol':
         specifier: workspace:*
         version: link:../protocol

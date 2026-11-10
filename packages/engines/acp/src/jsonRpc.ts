@@ -76,23 +76,32 @@ export class JsonRpcClient {
     transport.onClose((error) => this.#handleClose(error));
   }
 
+  /**
+   * `timeoutMs` overrides the client-wide timeout; `0` (or a negative number) disables it for this
+   * request, which is how a caller that owns its own deadline opts out of the generic one.
+   */
   request<T = unknown>(method: string, params?: unknown, timeoutMs?: number): Promise<T> {
     if (this.#disposed) return Promise.reject(new Error(`JSON-RPC client is disposed (${method})`));
 
     const id = this.#nextId;
     this.#nextId += 1;
     const effectiveTimeout = timeoutMs ?? this.#requestTimeoutMs;
-    const deferred = Promise.withResolvers<T>();
+    let settle: (value: T) => void = () => undefined;
+    let fail: (error: Error) => void = () => undefined;
+    const promise = new Promise<T>((resolve, reject) => {
+      settle = resolve;
+      fail = reject;
+    });
     const entry: PendingRequest = {
-      resolve: (value) => deferred.resolve(value as T),
-      reject: deferred.reject,
+      resolve: (value) => settle(value as T),
+      reject: fail,
       timer: undefined,
     };
     if (effectiveTimeout !== undefined && effectiveTimeout > 0) {
       entry.timer = setTimeout(() => {
         if (this.#pending.get(id) !== entry) return;
         this.#pending.delete(id);
-        deferred.reject(new Error(`JSON-RPC request timed out after ${effectiveTimeout}ms: ${method}`));
+        fail(new Error(`JSON-RPC request timed out after ${effectiveTimeout}ms: ${method}`));
       }, effectiveTimeout);
     }
     this.#pending.set(id, entry);
@@ -104,9 +113,9 @@ export class JsonRpcClient {
     } catch (error) {
       clearTimeout(entry.timer);
       this.#pending.delete(id);
-      deferred.reject(error instanceof Error ? error : new Error(String(error)));
+      fail(error instanceof Error ? error : new Error(String(error)));
     }
-    return deferred.promise;
+    return promise;
   }
 
   notify(method: string, params?: unknown): void {
@@ -155,7 +164,14 @@ export class JsonRpcClient {
 
     if (typeof message.method === "string") {
       if (message.id === undefined || message.id === null) {
-        for (const handler of this.#notificationHandlers) handler(message.method, message.params);
+        for (const handler of this.#notificationHandlers) {
+          try {
+            handler(message.method, message.params);
+          } catch (error) {
+            // A throwing consumer must not abort the framing loop.
+            if (process.env.NOIR_ACP_DEBUG === "1") console.error("[acp] notification handler failed", error);
+          }
+        }
         return;
       }
       void this.#handleRequest(message.id, message.method, message.params);

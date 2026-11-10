@@ -56,10 +56,11 @@ const pendingReplies = new Map<number, (message: JsonObject) => void>();
 function request(method: string, params: unknown): Promise<JsonObject | undefined> {
   const id = nextRequestId;
   nextRequestId += 1;
-  const deferred = Promise.withResolvers<JsonObject | undefined>();
-  pendingReplies.set(id, deferred.resolve);
+  const answer = new Promise<JsonObject | undefined>((resolveAnswer) => {
+    pendingReplies.set(id, resolveAnswer);
+  });
   send({ jsonrpc: "2.0", id, method, params });
-  return deferred.promise;
+  return answer;
 }
 
 function configOptions(): JsonObject[] {
@@ -123,9 +124,21 @@ async function unknownTurn(): Promise<JsonObject> {
 }
 
 async function hangTurn(): Promise<JsonObject> {
-  const deferred = Promise.withResolvers<JsonObject>();
-  onCancel = () => deferred.resolve({ stopReason: "cancelled" });
-  return await deferred.promise;
+  return await new Promise<JsonObject>((resolveHang) => {
+    onCancel = () => resolveHang({ stopReason: "cancelled" });
+  });
+}
+
+/** Emits one chunk, then waits for the client's cancel — interrupt coverage. */
+async function slowTurn(): Promise<JsonObject> {
+  emitUpdate(textUpdate("partial", "msg-fake-slow"));
+  return await hangTurn();
+}
+
+/** Emits one chunk and exits the process — crash coverage. */
+function crashTurn(): JsonObject {
+  emitUpdate(textUpdate("about to crash", "msg-fake-crash"));
+  process.exit(1);
 }
 
 async function permissionTurn(): Promise<JsonObject> {
@@ -223,6 +236,10 @@ async function runPrompt(params: unknown): Promise<JsonObject> {
       return await unknownTurn();
     case "hang":
       return await hangTurn();
+    case "slow":
+      return await slowTurn();
+    case "crash":
+      return crashTurn();
     case "permission":
       return await permissionTurn();
     default:

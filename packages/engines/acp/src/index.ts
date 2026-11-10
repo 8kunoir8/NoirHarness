@@ -6,6 +6,9 @@ import { ClientRequestHandler } from "./terminals.js";
 const DEFAULT_TURN_TIMEOUT_MS = 120_000;
 const CANCEL_GRACE_MS = 5_000;
 
+/** Provenance version stamped on events this adapter produces. Keep in sync with package.json. */
+export const ADAPTER_VERSION = "0.0.0";
+
 const INITIALIZE_PARAMS = {
   protocolVersion: 1,
   clientCapabilities: {
@@ -83,10 +86,10 @@ function asObject(value: unknown): JsonObject | undefined {
 }
 
 function delay(ms: number): Promise<void> {
-  const deferred = Promise.withResolvers<void>();
-  const timer = setTimeout(deferred.resolve, ms);
-  timer.unref();
-  return deferred.promise;
+  return new Promise((resolveDelay) => {
+    const timer = setTimeout(resolveDelay, ms);
+    timer.unref();
+  });
 }
 
 /** Newline-framed JSON-RPC over a child process's stdin/stdout. */
@@ -112,10 +115,14 @@ class ChildTransport implements JsonRpcTransport {
     });
     this.pid = this.#child.pid ?? -1;
 
-    const exitDeferred = Promise.withResolvers<void>();
-    this.#exitPromise = exitDeferred.promise;
+    let resolveExit: () => void = () => undefined;
+    this.#exitPromise = new Promise<void>((resolve) => {
+      resolveExit = resolve;
+    });
 
     const child = this.#child;
+    // A write racing the agent's exit emits EPIPE on stdin; never let that become uncaught.
+    child.stdin?.on("error", () => undefined);
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => this.#ingest(chunk));
     // stderr carries agent logs only; it is never protocol data.
@@ -125,13 +132,13 @@ class ChildTransport implements JsonRpcTransport {
     });
     child.on("exit", (code, signal) => {
       this.#exited = true;
-      exitDeferred.resolve();
+      resolveExit();
       const failed = code !== null && code !== 0;
       this.#emitClose(failed ? new Error(`ACP agent exited with code ${code}${signal === null ? "" : ` (${signal})`}`) : undefined);
     });
     child.on("error", (error) => {
       this.#exited = true;
-      exitDeferred.resolve();
+      resolveExit();
       this.#emitClose(error);
     });
   }
@@ -391,12 +398,18 @@ class AcpSessionImpl implements AcpSession {
     turn.arm();
 
     try {
-      const settled = Promise.withResolvers<unknown>();
-      turn.expire = settled.reject;
+      let settle: (value: unknown) => void = () => undefined;
+      let expire: (error: Error) => void = () => undefined;
+      const settled = new Promise<unknown>((resolveResponse, rejectResponse) => {
+        settle = resolveResponse;
+        expire = rejectResponse;
+      });
+      turn.expire = expire;
+      // `0` disables the client-wide request timeout: the turn watchdog + cancel grace own this deadline.
       this.#owner.client
-        .request("session/prompt", { sessionId: this.sessionId, prompt: content })
-        .then(settled.resolve, settled.reject);
-      const response = await settled.promise;
+        .request("session/prompt", { sessionId: this.sessionId, prompt: content }, 0)
+        .then(settle, expire);
+      const response = await settled;
       if (turn.timedOut) return { stopReason: "cancelled", timedOut: true };
       return toPromptResult(response);
     } finally {

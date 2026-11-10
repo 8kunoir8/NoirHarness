@@ -216,6 +216,32 @@ describe("ACP engine adapter", () => {
   );
 
   it(
+    "does not let the client-wide request timeout end a prompt",
+    async () => {
+      const root = workspace();
+      const logPath = join(root, "wire.log");
+      const engine = await createAcpClient({
+        command: process.execPath,
+        args: [FAKE_SERVER],
+        cwd: root,
+        env: { FAKE_ACP_LOG: logPath },
+        requestTimeoutMs: 100,
+        turnTimeoutMs: 400,
+      });
+      cleanups.push(() => engine.dispose());
+
+      const session = await engine.newSession(root);
+      const result = await session.prompt([{ type: "text", text: "hang" }], collector().handlers);
+      expect(result).toEqual({ stopReason: "cancelled", timedOut: true });
+
+      const wire = readFileSync(logPath, "utf8");
+      expect(wire).toContain('"method":"session/prompt"');
+      expect(wire).toContain('"method":"session/cancel"');
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
     "parses a single ~25 KB frame",
     async () => {
       const { engine, root } = await start();
