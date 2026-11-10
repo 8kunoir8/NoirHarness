@@ -164,6 +164,7 @@ export class EngineManager {
   private readonly turnTimeoutMs: number;
   private readonly states = new Map<string, SessionState>();
   private readonly approvals = new Map<string, PendingApproval>();
+  private readonly closing = new Set<string>();
   private shuttingDown = false;
 
   constructor(
@@ -193,6 +194,7 @@ export class EngineManager {
 
   async prompt(params: SessionPromptParams): Promise<SessionPromptResult> {
     if (this.shuttingDown) throw new RpcFault(ErrorCodes.conflict, "Kernel is shutting down");
+    if (this.closing.has(params.sessionId)) throw new RpcFault(ErrorCodes.conflict, "Session is closing");
     const row = this.loadSession(params.sessionId);
     if (row.status === "closed") throw new RpcFault(ErrorCodes.conflict, "Session is closed");
 
@@ -258,47 +260,55 @@ export class EngineManager {
   }
 
   async closeSession(sessionId: string): Promise<void> {
-    const row = this.deps.db.prepare("SELECT status FROM sessions WHERE id = ?").get(sessionId) as
-      | { status: SessionStatus }
-      | undefined;
-    if (row === undefined) throw new RpcFault(ErrorCodes.notFound, "Session not found");
+    const exists = this.deps.db.prepare("SELECT id FROM sessions WHERE id = ?").get(sessionId);
+    if (exists === undefined) throw new RpcFault(ErrorCodes.notFound, "Session not found");
 
-    const state = this.states.get(sessionId);
-    if (state !== undefined) {
-      state.closing = true;
-      this.states.delete(sessionId);
-      this.dropQueue(state, "interrupted");
-      const turn = state.turn;
-      state.turn = undefined;
-      if (turn !== undefined) {
-        for (const messageId of turn.openMessages.keys()) {
-          this.emit(state, "message.completed", { messageId, status: "interrupted" }, turn.turnId);
+    // Block concurrent prompts for the whole close, not just after the row is updated.
+    this.closing.add(sessionId);
+    try {
+      const state = this.states.get(sessionId);
+      if (state !== undefined) {
+        state.closing = true;
+        this.states.delete(sessionId);
+        this.dropQueue(state, "interrupted");
+        const turn = state.turn;
+        state.turn = undefined;
+        if (turn !== undefined) {
+          for (const messageId of turn.openMessages.keys()) {
+            this.emit(state, "message.completed", { messageId, status: "interrupted" }, turn.turnId);
+          }
+          this.emit(state, "turn.completed", { turnId: turn.turnId, status: "interrupted", stopReason: "closed" }, turn.turnId);
         }
-        this.emit(state, "turn.completed", { turnId: turn.turnId, status: "interrupted", stopReason: "closed" }, turn.turnId);
+        for (const approval of [...state.approvals.values()]) this.settleApproval(approval, "reject");
+        if (state.engineSession !== undefined) {
+          try {
+            await state.engineSession.cancel();
+          } catch {
+            // The engine may already be gone.
+          }
+          try {
+            await state.engineSession.close();
+          } catch {
+            // dispose() below still reaps the child.
+          }
+        }
+        if (state.engine !== undefined) {
+          try {
+            await state.engine.dispose();
+          } catch {
+            // The transport may already be gone.
+          }
+        }
       }
-      for (const approval of [...state.approvals.values()]) this.settleApproval(approval, "reject");
-      if (state.engineSession !== undefined) {
-        try {
-          await state.engineSession.cancel();
-        } catch {
-          // The engine may already be gone.
-        }
-        try {
-          await state.engineSession.close();
-        } catch {
-          // dispose() below still reaps the child.
-        }
-      }
-      if (state.engine !== undefined) {
-        try {
-          await state.engine.dispose();
-        } catch {
-          // The transport may already be gone.
-        }
-      }
+
+      // Re-read with no await in between: a concurrent close may have won the race.
+      const current = this.deps.db.prepare("SELECT status FROM sessions WHERE id = ?").get(sessionId) as
+        | { status: SessionStatus }
+        | undefined;
+      if (current !== undefined && current.status !== "closed") this.deps.sessions.setStatus(sessionId, "closed");
+    } finally {
+      this.closing.delete(sessionId);
     }
-
-    if (row.status !== "closed") this.deps.sessions.setStatus(sessionId, "closed");
   }
 
   async shutdown(): Promise<void> {
@@ -321,22 +331,43 @@ export class EngineManager {
     return row;
   }
 
+  /** Fail turns/approvals a crashed kernel left behind; safe to call before replaying a session. */
+  reconcileSession(sessionId: string): void {
+    if (this.states.has(sessionId) || this.closing.has(sessionId)) return;
+    const row = this.deps.db.prepare("SELECT id, agent_id, status FROM sessions WHERE id = ?").get(sessionId) as
+      | { id: string; agent_id: string; status: SessionStatus }
+      | undefined;
+    if (row === undefined || row.status === "closed") return;
+    this.reconcile({ sessionId: row.id, agentId: row.agent_id });
+  }
+
   /**
    * First touch after a kernel restart: turns persisted as queued/running have no live engine
-   * behind them, so fail them and release a persisted running/waiting status.
+   * behind them, so fail them, resolve orphaned approvals, and release a stale status.
    */
-  private reconcile(state: SessionState): void {
+  private reconcile(target: { sessionId: string; agentId: string }): void {
+    const approvals = this.deps.db
+      .prepare("SELECT id FROM approvals WHERE session_id = ? AND decision IS NULL")
+      .all(target.sessionId) as Array<{ id: string }>;
+    for (const approval of approvals) {
+      this.deps.db
+        .prepare("UPDATE approvals SET decision = 'reject', decided_at = ? WHERE id = ? AND decision IS NULL")
+        .run(Date.now(), approval.id);
+      this.emit(target, "permission.resolved", { approvalId: approval.id, decision: "reject" });
+    }
+
     const stale = this.deps.db
       .prepare("SELECT id FROM turns WHERE session_id = ? AND status IN ('queued','running') ORDER BY idx ASC")
-      .all(state.sessionId) as Array<{ id: string }>;
+      .all(target.sessionId) as Array<{ id: string }>;
     for (const turn of stale) {
-      this.emit(state, "turn.failed", { turnId: turn.id, message: "Engine restarted" }, turn.id);
+      this.emit(target, "turn.failed", { turnId: turn.id, message: "Engine restarted" }, turn.id);
     }
-    const row = this.deps.db.prepare("SELECT status FROM sessions WHERE id = ?").get(state.sessionId) as
+
+    const row = this.deps.db.prepare("SELECT status FROM sessions WHERE id = ?").get(target.sessionId) as
       | { status: SessionStatus }
       | undefined;
     if (row !== undefined && (row.status === "running" || row.status === "waiting")) {
-      this.setStatus(state.sessionId, "idle");
+      this.setStatus(target.sessionId, "idle");
     }
   }
 
@@ -533,10 +564,15 @@ export class EngineManager {
     this.deps.sessions.setStatus(sessionId, status);
   }
 
-  private emit(state: SessionState, type: Parameters<EventStore["append"]>[0]["type"], payload: unknown, turnId?: string): void {
+  private emit(
+    target: { sessionId: string; agentId: string },
+    type: Parameters<EventStore["append"]>[0]["type"],
+    payload: unknown,
+    turnId?: string,
+  ): void {
     this.deps.events.append({
-      sessionId: state.sessionId,
-      agentId: state.agentId,
+      sessionId: target.sessionId,
+      agentId: target.agentId,
       type,
       payload,
       turnId: turnId ?? null,

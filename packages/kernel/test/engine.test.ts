@@ -538,6 +538,93 @@ describe("EngineManager over the fake ACP server", () => {
     },
     TEST_TIMEOUT_MS,
   );
+
+  it(
+    "rejects a prompt that races session.close and leaves one engine",
+    async () => {
+      const { events, manager, session } = setup();
+      await manager.prompt({
+        sessionId: session.id,
+        requestId: "close-race-1",
+        content: [{ type: "text", text: "slow" }],
+      });
+      await waitForEvent(events, session.id, (event) => event.type === "message.delta");
+      const pid = manager.enginePid(session.id);
+      expect(pid).toBeGreaterThan(0);
+
+      const closing = manager.closeSession(session.id);
+      await expect(
+        manager.prompt({
+          sessionId: session.id,
+          requestId: "close-race-2",
+          content: [{ type: "text", text: "stream" }],
+        }),
+      ).rejects.toThrow(/closing/i);
+      await Promise.all([closing, manager.closeSession(session.id)]);
+      await expect(manager.closeSession(session.id)).resolves.toBeUndefined();
+
+      await waitFor(() => !isAlive(pid!), 10_000, "the engine child to exit");
+      const closed = events.list(session.id).find((event) => event.type === "session.closed")!;
+      const closedStatus = events.list(session.id).filter((event) => event.type === "session.status").at(-1);
+      await tick(500);
+      const late = events.list(session.id).filter((event) => event.seq > closed.seq);
+      expect(late).toEqual([]);
+      expect(closedStatus === undefined || closedStatus.seq < closed.seq).toBe(true);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "resolves orphaned approvals when a session is reconciled before replay",
+    async () => {
+      const { db, events, manager, session } = setup();
+      const turnId = "stale-turn-1";
+      db.prepare("INSERT INTO turns (id, session_id, idx, status, started_at) VALUES (?,?,?,?,?)").run(
+        turnId,
+        session.id,
+        1,
+        "running",
+        Date.now(),
+      );
+      db.prepare("UPDATE sessions SET status = 'running' WHERE id = ?").run(session.id);
+      const approvalId = "stale-approval-1";
+      const requested = events.append({
+        sessionId: session.id,
+        agentId: session.agentId,
+        type: "permission.requested",
+        payload: {
+          approvalId,
+          category: "shell",
+          title: "Run?",
+          options: [{ optionId: "allow_once", name: "Allow", kind: "allow_once" }],
+        },
+        provenance: { engine: "acp", engineName: "omp", adapterVersion: "0.0.0" },
+      });
+      db.prepare(
+        "INSERT INTO approvals (id, session_id, event_id, kind, payload_json, options_json) VALUES (?,?,?,?,?,?)",
+      ).run(approvalId, session.id, requested.id, "shell", JSON.stringify(requested.payload), "[]");
+
+      // Same sequence as the session.subscribe handler: reconcile, then replay.
+      manager.reconcileSession(session.id);
+      const replay = events.list(session.id);
+      const resolved = replay.find((event) => event.type === "permission.resolved")!;
+      expect(eventPayload(resolved, "permission.resolved")).toEqual({ approvalId, decision: "reject" });
+      expect(resolved.seq).toBeGreaterThan(requested.seq);
+      expect(replay.some((event) => event.type === "turn.failed" && event.turnId === turnId)).toBe(true);
+
+      const undecided = db
+        .prepare("SELECT COUNT(*) AS count FROM approvals WHERE session_id = ? AND decision IS NULL")
+        .get(session.id) as { count: number };
+      expect(undecided.count).toBe(0);
+      const approval = db.prepare("SELECT decision FROM approvals WHERE id = ?").get(approvalId) as { decision: string };
+      expect(approval.decision).toBe("reject");
+      const turn = db.prepare("SELECT status FROM turns WHERE id = ?").get(turnId) as { status: string };
+      expect(turn.status).toBe("failed");
+      const row = db.prepare("SELECT status FROM sessions WHERE id = ?").get(session.id) as { status: string };
+      expect(row.status).toBe("idle");
+    },
+    TEST_TIMEOUT_MS,
+  );
 });
 
 describe("kernel RPC over the fake ACP server", () => {

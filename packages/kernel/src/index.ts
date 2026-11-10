@@ -257,6 +257,7 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
         },
         [Methods.sessionSubscribe]: async (params) => {
           const { sessionId, sinceSeq } = SessionSubscribeParams.parse(params);
+          engineManager.reconcileSession(sessionId);
           const replay = events.list(sessionId, sinceSeq);
           return { events: replay, lastSeq: replay.at(-1)?.seq ?? sinceSeq };
         },
