@@ -1,30 +1,29 @@
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { _electron as electron, expect, test, type ElectronApplication } from "@playwright/test";
+import { expect, test } from "@playwright/test";
+import { createDirs, launchApp } from "./app-harness.js";
 import { deleteProviderThroughKernel, removeDir, waitForKernelExit } from "./helpers.js";
 
 test("boots, spawns the kernel, and reaches health", async () => {
-  const dataDir = mkdtempSync(join(tmpdir(), "noir e2e "));
-  let app: ElectronApplication | undefined;
+  const harness = createDirs("noir e2e ");
   try {
-    app = await electron.launch({ args: ["."], env: { ...process.env, NOIR_DATA_DIR: dataDir } });
-    const page = await app.firstWindow();
-    await expect(page.getByTestId("kernel-status")).toHaveText("kernel ok", { timeout: 20_000 });
+    const app = await launchApp(harness);
+    try {
+      const page = await app.firstWindow();
+      await expect(page.getByTestId("kernel-status")).toHaveText("kernel ok", { timeout: 20_000 });
+    } finally {
+      await app.close().catch(() => undefined);
+    }
   } finally {
-    await app?.close().catch(() => undefined);
-    await waitForKernelExit(dataDir).catch(() => undefined);
-    await removeDir(dataDir);
+    await waitForKernelExit(harness.dataDir).catch(() => undefined);
+    await removeDir(harness.dataDir);
+    await removeDir(harness.workspacePath);
   }
 });
 
 test("a provider survives an app restart", async () => {
   test.setTimeout(120_000);
-  const dataDir = mkdtempSync(join(tmpdir(), "noir persist "));
-  const launch = () => electron.launch({ args: ["."], env: { ...process.env, NOIR_DATA_DIR: dataDir } });
-
+  const harness = createDirs("noir persist ");
   try {
-    const first = await launch();
+    const first = await launchApp(harness);
     try {
       const page = await first.firstWindow();
       await expect(page.getByTestId("kernel-status")).toHaveText("kernel ok", { timeout: 20_000 });
@@ -38,19 +37,21 @@ test("a provider survives an app restart", async () => {
       await first.close().catch(() => undefined);
     }
 
-    await waitForKernelExit(dataDir);
+    await waitForKernelExit(harness.dataDir);
 
-    const second = await launch();
+    const second = await launchApp(harness);
     try {
       const page = await second.firstWindow();
       const providers = page.getByRole("region", { name: "Providers", exact: true });
       await expect(providers.getByText("Persisted")).toBeVisible({ timeout: 20_000 });
-      await deleteProviderThroughKernel(dataDir, "Persisted");
     } finally {
+      // Through the kernel socket, so the host keyring entry does not outlive the spec.
+      await deleteProviderThroughKernel(harness.dataDir, "Persisted").catch(() => undefined);
       await second.close().catch(() => undefined);
     }
-    await waitForKernelExit(dataDir);
   } finally {
-    await removeDir(dataDir);
+    await waitForKernelExit(harness.dataDir).catch(() => undefined);
+    await removeDir(harness.dataDir);
+    await removeDir(harness.workspacePath);
   }
 });

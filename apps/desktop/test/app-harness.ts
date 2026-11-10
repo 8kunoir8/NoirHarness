@@ -9,11 +9,15 @@ export interface Harness {
   workspacePath: string;
 }
 
+/**
+ * Two throwaway dirs per spec: `<prefix><random>` for the kernel data and `<prefix>ws <random>` for the
+ * workspace, so each suite's historical names survive and a leftover is attributable. Spaces (and, for
+ * the chat suite, non-ASCII characters) prove the profile writer, the ACP `--session-dir` and the
+ * terminal `cwd` all survive paths that need quoting/encoding.
+ */
 export function createDirs(prefix = "noir "): Harness {
-  // Spaces (and, for the chat suite, non-ASCII characters) prove the profile writer, the ACP
-  // `--session-dir` and the terminal `cwd` all survive paths that need quoting/encoding.
-  const dataDir = mkdtempSync(join(tmpdir(), `${prefix}data `));
-  const workspacePath = mkdtempSync(join(tmpdir(), `${prefix}workspace `));
+  const dataDir = mkdtempSync(join(tmpdir(), prefix));
+  const workspacePath = mkdtempSync(join(tmpdir(), `${prefix}ws `));
   return { dataDir, workspacePath };
 }
 
