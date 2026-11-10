@@ -522,6 +522,42 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; colo
 }
 .hint code { font-size: 0.8rem; color: var(--text); }
 
+/* --- file tree --- */
+
+.file-tree { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+.file-tree h3 {
+  margin: 0;
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.file-tree ul { list-style: none; margin: 0; padding: 0; overflow: auto; min-height: 0; }
+.file-tree li {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  padding: 3px 6px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.file-tree li:hover { background: var(--surface-sunken); }
+.file-tree li[aria-selected="true"] { background: var(--accent); color: var(--accent-contrast); }
+.file-tree .file-kind { flex: none; color: var(--muted); }
+.file-tree li[aria-selected="true"] .file-kind { color: inherit; }
+.file-tree li[data-depth="0"] { padding-left: 0; }
+.file-tree li[data-depth="1"] { padding-left: 12px; }
+.file-tree li[data-depth="2"] { padding-left: 24px; }
+.file-tree li[data-depth="3"] { padding-left: 36px; }
+.file-tree li[data-depth="4"] { padding-left: 48px; }
+.file-tree li[data-depth="5"] { padding-left: 60px; }
+.file-tree li[data-depth="6"] { padding-left: 72px; }
+
 /* --- responsive --- */
 
 @media (max-width: 1180px) {
