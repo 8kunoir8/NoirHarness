@@ -102,6 +102,8 @@ describe("startKernel", () => {
     expect(created.error).toBeUndefined();
     const rendered = readFileSync(join(profileAgentDir(dir), "models.yml"), "utf8");
     expect(rendered).toContain("id: openai/gpt-4o");
+    const config = readFileSync(join(profileAgentDir(dir), "config.yml"), "utf8");
+    expect(config).toContain("- .noir/skills-engine");
     const listed = await call(kernel.port, kernel.token, "model.list");
     expect(listed.result.models.map((model: { modelId: string }) => model.modelId)).toEqual(["openai/gpt-4o"]);
     await kernel.close();
