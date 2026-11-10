@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ModelView, PermissionOption, SessionPromptResult, SessionView } from "@noir/protocol";
 import type { RequestFn } from "./api.js";
-import { ChatHeader } from "./ChatHeader.js";
+import { ChatHeader, type DiffStats } from "./ChatHeader.js";
 import { Composer, type ComposerStatus } from "./Composer.js";
 import { errorMessage, type SessionEvents } from "./events.js";
 import { ToolCard } from "./ToolCard.js";
@@ -24,7 +24,7 @@ export function Chat({
   models: ModelView[];
   request: RequestFn;
   events: SessionEvents;
-  diffStats?: { add: number; del: number } | undefined;
+  diffStats?: DiffStats | undefined;
   onSessionChange?: (() => void) | undefined;
 }) {
   const { state, appendUser } = events;

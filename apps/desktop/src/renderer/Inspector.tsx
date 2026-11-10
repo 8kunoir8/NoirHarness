@@ -126,7 +126,12 @@ export function Inspector({
                   <code title={file.path}>{file.path}</code>
                   <span className="diff-add">+{file.add}</span>
                   <span className="diff-del">−{file.del}</span>
-                  <button type="button" className="link" onClick={() => onShowDiff(file.path)}>
+                  <button
+                    type="button"
+                    className="link"
+                    aria-label={`Show diff for ${file.path}`}
+                    onClick={() => onShowDiff(file.path)}
+                  >
                     Show diff
                   </button>
                 </li>

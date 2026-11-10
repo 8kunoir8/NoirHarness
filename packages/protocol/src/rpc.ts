@@ -157,6 +157,7 @@ export const GitStatusResult = z.object({
   branch: z.string().nullable(),
   files: z.array(GitFileStatus),
 });
+export type GitStatusResult = z.infer<typeof GitStatusResult>;
 export const GitDiffParams = z.object({ workspaceId: z.string().min(1), path: z.string().min(1) });
 export const GitDiffResult = z.object({ diff: z.string() });
 

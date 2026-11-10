@@ -88,14 +88,18 @@ describe("Inspector", () => {
       <Inspector
         session={session}
         status="idle"
-        files={[{ path: "src/a.ts", change: "modified", add: 2, del: 1 }]}
+        files={[
+          { path: "src/a.ts", change: "modified", add: 2, del: 1 },
+          { path: "src/b.ts", change: "created", add: 5, del: 0 },
+        ]}
         plan={[]}
         approvalTitles={[]}
         onShowDiff={onShowDiff}
         onClose={() => undefined}
       />,
     );
-    await userEvent.click(screen.getByRole("button", { name: "Show diff" }));
-    expect(onShowDiff).toHaveBeenCalledWith("src/a.ts");
+    await userEvent.click(screen.getByRole("button", { name: "Show diff for src/b.ts" }));
+    expect(onShowDiff).toHaveBeenCalledTimes(1);
+    expect(onShowDiff).toHaveBeenCalledWith("src/b.ts");
   });
 });

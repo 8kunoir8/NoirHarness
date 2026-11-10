@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ModelListResult, SessionView, SystemHealthResult } from "@noir/protocol";
+import { ModelListResult, SessionView, SystemHealthResult, type GitStatusResult } from "@noir/protocol";
 import { connect, offEvent, request } from "./api.js";
 import { Chat } from "./Chat.js";
+import type { DiffStats } from "./ChatHeader.js";
 import { CommandPalette } from "./CommandPalette.js";
 import type { Command } from "./commands.js";
 import { DiffView } from "./DiffView.js";
-import { useSessionEvents } from "./events.js";
+import { useSessionEvents, type ChatFile } from "./events.js";
 import { FileTree } from "./FileTree.js";
 import { Inspector } from "./Inspector.js";
 import { MonacoEditor } from "./MonacoEditor.js";
@@ -43,13 +44,6 @@ interface DocumentState {
   mtimeMs: number;
 }
 
-/** `git.status` reports workspace-root-relative paths; the shape matches an event file. */
-interface GitStatusView {
-  isRepo: boolean;
-  branch: string | null;
-  files: Array<{ path: string; change: "created" | "modified" | "deleted"; add: number; del: number }>;
-}
-
 const READ_KEY = "noir.read.sessions";
 
 function loadJson<T>(key: string, fallback: T): T {
@@ -85,7 +79,9 @@ export function App() {
     loadTabs(loadJson<unknown>(TABS_KEY, loadJson<unknown>("noir.tabs", null))),
   );
   const [documents, setDocuments] = useState<Record<string, DocumentState>>({});
-  const [gitStatus, setGitStatus] = useState<GitStatusView | undefined>(undefined);
+  const [gitStatus, setGitStatus] = useState<{ workspaceId: string; status: GitStatusResult } | undefined>(
+    undefined,
+  );
   const [failedReads, setFailedReads] = useState<Record<string, string>>({});
   const [listMode, setListMode] = useState<ListMode>("chats");
   const [quickOpen, setQuickOpen] = useState(false);
@@ -105,6 +101,9 @@ export function App() {
   // subscribe request on a cold socket fails without retrying.
   const events = useSessionEvents(status === "kernel ok" ? (activeChatId ?? "") : "", request);
   const refreshTimer = useRef<number | undefined>(undefined);
+  // `git.status` scans the whole workspace; a burst of edits can overlap. Only the newest run may
+  // publish, so an older scan can never overwrite a newer one.
+  const gitSeq = useRef(0);
   // Reads carry the generation they started in; only a workspace change or an explicit reload bumps
   // it, so a late read can never overwrite a document that belongs to another workspace (or to the
   // disk after a reload). Writes only compare their workspace, so a status flap cannot throw away a
@@ -134,19 +133,21 @@ export function App() {
   }, [tabState]);
 
   // Git status belongs to one workspace; an answer that arrives after a switch describes the wrong
-  // tree, so both success and failure check the workspace they were asked for.
+  // tree, so both success and failure check the workspace they were asked for. A newer run also
+  // invalidates every older one, so overlapping scans cannot land out of order.
   const refreshGit = useCallback(async (): Promise<void> => {
+    const run = ++gitSeq.current;
     if (workspaceId === "") {
       setGitStatus(undefined);
       return;
     }
     const asked = workspaceId;
     try {
-      const status = await request<GitStatusView>("git.status", { workspaceId });
-      if (workspaceRef.current !== asked) return;
-      setGitStatus(status);
+      const status = await request<GitStatusResult>("git.status", { workspaceId });
+      if (gitSeq.current !== run || workspaceRef.current !== asked) return;
+      setGitStatus({ workspaceId: asked, status });
     } catch {
-      if (workspaceRef.current !== asked) return;
+      if (gitSeq.current !== run || workspaceRef.current !== asked) return;
       // A workspace that is not a repo (or an unavailable `git`) keeps working without stats.
       setGitStatus(undefined);
     }
@@ -155,22 +156,6 @@ export function App() {
   useEffect(() => {
     void refreshGit();
   }, [refreshGit]);
-
-  const diffStats =
-    gitStatus === undefined || gitStatus.files.length === 0
-      ? undefined
-      : gitStatus.files.reduce(
-          (total, file) => ({ add: total.add + file.add, del: total.del + file.del }),
-          { add: 0, del: 0 },
-        );
-
-  // Git is the source of truth for what changed; event files fill in anything git cannot see (a
-  // deleted tracked file is in both, so git's counts win per path).
-  const inspectorFiles = (() => {
-    const byPath = new Map(events.state.files.map((file) => [file.path, file]));
-    for (const file of gitStatus?.isRepo === true ? gitStatus.files : []) byPath.set(file.path, file);
-    return [...byPath.values()];
-  })();
 
   const loadSessions = useCallback(async (): Promise<SessionView[]> => {
     const result = await request<{ sessions: SessionView[] }>("session.list");
@@ -271,6 +256,8 @@ export function App() {
       .map(([path]) => path);
     setDocuments((current) => (Object.keys(current).length === 0 ? current : {}));
     setFailedReads((current) => (Object.keys(current).length === 0 ? current : {}));
+    // Stats describe the previous tree; never render them against the new workspace's files.
+    setGitStatus(undefined);
     if (dropped.length > 0) setError(`Unsaved changes discarded for ${dropped.join(", ")}`);
   }, [workspaceId]);
 
@@ -292,6 +279,32 @@ export function App() {
   const activeSession = activeTab?.kind === "chat" ? sessions.find((session) => session.id === activeTab.sessionId) : undefined;
   const running = workspaceSessions.filter((session) => session.status === "running" || session.status === "starting").length;
   const pendingApprovals = workspaceSessions.filter((session) => session.pendingApproval).length;
+
+  // Branch and totals describe the workspace they were scanned in. A chat tab can outlive a
+  // workspace switch, so the chat header and the inspector only use a snapshot that matches the
+  // active session's workspace; otherwise the event-reported files stand alone.
+  const workspaceGitStatus = gitStatus !== undefined && gitStatus.workspaceId === workspaceId ? gitStatus.status : undefined;
+  const activeGitStatus =
+    gitStatus !== undefined && activeSession !== undefined && gitStatus.workspaceId === activeSession.workspaceId
+      ? gitStatus.status
+      : undefined;
+  const branch = workspaceGitStatus?.branch ?? null;
+
+  const diffStats: DiffStats | undefined =
+    activeGitStatus === undefined || activeGitStatus.files.length === 0
+      ? undefined
+      : activeGitStatus.files.reduce<DiffStats>(
+          (total, file) => ({ add: total.add + file.add, del: total.del + file.del }),
+          { add: 0, del: 0 },
+        );
+
+  // Git is the source of truth for what changed; event files fill in anything git cannot see (a
+  // deleted tracked file is in both, so git's counts win per path).
+  const inspectorFiles = (() => {
+    const byPath = new Map<string, ChatFile>(events.state.files.map((file) => [file.path, file]));
+    for (const file of activeGitStatus?.isRepo === true ? activeGitStatus.files : []) byPath.set(file.path, file);
+    return [...byPath.values()];
+  })();
 
   // `noUncheckedIndexedAccess` does not narrow a repeated `documents[path]` read; resolve it once.
   const editorPath = activeTab?.kind === "editor" ? activeTab.path : undefined;
@@ -453,7 +466,7 @@ export function App() {
     <>
       <span className="brand">NoirHarness</span>
       <span className="topbar-workspace">
-        {gitStatus?.branch === null || gitStatus?.branch === undefined ? "" : `${gitStatus.branch} · `}
+        {branch === null ? "" : `${branch} · `}
         {workspaceSessions.length === 0 ? "" : `${workspaceSessions.length} chat${workspaceSessions.length === 1 ? "" : "s"}`}
       </span>
       <button type="button" className="topbar-action" onClick={() => setPaletteOpen(true)} aria-label="Commands">
