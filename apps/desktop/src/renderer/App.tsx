@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ModelListResult, SessionView, SystemHealthResult, type GitStatusResult } from "@noir/protocol";
+import {
+  ModelListResult,
+  SessionView,
+  SystemHealthResult,
+  type AgentEvent,
+  type FsReadResult,
+  type GitStatusResult,
+} from "@noir/protocol";
 import { connect, offEvent, request } from "./api.js";
 import { Chat } from "./Chat.js";
 import type { DiffStats } from "./ChatHeader.js";
@@ -24,6 +31,8 @@ import {
   editorTab,
   loadTabs,
   openTab,
+  pruneChatTabs,
+  scopeTabs,
   TABS_KEY,
   type Tab,
   type TabsState,
@@ -45,6 +54,18 @@ interface DocumentState {
 }
 
 const READ_KEY = "noir.read.sessions";
+
+/**
+ * Only events after which the workspace on disk can differ are worth a scan. Streaming produces
+ * several events per token, and every one used to trigger a whole-tree `git.status`.
+ */
+const FILE_EVENTS: Readonly<Partial<Record<AgentEvent["type"], true>>> = {
+  "file.changed": true,
+  "tool.completed": true,
+  "tool.failed": true,
+  "turn.completed": true,
+  "turn.failed": true,
+};
 
 function loadJson<T>(key: string, fallback: T): T {
   try {
@@ -93,10 +114,17 @@ export function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
 
   const activeTab = tabState.tabs.find((tab) => tab.id === tabState.active);
-  const activeChatId =
-    activeTab?.kind === "chat"
-      ? activeTab.sessionId
-      : tabState.tabs.filter((tab) => tab.kind === "chat").at(-1)?.sessionId;
+  // Opening a file leaves the chat subscription alone: the last chat that was actually active stays
+  // the one subscribed (and the only one whose read watermark moves), instead of falling back to
+  // whichever chat tab happens to be last.
+  const lastChatId = useRef<string | undefined>(
+    tabState.tabs.filter((tab) => tab.kind === "chat").at(-1)?.sessionId,
+  );
+  const activeTabChatId = activeTab?.kind === "chat" ? activeTab.sessionId : undefined;
+  useEffect(() => {
+    if (activeTabChatId !== undefined) lastChatId.current = activeTabChatId;
+  }, [activeTabChatId]);
+  const activeChatId = activeTabChatId ?? lastChatId.current;
   // Subscribe only once the socket is up: a restored tab mounts before `loadAll` connects, and a
   // subscribe request on a cold socket fails without retrying.
   const events = useSessionEvents(status === "kernel ok" ? (activeChatId ?? "") : "", request);
@@ -115,6 +143,8 @@ export function App() {
   const tabsRef = useRef<readonly Tab[]>(tabState.tabs);
   const documentsRef = useRef(documents);
   const workspaceRef = useRef(workspaceId);
+  // Pruning must wait for the first real session list: before it arrives every chat tab looks dead.
+  const sessionsLoaded = useRef(false);
 
   useEffect(() => {
     tabsRef.current = tabState.tabs;
@@ -130,6 +160,29 @@ export function App() {
 
   useEffect(() => {
     storeJson(TABS_KEY, tabState);
+  }, [tabState]);
+
+  // Editor/diff tabs are paths inside one workspace. Once the workspace is known, pin them to it:
+  // adopt it when the stored set predates the field, drop editor/diff tabs when the stored set was
+  // saved under a different one (chat tabs survive a workspace switch).
+  useEffect(() => {
+    if (workspaceId === "") return;
+    setTabState((current) => scopeTabs(current, workspaceId));
+  }, [workspaceId]);
+
+  // A session that was removed (or a restored tab for a session that no longer exists) would render
+  // an "Untitled chat" tab whose main pane can never fill in.
+  useEffect(() => {
+    if (!sessionsLoaded.current) return;
+    const ids = new Set(sessions.map((session) => session.id));
+    setTabState((current) => pruneChatTabs(current, ids));
+  }, [sessions]);
+
+  // Never leave the subscription on a chat tab that pruning just removed.
+  useEffect(() => {
+    if (lastChatId.current === undefined) return;
+    if (tabState.tabs.some((tab) => tab.kind === "chat" && tab.sessionId === lastChatId.current)) return;
+    lastChatId.current = tabState.tabs.filter((tab) => tab.kind === "chat").at(-1)?.sessionId;
   }, [tabState]);
 
   // Git status belongs to one workspace; an answer that arrives after a switch describes the wrong
@@ -159,6 +212,7 @@ export function App() {
 
   const loadSessions = useCallback(async (): Promise<SessionView[]> => {
     const result = await request<{ sessions: SessionView[] }>("session.list");
+    sessionsLoaded.current = true;
     setSessions(result.sessions);
     return result.sessions;
   }, []);
@@ -178,6 +232,7 @@ export function App() {
       setProjects(projectResult.projects);
       setWorkspaces(workspaceResult.workspaces);
       setModels(modelResult.models);
+      sessionsLoaded.current = true;
       setSessions(sessionList.sessions);
       setNewChatModelId((current) => (current !== "" ? current : (modelResult.models[0]?.id ?? "")));
       setWorkspaceId((current) => current !== "" ? current : (workspaceResult.workspaces[0]?.id ?? ""));
@@ -194,7 +249,8 @@ export function App() {
   }, [loadAll]);
 
   useEffect(() => {
-    const listener = (): void => {
+    const listener = (event: AgentEvent): void => {
+      if (FILE_EVENTS[event.type] !== true) return;
       if (refreshTimer.current !== undefined) return;
       refreshTimer.current = window.setTimeout(() => {
         refreshTimer.current = undefined;
@@ -210,12 +266,14 @@ export function App() {
   }, [loadSessions, refreshGit]);
 
   // Keep the read watermark on the active chat so "Unread" means "not opened since it changed".
+  // Only a chat tab advances it: an editor tab keeps the subscription alive but must not mark the
+  // remembered chat as read behind the user's back.
   useEffect(() => {
-    if (activeChatId === undefined) return;
+    if (activeTab?.kind !== "chat" || activeChatId === undefined) return;
     const session = sessions.find((candidate) => candidate.id === activeChatId);
     if (session === undefined) return;
     setRead((current) => (current[activeChatId] === session.lastEventSeq ? current : { ...current, [activeChatId]: session.lastEventSeq }));
-  }, [activeChatId, sessions]);
+  }, [activeTab, activeChatId, sessions]);
 
   useEffect(() => {
     storeJson(READ_KEY, read);
@@ -231,12 +289,21 @@ export function App() {
     });
   }, []);
 
-  /** Reads one file; `undefined` means the read failed, or a workspace change/reload superseded it. */
-  const fetchDocument = useCallback(async (path: string): Promise<{ content: string; mtimeMs: number } | undefined> => {
+  /** Reads one file; `undefined` means the read failed, was refused, or a reload superseded it. */
+  const fetchDocument = useCallback(async (path: string): Promise<FsReadResult | undefined> => {
     const started = readGeneration.current;
     try {
-      const file = await request<{ content: string; mtimeMs: number }>("fs.read", { workspaceId, path });
-      return started === readGeneration.current ? file : undefined;
+      const file = await request<FsReadResult>("fs.read", { workspaceId, path });
+      if (started !== readGeneration.current) return undefined;
+      // A capped read is a prefix of the file. Opening it as a document would let the next save
+      // write that prefix back over the real file, so refuse it before any buffer exists.
+      if (file.truncated) {
+        const message = `${path} is larger than 2 MiB; not opened for editing`;
+        setError(message);
+        setFailedReads((current) => ({ ...current, [path]: message }));
+        return undefined;
+      }
+      return file;
     } catch (cause) {
       if (started !== readGeneration.current) return undefined;
       const message = cause instanceof Error ? cause.message : `Could not read ${path}`;
@@ -265,15 +332,24 @@ export function App() {
   // a switch. A reconnect must not re-read: that would silently replace live drafts with disk content.
   useEffect(() => {
     if (workspaceId === "" || status !== "kernel ok" || syncedWorkspace.current === workspaceId) return;
+    // Tabs restored under another workspace are about to be dropped by the scoping effect; reading
+    // their paths here would put another workspace's file into this workspace's document map.
+    if (tabState.workspaceId !== "" && tabState.workspaceId !== workspaceId) {
+      syncedWorkspace.current = workspaceId;
+      return;
+    }
     syncedWorkspace.current = workspaceId;
     const started = readGeneration.current;
     const paths = tabsRef.current.flatMap((tab) => (tab.kind === "editor" ? [tab.path] : []));
     for (const path of paths) {
       void fetchDocument(path).then((file) => {
-        if (file !== undefined && started === readGeneration.current) applyDocument(path, file);
+        if (file === undefined || started !== readGeneration.current) return;
+        // A tab closed (or scoped away) while the read was in flight must not leave a stray buffer.
+        if (!tabsRef.current.some((tab) => tab.kind === "editor" && tab.path === path)) return;
+        applyDocument(path, file);
       });
     }
-  }, [applyDocument, fetchDocument, status, workspaceId]);
+  }, [applyDocument, fetchDocument, status, tabState.workspaceId, workspaceId]);
 
   const workspaceSessions = sessions.filter((session) => workspaceId === "" || session.workspaceId === workspaceId);
   const activeSession = activeTab?.kind === "chat" ? sessions.find((session) => session.id === activeTab.sessionId) : undefined;

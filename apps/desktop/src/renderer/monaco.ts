@@ -41,20 +41,46 @@ export function editorThemeFor(theme: "paper" | "ink"): string {
   return theme === "ink" ? "noir-ink" : "noir-paper";
 }
 
+type WorkerModule = { default: new () => Worker };
+type WorkerLoader = () => Promise<WorkerModule>;
+
+// Each language service runs in its own worker; a single editor worker makes the language
+// features (completions, diagnostics, formatting) fail with unknown-method errors.
+// These imports stay dynamic: Vite must emit one lazy chunk per worker instead of pulling every
+// language service into the startup bundle, and the specifier is fixed at build time.
+const editorWorker: WorkerLoader = () => import("monaco-editor/esm/vs/editor/editor.worker.js?worker");
+const tsWorker: WorkerLoader = () => import("monaco-editor/esm/vs/language/typescript/ts.worker.js?worker");
+const cssWorker: WorkerLoader = () => import("monaco-editor/esm/vs/language/css/css.worker.js?worker");
+const htmlWorker: WorkerLoader = () => import("monaco-editor/esm/vs/language/html/html.worker.js?worker");
+const jsonWorker: WorkerLoader = () => import("monaco-editor/esm/vs/language/json/json.worker.js?worker");
+
+const WORKER_BY_LABEL: Readonly<Partial<Record<string, WorkerLoader>>> = {
+  typescript: tsWorker,
+  javascript: tsWorker,
+  css: cssWorker,
+  scss: cssWorker,
+  less: cssWorker,
+  html: htmlWorker,
+  handlebars: htmlWorker,
+  razor: htmlWorker,
+  json: jsonWorker,
+};
+
 let loading: Promise<typeof Monaco> | undefined;
 
 /** Loads Monaco once, installs the worker, and defines both token themes. */
 export function loadMonaco(): Promise<typeof Monaco> {
   loading ??= (async () => {
-    const [{ default: EditorWorker }, monacoModule] = await Promise.all([
-      import("monaco-editor/esm/vs/editor/editor.worker.js?worker"),
-      // The package has no `main`, so its bare specifier is unresolvable outside the
-      // browser resolver; the ESM entry is the same public editor API.
-      import("monaco-editor/esm/vs/editor/editor.main.js"),
-    ]);
-    const monaco = monacoModule;
+    // The package has no `main`, so its bare specifier is unresolvable outside the browser
+    // resolver; the ESM entry is the same public editor API.
+    const monaco = await import("monaco-editor/esm/vs/editor/editor.main.js");
     self.MonacoEnvironment = {
-      getWorker: () => new EditorWorker(),
+      // Loaded on the first request per language, so opening a plain markdown file never downloads
+      // the TypeScript service.
+      getWorker: async (_workerId: string, label: string) => {
+        const { default: WorkerClass } = await (WORKER_BY_LABEL[label] ?? editorWorker)();
+        return new WorkerClass();
+      },
     };
     monaco.editor.defineTheme("noir-paper", {
       base: "vs",

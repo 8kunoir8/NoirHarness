@@ -74,3 +74,43 @@ test("edits a file, saves it, and opens the diff from the inspector", async () =
     await removeDir(harness.workspacePath);
   }
 });
+
+test("refuses to open a file larger than the read cap", async () => {
+  test.setTimeout(120_000);
+  const harness = createDirs();
+  const bigPath = join(harness.workspacePath, "huge.txt");
+  // One byte over the kernel's 2 MiB cap: the read returns a prefix instead of the whole file.
+  const content = "a".repeat(2 * 1024 * 1024 + 1);
+  writeFileSync(bigPath, content);
+  try {
+    const mock = await startMockProvider();
+    let app: ElectronApplication | undefined;
+    try {
+      app = await launchApp(harness);
+      const page = await app.firstWindow();
+      await bootstrap(page, mock, harness.workspacePath);
+
+      await page.getByRole("button", { name: "File list" }).click();
+      await page.getByRole("treeitem", { name: /huge\.txt/ }).click();
+
+      // A truncated read is refused before a buffer exists: no editor, an explicit alert, and the
+      // file on disk is untouched (nothing could save the prefix back over it).
+      await expect(page.getByRole("alert")).toContainText(
+        "huge.txt is larger than 2 MiB; not opened for editing",
+        { timeout: 20_000 },
+      );
+      await expect(page.locator(".monaco-editor")).toHaveCount(0);
+      expect(readFileSync(bigPath, "utf8")).toBe(content);
+    } finally {
+      if (app !== undefined) {
+        await deleteProviderThroughKernel(harness.dataDir, "Mock").catch(() => undefined);
+      }
+      await app?.close().catch(() => undefined);
+      await mock.close().catch(() => undefined);
+    }
+  } finally {
+    await waitForKernelExit(harness.dataDir).catch(() => undefined);
+    await removeDir(harness.dataDir);
+    await removeDir(harness.workspacePath);
+  }
+});

@@ -1,6 +1,8 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { ErrorCodes } from "@noir/protocol";
 import { describe, expect, it, vi } from "vitest";
+import { KernelRequestError } from "../src/renderer/api.js";
 import { DiffView, parseDiff } from "../src/renderer/DiffView.js";
 
 const diff = ["--- a/a.txt", "+++ b/a.txt", "@@ -1,2 +1,3 @@", " one", "+two", " three", ""].join("\n");
@@ -88,7 +90,15 @@ describe("DiffView", () => {
     await userEvent.click(gutter);
     await userEvent.type(screen.getByLabelText("Note"), "why?{Enter}");
 
-    await waitFor(() => expect(request).toHaveBeenCalledWith("annotation.add", { workspaceId: "w1", path: "a.txt", line: 2, note: "why?" }));
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith("annotation.add", {
+        workspaceId: "w1",
+        path: "a.txt",
+        line: 2,
+        note: "why?",
+        expectedDiffHash: "h1",
+      }),
+    );
     expect((await screen.findByText("why?")).textContent).toBe("why?");
   });
 
@@ -222,6 +232,38 @@ describe("DiffView", () => {
     rerender(<DiffView request={request as never} workspaceId="w1" path="b.txt" />);
 
     await waitFor(() => expect(screen.queryByText("old")).toBeNull());
+    expect(screen.getByRole("button", { name: "Annotate line 2" })).toBeDefined();
+  });
+
+  it("binds a note to the loaded diff and reloads when the diff moved on", async () => {
+    let diffReads = 0;
+    const request = vi.fn(async (method: string) => {
+      if (method === "git.diff") {
+        diffReads += 1;
+        return { diff };
+      }
+      if (method === "annotation.list") return { diffHash: "h1", annotations: [] };
+      if (method === "annotation.add") throw new KernelRequestError(ErrorCodes.conflict, "a.txt changed since the diff was read");
+      throw new Error(`unexpected ${method}`);
+    });
+    render(<DiffView request={request as never} workspaceId="w1" path="a.txt" />);
+
+    await screen.findByText("+two");
+    await userEvent.click(screen.getByRole("button", { name: "Annotate line 2" }));
+    await userEvent.type(screen.getByLabelText("Note"), "why?{Enter}");
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith("annotation.add", {
+        workspaceId: "w1",
+        path: "a.txt",
+        line: 2,
+        note: "why?",
+        expectedDiffHash: "h1",
+      }),
+    );
+    // A conflict reloads the view instead of storing a note against line numbers that moved.
+    expect((await screen.findByRole("alert")).textContent).toBe("a.txt changed since the diff was read");
+    await waitFor(() => expect(diffReads).toBe(2));
     expect(screen.getByRole("button", { name: "Annotate line 2" })).toBeDefined();
   });
 });

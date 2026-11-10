@@ -1,7 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { activateTab, chatTab, closeTab, diffTab, editorTab, loadTabs, openTab, TABS_KEY, type TabsState } from "../src/renderer/tabs.js";
+import {
+  activateTab,
+  chatTab,
+  closeTab,
+  diffTab,
+  editorTab,
+  loadTabs,
+  openTab,
+  pruneChatTabs,
+  scopeTabs,
+  TABS_KEY,
+  type TabsState,
+} from "../src/renderer/tabs.js";
 
-const empty: TabsState = { tabs: [], active: undefined };
+const empty: TabsState = { tabs: [], active: undefined, workspaceId: "" };
 
 describe("tabs", () => {
   it("opens, dedupes by id, and activates", () => {
@@ -21,7 +33,7 @@ describe("tabs", () => {
     expect(middle.active).toBe("diff:x.ts");
     const last = closeTab(middle, "diff:x.ts");
     expect(last.active).toBe("chat:a");
-    expect(closeTab(last, "chat:a")).toEqual({ tabs: [], active: undefined });
+    expect(closeTab(last, "chat:a")).toEqual({ tabs: [], active: undefined, workspaceId: "" });
   });
 
   it("closes an active middle tab onto its following tab", () => {
@@ -45,6 +57,7 @@ describe("tabs", () => {
     expect(loadTabs({ open: [42, "s1"], active: "missing" })).toEqual({
       tabs: [chatTab("s1")],
       active: "chat:s1",
+      workspaceId: "",
     });
     expect(loadTabs(null)).toEqual(empty);
   });
@@ -63,6 +76,62 @@ describe("tabs", () => {
   it("dedupes duplicated stored ids, first wins", () => {
     const loaded = loadTabs({ tabs: [editorTab("a.ts"), editorTab("a.ts"), chatTab("s1")] });
     expect(loaded.tabs.map((tab) => tab.id)).toEqual(["editor:a.ts", "chat:s1"]);
+  });
+
+  it("persists and restores the workspace alongside the tabs", () => {
+    const restored = loadTabs({
+      tabs: [chatTab("s1"), editorTab("src/a.ts")],
+      active: "editor:src/a.ts",
+      workspaceId: "w1",
+    });
+    expect(restored.workspaceId).toBe("w1");
+    expect(restored.tabs.map((tab) => tab.id)).toEqual(["chat:s1", "editor:src/a.ts"]);
+    // Every transition carries the workspace the paths belong to.
+    expect(openTab(restored, diffTab("src/a.ts")).workspaceId).toBe("w1");
+    expect(closeTab(restored, "editor:src/a.ts").workspaceId).toBe("w1");
+    expect(activateTab(restored, "chat:s1").workspaceId).toBe("w1");
+  });
+
+  it("defaults a legacy blob to no workspace", () => {
+    expect(loadTabs({ open: ["s1"], active: "s1", workspaceId: 42 }).workspaceId).toBe("");
+    expect(loadTabs({ tabs: [editorTab("a.ts")] }).workspaceId).toBe("");
+  });
+
+  it("scopeTabs adopts an unset workspace without dropping tabs", () => {
+    const state: TabsState = { tabs: [chatTab("s1"), editorTab("a.ts")], active: "editor:a.ts", workspaceId: "" };
+    expect(scopeTabs(state, "w1")).toEqual({
+      tabs: [chatTab("s1"), editorTab("a.ts")],
+      active: "editor:a.ts",
+      workspaceId: "w1",
+    });
+    expect(scopeTabs({ ...state, workspaceId: "w1" }, "w1")).toEqual({ ...state, workspaceId: "w1" });
+  });
+
+  it("scopeTabs drops editor and diff tabs saved in another workspace", () => {
+    const state: TabsState = {
+      tabs: [chatTab("s1"), editorTab("a.ts"), diffTab("a.ts")],
+      active: "editor:a.ts",
+      workspaceId: "w1",
+    };
+    expect(scopeTabs(state, "w2")).toEqual({
+      tabs: [chatTab("s1")],
+      active: "chat:s1",
+      workspaceId: "w2",
+    });
+  });
+
+  it("pruneChatTabs drops chats whose session is gone and keeps file tabs", () => {
+    const state: TabsState = {
+      tabs: [chatTab("live"), chatTab("dead"), editorTab("a.ts"), diffTab("a.ts")],
+      active: "chat:dead",
+      workspaceId: "w1",
+    };
+    expect(pruneChatTabs(state, new Set(["live"]))).toEqual({
+      tabs: [chatTab("live"), editorTab("a.ts"), diffTab("a.ts")],
+      active: "chat:live",
+      workspaceId: "w1",
+    });
+    expect(pruneChatTabs(state, new Set(["live", "dead"]))).toBe(state);
   });
 
   it("pins the storage key", () => {

@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ErrorCodes } from "@noir/protocol";
 import type { RequestFn } from "./api.js";
 
 export interface DiffLine {
@@ -85,49 +86,66 @@ export function DiffView({ request, workspaceId, path }: DiffViewProps) {
   const [draft, setDraft] = useState<{ line: number; note: string } | undefined>(undefined);
   const [error, setError] = useState<string | undefined>(undefined);
   const [loaded, setLoaded] = useState(false);
+  // The hash of the diff currently on screen; a note is only valid against that exact version.
+  const [diffHash, setDiffHash] = useState("");
   const generation = useRef(0);
 
-  useEffect(() => {
-    generation.current += 1;
-    const run = generation.current;
+  const load = useCallback(async (): Promise<void> => {
+    const run = ++generation.current;
     setLines([]);
     setAnnotations([]);
     setDraft(undefined);
     setError(undefined);
     setLoaded(false);
-    void (async () => {
-      try {
-        const [diff, notes] = await Promise.all([
-          request<{ diff: string }>("git.diff", { workspaceId, path }),
-          request<{ diffHash: string; annotations: Annotation[] }>("annotation.list", { workspaceId, path }),
-        ]);
-        if (generation.current !== run) return;
-        setLines(parseDiff(diff.diff));
-        setAnnotations(notes.annotations);
-        setLoaded(true);
-      } catch (cause) {
-        if (generation.current !== run) return;
-        setError(messageOf(cause, "Could not load the diff"));
-        setLoaded(true);
-      }
-    })();
-    return () => {
-      if (generation.current === run) generation.current = run + 1;
-    };
+    setDiffHash("");
+    try {
+      const [diff, notes] = await Promise.all([
+        request<{ diff: string }>("git.diff", { workspaceId, path }),
+        request<{ diffHash: string; annotations: Annotation[] }>("annotation.list", { workspaceId, path }),
+      ]);
+      if (generation.current !== run) return;
+      setLines(parseDiff(diff.diff));
+      setAnnotations(notes.annotations);
+      setDiffHash(notes.diffHash);
+      setLoaded(true);
+    } catch (cause) {
+      if (generation.current !== run) return;
+      setError(messageOf(cause, "Could not load the diff"));
+      setLoaded(true);
+    }
   }, [request, workspaceId, path]);
+
+  useEffect(() => {
+    void load();
+    return () => {
+      generation.current += 1;
+    };
+  }, [load]);
 
   const addNote = async (line: number, note: string): Promise<void> => {
     const trimmed = note.trim();
     if (trimmed === "") return;
     try {
-      const added = await request<Annotation>("annotation.add", { workspaceId, path, line, note: trimmed });
+      const added = await request<Annotation>("annotation.add", {
+        workspaceId,
+        path,
+        line,
+        note: trimmed,
+        expectedDiffHash: diffHash,
+      });
       setAnnotations((current) =>
         current.some((annotation) => annotation.id === added.id) ? current : [...current, added],
       );
       setDraft(undefined);
       setError(undefined);
     } catch (cause) {
-      setError(messageOf(cause, "Could not save the note"));
+      if (typeof cause === "object" && cause !== null && "code" in cause && cause.code === ErrorCodes.conflict) {
+        // Show the diff the note no longer matches instead of leaving a buffer that cannot be saved.
+        await load();
+        setError(`${path} changed since the diff was read`);
+      } else {
+        setError(messageOf(cause, "Could not save the note"));
+      }
     }
   };
 
