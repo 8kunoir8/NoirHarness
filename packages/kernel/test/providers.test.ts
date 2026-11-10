@@ -36,6 +36,15 @@ describe("ProviderService", () => {
     expect(secrets.store.get(created.id)).toBe("sk-secret");
   });
 
+  it("exposes vault values for redaction registration", () => {
+    const secrets = memorySecrets();
+    const service = new ProviderService(openDb(":memory:"), secrets);
+    const created = service.create({ name: "P", baseUrl: "http://x", apiKind: "openai-completions", apiKey: "sk-provider-123456", enabled: true });
+    expect(service.secretValues()).toEqual(["sk-provider-123456"]);
+    service.remove(created.id);
+    expect(service.secretValues()).toEqual([]);
+  });
+
   it("rejects a duplicate provider name", () => {
     const db = openDb(":memory:");
     const service = new ProviderService(db, memorySecrets());

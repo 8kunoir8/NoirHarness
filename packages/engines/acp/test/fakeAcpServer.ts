@@ -298,6 +298,7 @@ async function runPrompt(params: unknown): Promise<JsonObject> {
     case "crash":
       return crashTurn();
     case "permission":
+    case "tool":
       return await permissionTurn();
     case "edit":
       return await editTurn();

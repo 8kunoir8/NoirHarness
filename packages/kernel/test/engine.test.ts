@@ -952,4 +952,107 @@ describe("kernel RPC over the fake ACP server", () => {
     },
     TEST_TIMEOUT_MS,
   );
+
+  it(
+    "seeds the ingest redactor from a provider key created at runtime",
+    async () => {
+      const KEY = "plain-provider-secret-9d2c";
+      const dataDir = tempDir();
+      const root = tempDir();
+      process.env.NOIR_OMP_COMMAND = process.execPath;
+      process.env.NOIR_OMP_ARGS_JSON = JSON.stringify([FAKE_SERVER]);
+      process.env.NOIR_TURN_TIMEOUT_MS = "20000";
+
+      const previousTitle = process.env.FAKE_ACP_PERMISSION_TITLE;
+      process.env.FAKE_ACP_PERMISSION_TITLE = KEY;
+
+      let kernel: Kernel | undefined;
+      let socket: WebSocket | undefined;
+      try {
+        kernel = await startKernel({ dataDir });
+        socket = new WebSocket(`ws://127.0.0.1:${kernel.port}/?token=${kernel.token}`);
+        await once(socket, "open");
+        interface Frame { id?: number; method?: string; result?: unknown; params?: unknown }
+        const frames: Frame[] = [];
+        socket.on("message", (data) => frames.push(JSON.parse(String(data)) as Frame));
+
+        let nextId = 1;
+        const call = async (method: string, params: unknown): Promise<Frame> => {
+          const id = nextId++;
+          socket!.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
+          const deadline = Date.now() + TEST_TIMEOUT_MS;
+          for (;;) {
+            const frame = frames.find((candidate) => candidate.id === id);
+            if (frame !== undefined) return frame;
+            if (Date.now() >= deadline) throw new Error(`timed out waiting for ${method}`);
+            await tick();
+          }
+        };
+
+        const providerId = IdResult.parse((await call("provider.create", {
+          name: "Plain",
+          baseUrl: "http://127.0.0.1:9/v1",
+          apiKind: "openai-completions",
+          apiKey: KEY,
+        })).result).id;
+        const modelId = IdResult.parse((await call("model.create", { providerId, modelId: "fake-1" })).result).id;
+        const projectId = IdResult.parse((await call("project.add", { path: root })).result).id;
+        const workspaceId = IdResult.parse((await call("workspace.create", { projectId })).result).id;
+        const sessionId = IdResult.parse((await call("session.create", { workspaceId, modelId })).result).id;
+
+        const prompt = await call("session.prompt", {
+          sessionId,
+          requestId: "redact-rpc-1",
+          content: [{ type: "text", text: "tool" }],
+        });
+        expect(SessionPromptResult.parse(prompt.result).queued).toBe(false);
+
+        const replayAll = async (): Promise<AgentEvent[]> =>
+          SubscribeResult.parse((await call("session.subscribe", { sessionId, sinceSeq: 0 })).result).events;
+        const waitForReplay = async (predicate: (events: AgentEvent[]) => boolean): Promise<AgentEvent[]> => {
+          const deadline = Date.now() + TEST_TIMEOUT_MS;
+          for (;;) {
+            const events = await replayAll();
+            if (predicate(events)) return events;
+            if (Date.now() >= deadline) throw new Error("timed out waiting for session events");
+            await tick();
+          }
+        };
+
+        const requestedEvents = await waitForReplay((events) => events.some((event) => event.type === "permission.requested"));
+        const requested = requestedEvents.find((event) => event.type === "permission.requested")!;
+        const approval = eventPayload(requested, "permission.requested");
+        expect(approval.title).toBe(REDACTED);
+        expect(JSON.stringify(requestedEvents)).not.toContain(KEY);
+
+        const respond = await call("approval.respond", { approvalId: approval.approvalId, decision: "allow_once" });
+        expect(respond.result).toEqual({ ok: true });
+        await waitForReplay((events) => events.some((event) => event.type === "turn.completed"));
+
+        const finalEvents = await replayAll();
+        expect(JSON.stringify(finalEvents)).toContain(REDACTED);
+        expect(JSON.stringify(finalEvents)).not.toContain(KEY);
+
+        socket.close();
+        socket = undefined;
+        await kernel.close();
+        kernel = undefined;
+
+        const verify = openDb(join(dataDir, "noir.db"));
+        try {
+          const rows = JSON.stringify(verify.prepare("SELECT payload_json, options_json FROM approvals").all());
+          expect(rows).toContain(REDACTED);
+          expect(rows).not.toContain(KEY);
+        } finally {
+          verify.close();
+        }
+      } finally {
+        socket?.close();
+        if (kernel !== undefined) await kernel.close();
+        if (previousTitle === undefined) delete process.env.FAKE_ACP_PERMISSION_TITLE;
+        else process.env.FAKE_ACP_PERMISSION_TITLE = previousTitle;
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
 });

@@ -62,6 +62,17 @@ export class ProviderService {
     }));
   }
 
+  /** Every vault value, for the ingest redactor. Missing entries are skipped. */
+  secretValues(): string[] {
+    const rows = this.db.prepare("SELECT id FROM providers").all() as Array<{ id: string }>;
+    const values: string[] = [];
+    for (const row of rows) {
+      const value = this.secrets.get(row.id);
+      if (value !== null) values.push(value);
+    }
+    return values;
+  }
+
   getKey(id: string): string {
     const row = this.db.prepare("SELECT id FROM providers WHERE id = ?").get(id);
     if (!row) throw new RpcFault(ErrorCodes.notFound, "Provider not found");

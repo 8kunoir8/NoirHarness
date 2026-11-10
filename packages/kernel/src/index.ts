@@ -48,6 +48,7 @@ import { ModelService } from "./models.js";
 import { clearProfileModels, profileAgentDir, syncProfile } from "./profile.js";
 import { ProjectService } from "./projects.js";
 import { ProviderService } from "./providers.js";
+import { parseRedactionPatterns, Redactor } from "./redact.js";
 import { startRpcServer, type RpcServer } from "./rpcServer.js";
 import { SkillService } from "./skills.js";
 import {
@@ -193,7 +194,11 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
       db = database;
       // Bound after the server starts so events raised earlier are not lost silently.
       let broadcast: (event: AgentEvent) => void = () => {};
-      const events = new EventStore(db, (event) => broadcast(event));
+      const redactor = new Redactor({
+        env: process.env,
+        patterns: parseRedactionPatterns(process.env.NOIR_REDACT_PATTERNS),
+      });
+      const events = new EventStore(db, (event) => broadcast(event), redactor);
       const projects = new ProjectService(db);
       const workspaces = new WorkspaceService(db, projects);
       const workspaceRoot = (workspaceId: string): string => {
@@ -203,6 +208,7 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
       };
       const sessions = new SessionService(db, events);
       const providers = new ProviderService(db, new KeyringSecrets());
+      for (const key of providers.secretValues()) redactor.addSecret(key);
       const models = new ModelService(db);
       // Task 5 shares this instance with EngineManager so enabled flags match what is materialized.
       const skills = new SkillService(database, dir);
@@ -321,7 +327,9 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
           return { ok: true };
         },
         [Methods.providerCreate]: async (params) => {
-          const created = providers.create(ProviderCreateParams.parse(params));
+          const parsed = ProviderCreateParams.parse(params);
+          redactor.addSecret(parsed.apiKey);
+          const created = providers.create(parsed);
           try {
             await sync();
           } catch (error) {
