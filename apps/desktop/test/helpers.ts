@@ -55,6 +55,14 @@ export async function waitForKernelExit(dataDir: string, timeoutMs = 20_000): Pr
   throw new Error(`kernel process ${lastPid} recorded in ${runtimeFile} did not exit before relaunch`);
 }
 
+/** SIGKILLs the kernel recorded in `<dataDir>/runtime/kernel.json` and waits for it to be gone. */
+export async function killKernel(dataDir: string): Promise<void> {
+  const pid = readRuntimePid(join(dataDir, "runtime", "kernel.json"));
+  if (pid === undefined) throw new Error("no kernel pid recorded");
+  process.kill(pid, "SIGKILL");
+  await waitForKernelExit(dataDir);
+}
+
 interface KernelRuntime {
   port: number;
   token: string;
