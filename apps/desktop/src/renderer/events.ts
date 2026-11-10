@@ -75,6 +75,8 @@ export interface ChatState {
   error?: string;
   activeTurnId?: string;
   turnStartedAt?: number;
+  /** Why the kernel stopped this session; cleared when the next turn starts. */
+  stopReason?: string;
   lastTurn?: ChatTurn;
   files: ChatFile[];
   plan: ChatPlanItem[];
@@ -91,11 +93,15 @@ export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Request failed";
 }
 
-function without(state: ChatState, key: "error" | "activeTurnId" | "approval" | "turnStartedAt"): ChatState {
+function without(
+  state: ChatState,
+  key: "error" | "activeTurnId" | "approval" | "turnStartedAt" | "stopReason",
+): ChatState {
   const copy: ChatState = { ...state };
   if (key === "error") delete copy.error;
   else if (key === "activeTurnId") delete copy.activeTurnId;
   else if (key === "turnStartedAt") delete copy.turnStartedAt;
+  else if (key === "stopReason") delete copy.stopReason;
   else delete copy.approval;
   return copy;
 }
@@ -143,14 +149,17 @@ export function reduceChat(state: ChatState, event: AgentEvent): ChatState {
     }
     case "session.status": {
       const parsed = PayloadSchemas["session.status"].safeParse(event.payload);
-      return parsed.success ? { ...next, status: parsed.data.status } : next;
+      if (!parsed.success) return next;
+      const { status, reason } = parsed.data;
+      if (status === "error" && reason !== undefined) return { ...next, status, stopReason: reason };
+      return { ...without(next, "stopReason"), status };
     }
     case "session.closed":
       return { ...next, status: "closed" };
     case "turn.started": {
       const parsed = PayloadSchemas["turn.started"].safeParse(event.payload);
       return parsed.success
-        ? { ...without(next, "error"), activeTurnId: parsed.data.turnId, turnStartedAt: event.ts }
+        ? { ...without(without(next, "error"), "stopReason"), activeTurnId: parsed.data.turnId, turnStartedAt: event.ts }
         : next;
     }
     case "turn.completed": {

@@ -87,6 +87,16 @@ describe("reduceChat projections", () => {
   });
 });
 
+describe("stopped sessions", () => {
+  it("keeps the restart reason until the next turn starts", () => {
+    let state = replay([event(1, 1_000, "session.status", { status: "error", reason: "kernel_restart" })]);
+    expect(state.status).toBe("error");
+    expect(state.stopReason).toBe("kernel_restart");
+    state = reduceChat(state, event(2, 1_100, "turn.started", { turnId: "t2", index: 1 }));
+    expect(state.stopReason).toBeUndefined();
+  });
+});
+
 const models: ModelView[] = [
   {
     id: "m1",

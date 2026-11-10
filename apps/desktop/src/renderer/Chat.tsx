@@ -184,6 +184,12 @@ export function Chat({
         </div>
       )}
 
+      {state.status === "error" ? (
+        <p role="status" className="session-stopped">
+          Session stopped. Send a prompt to resume.
+        </p>
+      ) : null}
+
       <ol className="messages">
         {state.messages.map((message) => (
           <li key={message.id} className={`message message-${message.role}`} data-testid={message.role === "assistant" ? "message-assistant" : undefined}>
