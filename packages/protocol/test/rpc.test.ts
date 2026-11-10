@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { ProviderCreateParams, RpcFault, toRpcFailure } from "../src/rpc.js";
+import { PayloadSchemas } from "../src/events.js";
+import { ModelCreateParams, ProviderCreateParams, RpcFault, SessionPromptParams, toRpcFailure } from "../src/rpc.js";
 
 describe("provider params", () => {
   it("trims and accepts a valid provider", () => {
@@ -14,6 +15,57 @@ describe("provider params", () => {
 
   it("rejects a non-URL baseUrl", () => {
     expect(() => ProviderCreateParams.parse({ name: "x", baseUrl: "not a url", apiKind: "openai-completions", apiKey: "k" })).toThrow();
+  });
+});
+
+describe("session prompt params", () => {
+  it("round-trips a valid prompt", () => {
+    const input = { sessionId: "s1", requestId: "req-1", content: [{ type: "text" as const, text: "hello" }] };
+    const parsed = SessionPromptParams.parse(input);
+    expect(SessionPromptParams.parse(JSON.parse(JSON.stringify(parsed)))).toEqual(input);
+  });
+
+  it("rejects empty content", () => {
+    expect(() => SessionPromptParams.parse({ sessionId: "s1", requestId: "req-1", content: [] })).toThrow();
+  });
+});
+
+describe("model create params", () => {
+  it("defaults contextWindow and enabled", () => {
+    const parsed = ModelCreateParams.parse({ providerId: "p1", modelId: "gpt-x" });
+    expect(parsed.contextWindow).toBe(200_000);
+    expect(parsed.enabled).toBe(true);
+  });
+});
+
+describe("event payload schemas", () => {
+  it("defaults turn.completed status to completed", () => {
+    const parsed = PayloadSchemas["turn.completed"].parse({ turnId: "t1" });
+    expect(parsed).toEqual({ turnId: "t1", status: "completed" });
+  });
+
+  it("accepts turn.completed status interrupted", () => {
+    const parsed = PayloadSchemas["turn.completed"].parse({ turnId: "t1", status: "interrupted", stopReason: "user" });
+    expect(parsed).toEqual({ turnId: "t1", status: "interrupted", stopReason: "user" });
+  });
+
+  it("rejects permission.requested without options", () => {
+    expect(() =>
+      PayloadSchemas["permission.requested"].parse({ approvalId: "a1", category: "shell", title: "Run?", options: [] }),
+    ).toThrow();
+  });
+
+  it("rejects a permission option with an invalid kind", () => {
+    expect(() =>
+      PayloadSchemas["permission.requested"].parse({
+        approvalId: "a1", category: "shell", title: "Run?",
+        options: [{ optionId: "o1", name: "Allow", kind: "allow_forever" }],
+      }),
+    ).toThrow();
+  });
+
+  it("rejects permission.resolved with an invalid decision", () => {
+    expect(() => PayloadSchemas["permission.resolved"].parse({ approvalId: "a1", decision: "maybe" })).toThrow();
   });
 });
 

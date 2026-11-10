@@ -2,13 +2,27 @@ import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 import { ErrorCodes } from "@noir/protocol";
 import { startKernel, type Kernel } from "../src/index.js";
+import { profileAgentDir } from "../src/profile.js";
 
 const dirs: string[] = [];
+let priorProfileHome: string | undefined;
+let profileHome = "";
 function tempDir(): string { const d = mkdtempSync(join(tmpdir(), "noir kernel ünïcode ")); dirs.push(d); return d; }
+// The kernel materializes the engine profile under the profile home; never touch the real one in tests.
+beforeAll(() => {
+  priorProfileHome = process.env.NOIR_PROFILE_HOME;
+  profileHome = mkdtempSync(join(tmpdir(), "noir profile ünïcode "));
+  process.env.NOIR_PROFILE_HOME = profileHome;
+});
+afterAll(() => {
+  if (priorProfileHome === undefined) delete process.env.NOIR_PROFILE_HOME;
+  else process.env.NOIR_PROFILE_HOME = priorProfileHome;
+  rmSync(profileHome, { recursive: true, force: true });
+});
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
 
 async function call(port: number, token: string, method: string, params?: unknown): Promise<any> {
@@ -55,6 +69,69 @@ describe("startKernel", () => {
     const deleted = await call(second.port, second.token, "provider.delete", { id: created.result.id });
     expect(deleted.error).toBeUndefined();
     await second.close();
+  });
+
+  it("lists every model when model.list is called without params", async () => {
+    const dir = tempDir();
+    const kernel = await startKernel({ dataDir: dir });
+    const provider = await call(kernel.port, kernel.token, "provider.create", {
+      name: "Local", baseUrl: "http://localhost:11434/v1", apiKind: "openai-completions", apiKey: "k",
+    });
+    for (const modelId of ["gpt-a", "gpt-b"]) {
+      const model = await call(kernel.port, kernel.token, "model.create", { providerId: provider.result.id, modelId });
+      expect(model.error).toBeUndefined();
+    }
+    const listed = await call(kernel.port, kernel.token, "model.list");
+    expect(listed.error).toBeUndefined();
+    expect(listed.result.models.map((m: { modelId: string }) => m.modelId)).toEqual(["gpt-a", "gpt-b"]);
+    expect(listed.result.models[0].providerId).toBe(provider.result.id);
+    await kernel.close();
+  });
+
+  it("rolls back a model whose id the profile renderer rejects", async () => {
+    const dir = tempDir();
+    const kernel = await startKernel({ dataDir: dir });
+    const provider = await call(kernel.port, kernel.token, "provider.create", {
+      name: "Local", baseUrl: "http://localhost:11434/v1", apiKind: "openai-completions", apiKey: "k",
+    });
+    const bad = await call(kernel.port, kernel.token, "model.create", {
+      providerId: provider.result.id, modelId: "openai/gpt-4o",
+    });
+    expect(bad.error).toBeDefined();
+    const listed = await call(kernel.port, kernel.token, "model.list");
+    expect(listed.result.models).toEqual([]);
+    await kernel.close();
+  });
+
+  it("removes models.yml when a rolled-back create cannot re-sync", async () => {
+    const kernel = await startKernel({ dataDir: tempDir() });
+    const good = await call(kernel.port, kernel.token, "provider.create", {
+      name: "Good", baseUrl: "http://localhost:11434/v1", apiKind: "openai-completions", apiKey: "sk-good-round2",
+    });
+    expect(good.error).toBeUndefined();
+    const model = await call(kernel.port, kernel.token, "model.create", { providerId: good.result.id, modelId: "gpt-ok" });
+    expect(model.error).toBeUndefined();
+
+    const profileFile = join(profileAgentDir(profileHome), "models.yml");
+    expect(readFileSync(profileFile, "utf8")).toContain("sk-good-round2");
+
+    // Make the second half of materializeProfile fail after models.yml has been rewritten.
+    const blockedConfig = join(profileAgentDir(profileHome), "config.yml");
+    rmSync(blockedConfig, { force: true });
+    mkdirSync(blockedConfig, { recursive: true });
+    try {
+      const leaked = "sk-leaked-round2";
+      const second = await call(kernel.port, kernel.token, "provider.create", {
+        name: "Second", baseUrl: "http://localhost:11434/v1", apiKind: "openai-completions", apiKey: leaked,
+      });
+      expect(second.error).toBeDefined();
+      if (existsSync(profileFile)) expect(readFileSync(profileFile, "utf8")).not.toContain(leaked);
+      const listed = await call(kernel.port, kernel.token, "provider.list");
+      expect(listed.result.providers.map((provider: { name: string }) => provider.name)).toEqual(["Good"]);
+    } finally {
+      await kernel.close();
+      rmSync(blockedConfig, { recursive: true, force: true });
+    }
   });
 
   it("reports invalid params for bad provider input and malformed requests", async () => {

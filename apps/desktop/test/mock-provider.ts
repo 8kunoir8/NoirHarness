@@ -1,0 +1,186 @@
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
+import type { Socket } from "node:net";
+
+/**
+ * Minimal OpenAI-compatible completions endpoint for the e2e specs.
+ *
+ * It exists so a real `omp acp` process can be driven through the whole app: the engine spawns,
+ * reads its profile, posts here, and streams the result back over ACP. Only what the engine
+ * actually sends is handled; anything else is a 404 so a wrong URL fails loudly.
+ */
+export interface MockProvider {
+  /** `http://127.0.0.1:<port>/v1` — the base URL the provider form expects. */
+  url: string;
+  /** Every request path seen, in arrival order (e.g. `/v1/chat/completions`). */
+  requests: string[];
+  /** True once a `role: "tool"` message reached the provider. */
+  toolMessageSeen(): boolean;
+  close(): Promise<void>;
+}
+
+interface WireMessage {
+  role?: unknown;
+  content?: unknown;
+}
+
+const MODELS_URL_PATH = "/v1/chat/completions";
+
+function messageText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  const parts: string[] = [];
+  for (const part of content) {
+    if (typeof part === "object" && part !== null && "text" in part && typeof part.text === "string") {
+      parts.push(part.text);
+    }
+  }
+  return parts.join("");
+}
+
+function lastUserText(messages: WireMessage[]): string {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message !== undefined && message.role === "user") return messageText(message.content);
+  }
+  return "";
+}
+
+function chunk(delta: unknown, finishReason: string | null): string {
+  const frame = {
+    id: "chatcmpl-mock",
+    object: "chat.completion.chunk",
+    created: 1_700_000_000,
+    model: "mock-1",
+    choices: [{ index: 0, delta, finish_reason: finishReason }],
+  };
+  return `data: ${JSON.stringify(frame)}\n\n`;
+}
+
+function startSse(res: ServerResponse): void {
+  res.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache",
+    connection: "keep-alive",
+  });
+}
+
+function readBody(req: IncomingMessage): Promise<string> {
+  const { promise, resolve, reject } = Promise.withResolvers<string>();
+  const parts: Buffer[] = [];
+  req.on("data", (chunkData: Buffer) => parts.push(chunkData));
+  req.on("end", () => resolve(Buffer.concat(parts).toString("utf8")));
+  req.on("error", reject);
+  return promise;
+}
+
+function parseMessages(raw: string): WireMessage[] {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || !("messages" in parsed)) return [];
+    const messages = parsed.messages;
+    if (!Array.isArray(messages)) return [];
+    return messages.filter((message): message is WireMessage => typeof message === "object" && message !== null);
+  } catch {
+    return [];
+  }
+}
+
+export async function startMockProvider(): Promise<MockProvider> {
+  const requests: string[] = [];
+  const sockets = new Set<Socket>();
+  let toolMessageSeen = false;
+
+  const server = createServer((req, res) => {
+    requests.push(req.url ?? "");
+
+    if (req.method !== "POST" || (req.url ?? "").split("?")[0] !== MODELS_URL_PATH) {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "not found" } }));
+      return;
+    }
+
+    void readBody(req)
+      .then((raw) => {
+        const messages = parseMessages(raw);
+        if (messages.some((message) => message.role === "tool")) toolMessageSeen = true;
+
+        startSse(res);
+        res.on("error", () => undefined);
+
+        if (toolMessageSeen) {
+          res.write(chunk({ role: "assistant", content: "tool finished" }, null));
+          res.write(chunk({}, "stop"));
+          res.write("data: [DONE]\n\n");
+          res.end();
+          return;
+        }
+
+        if (lastUserText(messages).includes("tool")) {
+          res.write(
+            chunk(
+              {
+                role: "assistant",
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call_mock_1",
+                    type: "function",
+                    function: { name: "bash", arguments: JSON.stringify({ command: "echo hi" }) },
+                  },
+                ],
+              },
+              "tool_calls",
+            ),
+          );
+          res.write("data: [DONE]\n\n");
+          res.end();
+          return;
+        }
+
+        res.write(chunk({ role: "assistant", content: "Hello " }, null));
+        res.write(chunk({ content: "from " }, null));
+        res.write(chunk({ content: "mock." }, null));
+        res.write(chunk({}, "stop"));
+        res.write("data: [DONE]\n\n");
+        res.end();
+      })
+      .catch(() => {
+        if (!res.headersSent) res.writeHead(500, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { message: "mock provider failed" } }));
+      });
+  });
+
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+  });
+
+  const listening = Promise.withResolvers<void>();
+  server.once("error", listening.reject);
+  server.listen(0, "127.0.0.1", () => {
+    server.off("error", listening.reject);
+    listening.resolve();
+  });
+  await listening.promise;
+
+  const address = server.address();
+  if (address === null || typeof address === "string") {
+    server.close();
+    throw new Error("mock provider did not bind a TCP port");
+  }
+  const { port } = address as AddressInfo;
+
+  return {
+    url: `http://127.0.0.1:${port}/v1`,
+    requests,
+    toolMessageSeen: () => toolMessageSeen,
+    close: () => {
+      const closed = Promise.withResolvers<void>();
+      for (const socket of sockets) socket.destroy();
+      sockets.clear();
+      server.close(() => closed.resolve());
+      return closed.promise;
+    },
+  };
+}

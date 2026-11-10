@@ -1,21 +1,32 @@
 import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
 import WebSocket from "ws";
 import { z } from "zod";
 import {
+  ApprovalRespondParams,
   Methods,
+  ModelCreateParams,
+  ModelDeleteParams,
+  ModelListParams,
   ProjectAddParams,
   ProviderCreateParams,
+  SessionCloseParams,
   SessionCreateParams,
+  SessionInterruptParams,
+  SessionPromptParams,
   SessionSubscribeParams,
   WorkspaceCreateParams,
   type AgentEvent,
 } from "@noir/protocol";
 import { dataDir as defaultDataDir } from "./appdata.js";
 import { openDb } from "./db.js";
+import { EngineManager } from "./engineManager.js";
 import { EventStore } from "./eventStore.js";
+import { ModelService } from "./models.js";
+import { clearProfileModels, syncProfile } from "./profile.js";
 import { ProjectService } from "./projects.js";
 import { ProviderService } from "./providers.js";
 import { startRpcServer, type RpcServer } from "./rpcServer.js";
@@ -156,6 +167,7 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
 
     let db: Database.Database | undefined;
     let server: RpcServer | undefined;
+    let engines: EngineManager | undefined;
     try {
       db = openDb(join(dir, "noir.db"));
       // Bound after the server starts so events raised earlier are not lost silently.
@@ -165,6 +177,29 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
       const workspaces = new WorkspaceService(db, projects);
       const sessions = new SessionService(db, events);
       const providers = new ProviderService(db, new KeyringSecrets());
+      const models = new ModelService(db);
+      const home = process.env.NOIR_PROFILE_HOME ?? homedir();
+      const engineManager = new EngineManager({
+        db,
+        events,
+        sessions,
+        models,
+        providers,
+        dataDir: dir,
+        home,
+      });
+      engines = engineManager;
+      const sync = () => syncProfile({ providers, models, dataDir: dir, home });
+      const rollbackProfileRow = async (remove: () => void, cause: unknown): Promise<never> => {
+        remove();
+        try {
+          await sync();
+        } catch {
+          // A partial materialize may have written the rejected key before failing; drop the file.
+          await clearProfileModels(home);
+        }
+        throw cause;
+      };
 
       const handlers: Record<string, (params: unknown) => Promise<unknown>> = {
         [Methods.systemHealth]: async () => ({ status: "ok", pid: process.pid }),
@@ -172,17 +207,59 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
         [Methods.projectList]: async () => ({ projects: projects.list() }),
         [Methods.workspaceCreate]: async (params) => workspaces.createLocal(WorkspaceCreateParams.parse(params).projectId),
         [Methods.workspaceList]: async () => ({ workspaces: workspaces.list() }),
-        [Methods.sessionCreate]: async (params) => sessions.create(SessionCreateParams.parse(params).workspaceId),
+        [Methods.sessionCreate]: async (params) => {
+          const { workspaceId, modelId } = SessionCreateParams.parse(params);
+          await sync();
+          return sessions.create(workspaceId, modelId);
+        },
         [Methods.sessionList]: async () => ({ sessions: sessions.list() }),
-        [Methods.providerCreate]: async (params) => providers.create(ProviderCreateParams.parse(params)),
+        [Methods.sessionPrompt]: async (params) => engineManager.prompt(SessionPromptParams.parse(params)),
+        [Methods.sessionInterrupt]: async (params) => engineManager.interrupt(SessionInterruptParams.parse(params).sessionId),
+        [Methods.sessionClose]: async (params) => {
+          await engineManager.closeSession(SessionCloseParams.parse(params).sessionId);
+          return { ok: true };
+        },
+        [Methods.approvalRespond]: async (params) => {
+          const { approvalId, decision } = ApprovalRespondParams.parse(params);
+          await engineManager.respond(approvalId, decision);
+          return { ok: true };
+        },
+        [Methods.modelCreate]: async (params) => {
+          const created = models.create(ModelCreateParams.parse(params));
+          try {
+            await sync();
+          } catch (error) {
+            // A profile the renderer rejects must not leave a row that poisons every later sync.
+            return await rollbackProfileRow(() => models.remove(created.id), error);
+          }
+          return created;
+        },
+        [Methods.modelList]: async (params) => ({ models: models.list(ModelListParams.parse(params ?? {}).providerId) }),
+        [Methods.modelDelete]: async (params) => {
+          models.remove(ModelDeleteParams.parse(params).id);
+          await sync();
+          return { ok: true };
+        },
+        [Methods.providerCreate]: async (params) => {
+          const created = providers.create(ProviderCreateParams.parse(params));
+          try {
+            await sync();
+          } catch (error) {
+            return await rollbackProfileRow(() => providers.remove(created.id), error);
+          }
+          return created;
+        },
         [Methods.providerList]: async () => ({ providers: providers.list() }),
         [Methods.providerDelete]: async (params) => {
           providers.remove(ProviderDeleteParams.parse(params).id);
+          await sync();
           return { ok: true };
         },
         [Methods.sessionSubscribe]: async (params) => {
           const { sessionId, sinceSeq } = SessionSubscribeParams.parse(params);
-          return { events: events.list(sessionId, sinceSeq) };
+          engineManager.reconcileSession(sessionId);
+          const replay = events.list(sessionId, sinceSeq);
+          return { events: replay, lastSeq: replay.at(-1)?.seq ?? sinceSeq };
         },
       };
 
@@ -191,6 +268,13 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
       broadcast = (event) => started.broadcast(event);
       writeRuntimeFile(file, { pid: process.pid, port: started.port, token });
     } catch (error) {
+      if (engines) {
+        try {
+          await engines.shutdown();
+        } catch {
+          // Best effort: the startup error is what matters.
+        }
+      }
       if (server) {
         try {
           await server.close();
@@ -206,9 +290,10 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
       throw error;
     }
 
-    if (!db || !server) throw new Error("Kernel failed to start");
+    if (!db || !server || !engines) throw new Error("Kernel failed to start");
     const runningDb = db;
     const runningServer = server;
+    const runningEngines = engines;
 
     let closed = false;
     return {
@@ -218,13 +303,17 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
         if (closed) return;
         closed = true;
         try {
-          await runningServer.close();
+          await runningEngines.shutdown();
         } finally {
           try {
-            runningDb.close();
+            await runningServer.close();
           } finally {
-            removeRuntimeFileIfOwned(file, { pid: process.pid, token });
-            removeLockIfOwned(lockFile, claim);
+            try {
+              runningDb.close();
+            } finally {
+              removeRuntimeFileIfOwned(file, { pid: process.pid, token });
+              removeLockIfOwned(lockFile, claim);
+            }
           }
         }
       },

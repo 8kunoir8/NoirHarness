@@ -1,0 +1,19 @@
+{
+  "name": "@noir/omp-profile",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit"
+  },
+  "dependencies": {
+    "yaml": "^2.8.1"
+  },
+  "devDependencies": {
+    "@noir/protocol": "workspace:*",
+    "zod": "^3.24.0"
+  }
+}

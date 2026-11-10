@@ -56,10 +56,15 @@ export class EventStore {
       this.db.prepare("UPDATE sessions SET status = 'closed', closed_at = ? WHERE id = ?").run(event.ts, event.sessionId);
     } else if (event.type === "turn.started") {
       const p = payload as { turnId: string; index: number };
-      this.db.prepare("INSERT INTO turns (id, session_id, idx, status, started_at) VALUES (?,?,?,'running',?)").run(p.turnId, event.sessionId, p.index, event.ts);
+      // The manager inserts the row before delivering (so queued turns are durable); the event
+      // marks the delivery boundary without clobbering the client_request_id.
+      this.db.prepare(
+        `INSERT INTO turns (id, session_id, idx, status, started_at) VALUES (?,?,?,'running',?)
+         ON CONFLICT(id) DO UPDATE SET status = 'running', started_at = excluded.started_at`,
+      ).run(p.turnId, event.sessionId, p.index, event.ts);
     } else if (event.type === "turn.completed" || event.type === "turn.failed") {
-      const p = payload as { turnId: string };
-      const status = event.type === "turn.completed" ? "completed" : "failed";
+      const p = payload as { turnId: string; status?: "completed" | "interrupted" };
+      const status = event.type === "turn.completed" ? (p.status ?? "completed") : "failed";
       this.db.prepare("UPDATE turns SET status = ?, ended_at = ? WHERE id = ?").run(status, event.ts, p.turnId);
     } else if (event.type === "file.changed") {
       const p = payload as { path: string; change: string; add: number; del: number };
