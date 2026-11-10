@@ -17,6 +17,7 @@ import {
   SessionCreateParams,
   SessionInterruptParams,
   SessionPromptParams,
+  SessionSetModelParams,
   SessionSubscribeParams,
   WorkspaceCreateParams,
   type AgentEvent,
@@ -207,7 +208,8 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
         [Methods.sessionCreate]: async (params) => {
           const { workspaceId, modelId } = SessionCreateParams.parse(params);
           await sync();
-          return sessions.create(workspaceId, modelId);
+          const row = sessions.create(workspaceId, modelId);
+          return sessions.view(row.id);
         },
         [Methods.sessionList]: async () => ({ sessions: sessions.list() }),
         [Methods.sessionPrompt]: async (params) => engineManager.prompt(SessionPromptParams.parse(params)),
@@ -215,6 +217,10 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
         [Methods.sessionClose]: async (params) => {
           await engineManager.closeSession(SessionCloseParams.parse(params).sessionId);
           return { ok: true };
+        },
+        [Methods.sessionSetModel]: async (params) => {
+          const { sessionId, modelId } = SessionSetModelParams.parse(params);
+          return sessions.setModel(sessionId, modelId);
         },
         [Methods.approvalRespond]: async (params) => {
           const { approvalId, decision } = ApprovalRespondParams.parse(params);

@@ -41,6 +41,9 @@ const session: SessionView = {
   status: "running",
   modelId: null,
   createdAt: 1,
+  lastEventSeq: 0,
+  lastEventAt: 1,
+  pendingApproval: false,
 };
 
 describe("reduceChat", () => {

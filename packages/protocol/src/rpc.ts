@@ -16,6 +16,7 @@ export const Methods = {
   sessionPrompt: "session.prompt",
   sessionInterrupt: "session.interrupt",
   sessionClose: "session.close",
+  sessionSetModel: "session.setModel",
   approvalRespond: "approval.respond",
   providerCreate: "provider.create",
   providerList: "provider.list",
@@ -59,6 +60,12 @@ export const ModelDeleteParams = z.object({ id: z.string().min(1) });
 export const SessionView = z.object({
   id: z.string(), workspaceId: z.string(), agentId: z.string(), engine: z.string(),
   title: z.string(), status: SessionStatus, modelId: z.string().nullable(), createdAt: z.number().int(),
+  /** Seq of the newest event; 0 when the session has none. Lets the shell sort and de-duplicate. */
+  lastEventSeq: z.number().int().nonnegative(),
+  /** Timestamp of the newest event, or the row's creation time when the session has none. */
+  lastEventAt: z.number().int(),
+  /** True when the newest permission event for the session is an unanswered request. */
+  pendingApproval: z.boolean(),
 });
 export type SessionView = z.infer<typeof SessionView>;
 
@@ -76,6 +83,9 @@ export const SessionInterruptResult = z.object({ interrupted: z.boolean() });
 export type SessionInterruptResult = z.infer<typeof SessionInterruptResult>;
 export const SessionCloseParams = z.object({ sessionId: z.string().min(1) });
 export type SessionCloseParams = z.infer<typeof SessionCloseParams>;
+
+export const SessionSetModelParams = z.object({ sessionId: z.string().min(1), modelId: z.string().min(1) });
+export type SessionSetModelParams = z.infer<typeof SessionSetModelParams>;
 export const ApprovalRespondParams = z.object({ approvalId: z.string().min(1), decision: PermissionDecision });
 export type ApprovalRespondParams = z.infer<typeof ApprovalRespondParams>;
 
