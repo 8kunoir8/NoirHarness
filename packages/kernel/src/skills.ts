@@ -382,6 +382,10 @@ export class SkillService {
     const manifest: SkillManifest = { version: 1, skills: [] };
     const winners = scan.skills.filter((skill) => this.enabledFor(workspaceId, flags, skill));
     const names = new Set(winners.map((skill) => skill.name));
+    // Windows can hold only one spelling per name, so a pre-fix manifest may carry both `DUP`
+    // and `dup`; either spelling must keep the freshly materialized winner.
+    const namesLower =
+      process.platform === "win32" ? new Set([...names].map((name) => name.toLowerCase())) : undefined;
     // Read before writing: this is the only record of which directories this engine owns.
     const previous = await this.manifestFor(root);
     for (const skill of winners) {
@@ -411,7 +415,7 @@ export class SkillService {
       manifest.skills.push({ name: skill.name, scope: skill.scope, hash: skill.hash, description: skill.description });
     }
     for (const name of previous.keys()) {
-      if (names.has(name)) continue;
+      if (names.has(name) || namesLower?.has(name.toLowerCase()) === true) continue;
       // A hand-edited manifest must not turn into a path outside the engine root.
       if (!SKILL_NAME.test(name)) continue;
       await rm(join(target, name), { recursive: true, force: true });
