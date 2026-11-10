@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activateTab, chatTab, closeTab, diffTab, editorTab, loadTabs, openTab, type TabsState } from "../src/renderer/tabs.js";
+import { activateTab, chatTab, closeTab, diffTab, editorTab, loadTabs, openTab, TABS_KEY, type TabsState } from "../src/renderer/tabs.js";
 
 const empty: TabsState = { tabs: [], active: undefined };
 
@@ -8,6 +8,7 @@ describe("tabs", () => {
     const first = openTab(empty, chatTab("s1"));
     expect(first.tabs).toHaveLength(1);
     expect(first.active).toBe("chat:s1");
+    expect(openTab(first, chatTab("s1"))).toBe(first);
 
     const again = openTab(openTab(first, editorTab("src/a.ts")), chatTab("s1"));
     expect(again.tabs.map((tab) => tab.id)).toEqual(["chat:s1", "editor:src/a.ts"]);
@@ -21,6 +22,14 @@ describe("tabs", () => {
     const last = closeTab(middle, "diff:x.ts");
     expect(last.active).toBe("chat:a");
     expect(closeTab(last, "chat:a")).toEqual({ tabs: [], active: undefined });
+  });
+
+  it("closes an active middle tab onto its following tab", () => {
+    const state = activateTab(
+      openTab(openTab(openTab(empty, chatTab("a")), editorTab("x.ts")), diffTab("x.ts")),
+      "editor:x.ts",
+    );
+    expect(closeTab(state, "editor:x.ts").active).toBe("diff:x.ts");
   });
 
   it("ignores unknown ids", () => {
@@ -38,5 +47,25 @@ describe("tabs", () => {
       active: "chat:s1",
     });
     expect(loadTabs(null)).toEqual(empty);
+  });
+
+  it("loads the v2 shape in order and drops malformed entries", () => {
+    const loaded = loadTabs({
+      tabs: [chatTab("s1"), editorTab("a.ts"), diffTab("a.ts"), { kind: "nope", id: "x" }],
+      active: "editor:a.ts",
+    });
+    expect(loaded.tabs.map((tab) => tab.id)).toEqual(["chat:s1", "editor:a.ts", "diff:a.ts"]);
+    expect(loaded.active).toBe("editor:a.ts");
+    expect(loadTabs({ tabs: [chatTab("s1"), editorTab("a.ts")], active: "chat:missing" }).active).toBe("chat:s1");
+    expect(loadTabs({ tabs: [{ kind: "nope" }], open: ["s1"] })).toEqual(empty);
+  });
+
+  it("dedupes duplicated stored ids, first wins", () => {
+    const loaded = loadTabs({ tabs: [editorTab("a.ts"), editorTab("a.ts"), chatTab("s1")] });
+    expect(loaded.tabs.map((tab) => tab.id)).toEqual(["editor:a.ts", "chat:s1"]);
+  });
+
+  it("pins the storage key", () => {
+    expect(TABS_KEY).toBe("noir.tabs.v2");
   });
 });
