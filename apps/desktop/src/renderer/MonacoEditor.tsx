@@ -25,6 +25,8 @@ export function MonacoEditor({ path, value, theme, onChange }: MonacoEditorProps
   useEffect(() => {
     const element = host.current;
     if (element === null) return;
+    // A failure belongs to the path that caused it; a new mount starts clean.
+    setFailure(undefined);
     let disposed = false;
     let subscription: Monaco.IDisposable | undefined;
     let model: Monaco.editor.ITextModel | undefined;

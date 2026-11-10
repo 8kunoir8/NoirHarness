@@ -71,7 +71,3 @@ describe("MonacoEditor", () => {
     expect((await screen.findByRole("alert")).textContent).toBe("worker unavailable");
   });
 });
-
-function fakeCreateCalls(): number {
-  return 0;
-}
