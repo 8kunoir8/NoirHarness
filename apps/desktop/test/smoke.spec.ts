@@ -1,7 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { _electron as electron, expect, test } from "@playwright/test";
+import { _electron as electron, expect, test, type ElectronApplication } from "@playwright/test";
 import {
   deleteProviderThroughKernel,
   removeDir,
@@ -12,12 +12,13 @@ import {
 test("boots, spawns the kernel, and reaches health", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "noir e2e "));
   const snapshot = snapshotProfileAgentDir();
-  const app = await electron.launch({ args: ["."], env: { ...process.env, NOIR_DATA_DIR: dataDir } });
+  let app: ElectronApplication | undefined;
   try {
+    app = await electron.launch({ args: ["."], env: { ...process.env, NOIR_DATA_DIR: dataDir } });
     const page = await app.firstWindow();
     await expect(page.getByTestId("kernel-status")).toHaveText("kernel ok", { timeout: 20_000 });
   } finally {
-    await app.close().catch(() => undefined);
+    await app?.close().catch(() => undefined);
     await waitForKernelExit(dataDir).catch(() => undefined);
     try {
       await snapshot.restore();

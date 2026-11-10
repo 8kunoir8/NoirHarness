@@ -226,6 +226,33 @@ async function permissionTurn(): Promise<JsonObject> {
   return { stopReason: "end_turn" };
 }
 
+/**
+ * A non-execute tool whose content legitimately starts with "$ " (edit diff lines): the adapter
+ * must keep it, because only execute tools prefix their content with the rendered command.
+ */
+async function editTurn(): Promise<JsonObject> {
+  emitUpdate({
+    sessionUpdate: "tool_call",
+    toolCallId: "call_fake_edit",
+    name: "edit",
+    title: "$ edit file.txt",
+    kind: "edit",
+    status: "pending",
+    rawInput: {},
+    content: [{ type: "content", content: { type: "text", text: "$ edit file.txt" } }],
+  });
+  emitUpdate({
+    sessionUpdate: "tool_call_update",
+    toolCallId: "call_fake_edit",
+    status: "completed",
+    content: [
+      { type: "content", content: { type: "text", text: "$ edit file.txt" } },
+      { type: "content", content: { type: "text", text: "edited" } },
+    ],
+  });
+  return { stopReason: "end_turn" };
+}
+
 async function runPrompt(params: unknown): Promise<JsonObject> {
   const prompt = asObject(params)?.prompt;
   const first = Array.isArray(prompt) ? asObject(prompt[0]) : undefined;
@@ -248,6 +275,8 @@ async function runPrompt(params: unknown): Promise<JsonObject> {
       return crashTurn();
     case "permission":
       return await permissionTurn();
+    case "edit":
+      return await editTurn();
     default:
       return { stopReason: "end_turn" };
   }

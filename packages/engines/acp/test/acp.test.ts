@@ -185,6 +185,22 @@ describe("ACP engine adapter", () => {
   );
 
   it(
+    "keeps a non-execute tool's leading \"$ \" content",
+    async () => {
+      const { engine, root } = await start();
+      const session = await engine.newSession(root);
+      const { updates, handlers } = collector();
+
+      const result = await session.prompt([{ type: "text", text: "edit" }], handlers);
+
+      const completed = updates.find((update) => update.kind === "tool.updated" && update.status === "completed");
+      expect(completed?.kind === "tool.updated" ? completed.text : "").toBe("$ edit file.txt\nedited");
+      expect(result.stopReason).toBe("end_turn");
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
     "rejects a permission request and still completes the turn",
     async () => {
       const { engine, root } = await start();

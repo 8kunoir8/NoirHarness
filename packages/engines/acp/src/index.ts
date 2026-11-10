@@ -220,7 +220,14 @@ function messageUpdate(update: JsonObject, reasoning: boolean): EngineUpdate {
   return { kind: "message", messageId, text: content.text, reasoning };
 }
 
-function contentText(content: unknown): string | undefined {
+/** What the `tool_call` update advertised, kept so later snapshots can be interpreted. */
+interface TrackedTool {
+  kind: string | undefined;
+  /** The title the UI already renders; a bash title is the `$ `-prefixed command. */
+  title: string;
+}
+
+function contentText(content: unknown, tool: TrackedTool | undefined): string | undefined {
   if (!Array.isArray(content)) return undefined;
   const parts: string[] = [];
   for (const part of content) {
@@ -229,9 +236,18 @@ function contentText(content: unknown): string | undefined {
     const inner = asObject(record.content);
     if (inner !== undefined && inner.type === "text" && typeof inner.text === "string") parts.push(inner.text);
   }
-  // omp prefixes tool content with the rendered command ("$ echo hi"), which the tool card already
-  // shows as its title; only the result text belongs in the streamed output.
-  if (parts[0]?.startsWith("$ ")) parts.shift();
+  // omp prefixes execute-tool content with the rendered command ("$ echo hi"), which the tool card
+  // already shows as its title; only the result text belongs in the streamed output. Compare the
+  // whole first part so a non-command line that merely starts with "$ " is never dropped.
+  const first = parts[0];
+  if (
+    first !== undefined
+    && first.startsWith("$ ")
+    && tool?.kind === "execute"
+    && first === tool.title
+  ) {
+    parts.shift();
+  }
   return parts.length === 0 ? undefined : parts.join("\n");
 }
 
@@ -247,17 +263,20 @@ function toolStatus(value: unknown): "pending" | "in_progress" | "completed" | "
   }
 }
 
-function mapUpdate(update: JsonObject): EngineUpdate | undefined {
+function mapUpdate(update: JsonObject, tools: Map<string, TrackedTool>): EngineUpdate | undefined {
   switch (update.sessionUpdate) {
     case "agent_message_chunk":
       return messageUpdate(update, false);
     case "agent_thought_chunk":
       return messageUpdate(update, true);
     case "tool_call": {
+      const toolCallId = typeof update.toolCallId === "string" ? update.toolCallId : "";
+      const title = typeof update.title === "string" ? update.title : "";
+      tools.set(toolCallId, { kind: typeof update.kind === "string" ? update.kind : undefined, title });
       return {
         kind: "tool.started",
-        toolCallId: typeof update.toolCallId === "string" ? update.toolCallId : "",
-        title: typeof update.title === "string" ? update.title : "",
+        toolCallId,
+        title,
         toolKind: typeof update.kind === "string" ? update.kind : "other",
         rawInput: update.rawInput,
       };
@@ -266,7 +285,7 @@ function mapUpdate(update: JsonObject): EngineUpdate | undefined {
       const status = toolStatus(update.status);
       const toolCallId = typeof update.toolCallId === "string" ? update.toolCallId : "";
       if (status === undefined) return { kind: "raw", update };
-      const text = contentText(update.content);
+      const text = contentText(update.content, tools.get(toolCallId));
       return text === undefined
         ? { kind: "tool.updated", toolCallId, status }
         : { kind: "tool.updated", toolCallId, status, text };
@@ -359,6 +378,8 @@ class AcpSessionImpl implements AcpSession {
   #configOptions: unknown[];
   #activeTurn: ActiveTurn | undefined;
   #closed = false;
+  /** Tool metadata from `tool_call`, keyed by id, for interpreting later updates. */
+  readonly #tools = new Map<string, TrackedTool>();
 
   constructor(owner: AcpRuntime, sessionId: string, cwd: string, configOptions: unknown[]) {
     this.#owner = owner;
@@ -461,7 +482,7 @@ class AcpSessionImpl implements AcpSession {
       this.#configOptions = update.configOptions;
     }
 
-    const mapped = mapUpdate(update);
+    const mapped = mapUpdate(update, this.#tools);
     if (mapped === undefined) return;
     turn?.onUpdate(mapped);
   }
