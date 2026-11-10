@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ModelListResult, SessionView, SystemHealthResult } from "@noir/protocol";
 import { connect, offEvent, request } from "./api.js";
 import { Chat } from "./Chat.js";
+import { CommandPalette } from "./CommandPalette.js";
+import type { Command } from "./commands.js";
 import { useSessionEvents } from "./events.js";
 import { Inspector } from "./Inspector.js";
 import { SessionList, type ReadState, type SessionFilter } from "./SessionList.js";
@@ -10,6 +12,7 @@ import { Shell } from "./Shell.js";
 import { StatusBar } from "./StatusBar.js";
 import { Tabs } from "./Tabs.js";
 import { useTheme } from "./theme.js";
+import { useShortcuts } from "./useShortcuts.js";
 import { WorkspacePanel, type ProjectView, type WorkspaceView } from "./WorkspacePanel.js";
 import "./styles.css";
 
@@ -59,6 +62,7 @@ export function App() {
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | undefined>(undefined);
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const events = useSessionEvents(activeId ?? "", request);
   const refreshTimer = useRef<number | undefined>(undefined);
 
@@ -224,6 +228,9 @@ export function App() {
     <>
       <span className="brand">NoirHarness</span>
       <span className="topbar-workspace">{workspaceSessions.length === 0 ? "" : `${workspaceSessions.length} chat${workspaceSessions.length === 1 ? "" : "s"}`}</span>
+      <button type="button" className="topbar-action" onClick={() => setPaletteOpen(true)} aria-label="Commands">
+        ⌘K
+      </button>
       {view === "chats" && models.length > 0 ? (
         <button
           type="button"
@@ -241,15 +248,154 @@ export function App() {
     <StatusBar status={status} running={running} pendingApprovals={pendingApprovals} engineDir={engineDir} />
   );
 
+  const commands: Command[] = [
+    {
+      id: "new-chat",
+      label: "New chat",
+      shortcut: { key: "n", mod: true },
+      enabled: workspaceId !== "",
+      run: () => void newChat(),
+    },
+    {
+      id: "close-tab",
+      label: "Close chat tab",
+      keywords: "close tab",
+      shortcut: { key: "w", mod: true },
+      enabled: activeId !== undefined,
+      run: () => {
+        if (activeId !== undefined) closeTab(activeId);
+      },
+    },
+    {
+      id: "toggle-inspector",
+      label: "Toggle inspector",
+      shortcut: { key: "b", mod: true },
+      enabled: view === "chats" && models.length > 0,
+      run: () => setInspectorOpen((current) => !current),
+    },
+    {
+      id: "focus-composer",
+      label: "Focus the composer",
+      keywords: "prompt message input",
+      shortcut: { key: "j", mod: true },
+      enabled: activeId !== undefined,
+      allowInInput: true,
+      run: () => {
+        const prompt = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Prompt"]');
+        prompt?.focus();
+      },
+    },
+    {
+      id: "interrupt",
+      label: "Interrupt the running turn",
+      keywords: "stop cancel",
+      shortcut: { key: ".", mod: true },
+      enabled: activeId !== undefined && (events.state.status === "running" || events.state.status === "waiting"),
+      allowInInput: true,
+      run: () => {
+        if (activeId === undefined) return;
+        void request("session.interrupt", { sessionId: activeId }).catch((interruptError: unknown) => {
+          setError(interruptError instanceof Error ? interruptError.message : "Could not interrupt the turn");
+        });
+      },
+    },
+    {
+      id: "open-setup",
+      label: "Open setup",
+      keywords: "providers models settings",
+      shortcut: { key: ",", mod: true },
+      enabled: true,
+      run: () => setView("setup"),
+    },
+    {
+      id: "switch-theme",
+      label: "Switch theme",
+      keywords: "paper ink dark light",
+      shortcut: { key: "t", mod: true, shift: true },
+      enabled: true,
+      run: () => toggleTheme(),
+    },
+    {
+      id: "copy-session-id",
+      label: "Copy session id",
+      keywords: "clipboard identifier",
+      enabled: activeId !== undefined,
+      run: () => {
+        if (activeId === undefined) return;
+        void navigator.clipboard?.writeText(activeId).catch(() => undefined);
+      },
+    },
+    {
+      id: "command-palette",
+      label: "Show all commands",
+      keywords: "palette",
+      shortcut: { key: "k", mod: true },
+      enabled: true,
+      allowInInput: true,
+      run: () => setPaletteOpen(true),
+    },
+  ];
+
+  useShortcuts(commands);
+
+  const palette = paletteOpen ? (
+    <CommandPalette
+      commands={commands}
+      onRun={(command) => {
+        setPaletteOpen(false);
+        command.run();
+      }}
+      onClose={() => setPaletteOpen(false)}
+    />
+  ) : null;
+
   if (view === "setup" || models.length === 0) {
     return (
+      <>
+        <Shell
+          rail={rail}
+          topbar={topbar}
+          list={
+            models.length === 0 ? (
+              <p className="empty">Add a provider and a model to unlock chats.</p>
+            ) : (
+              <WorkspacePanel
+                projects={projects}
+                workspaces={workspaces}
+                workspaceId={workspaceId}
+                onSelectWorkspace={setWorkspaceId}
+                onAddProject={addProject}
+                onCreateWorkspace={createWorkspace}
+              />
+            )
+          }
+          main={
+            status === "kernel ok" ? (
+              <Setup
+                request={request}
+                onOpenChat={() => {
+                  setView("chats");
+                  void loadAll();
+                }}
+              />
+            ) : (
+              <p className="empty">{error ?? "Connecting to the kernel…"}</p>
+            )
+          }
+          status={statusbar}
+        />
+        {palette}
+      </>
+    );
+  }
+
+  return (
+    <>
       <Shell
         rail={rail}
         topbar={topbar}
         list={
-          models.length === 0 ? (
-            <p className="empty">Add a provider and a model to unlock chats.</p>
-          ) : (
+          <>
             <WorkspacePanel
               projects={projects}
               workspaces={workspaces}
@@ -258,111 +404,79 @@ export function App() {
               onAddProject={addProject}
               onCreateWorkspace={createWorkspace}
             />
-          )
+            <section aria-label="Sessions" className="sessions-region">
+              <div className="new-chat-row">
+                <label>
+                  New chat model
+                  <select
+                    aria-label="New chat model"
+                    value={newChatModelId}
+                    onChange={(event) => setNewChatModelId(event.target.value)}
+                  >
+                    {models.map((model) => (
+                      <option key={model.id} value={model.id}>
+                        {model.displayName}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <SessionList
+                sessions={workspaceSessions}
+                models={models}
+                activeId={activeId}
+                read={read}
+                filter={filter}
+                onFilterChange={setFilter}
+                query={query}
+                onQueryChange={setQuery}
+                onSelect={openSession}
+                onNewChat={() => void newChat()}
+                canCreate={workspaceId !== ""}
+              />
+            </section>
+          </>
         }
         main={
-          status === "kernel ok" ? (
-            <Setup
-              request={request}
-              onOpenChat={() => {
-                setView("chats");
-                void loadAll();
-              }}
-            />
-          ) : (
-            <p className="empty">{error ?? "Connecting to the kernel…"}</p>
-          )
+          <>
+            {error === undefined ? null : <p role="alert">{error}</p>}
+            <Tabs sessions={openSessions} activeId={activeId} onSelect={setActiveId} onClose={closeTab} />
+            {activeSession === undefined ? (
+              <p className="empty">
+                {workspaces.length === 0 ? "Add a workspace to start." : "Create a chat to start talking to the agent."}
+              </p>
+            ) : (
+              <Chat
+                key={activeSession.id}
+                session={activeSession}
+                models={models}
+                request={request}
+                events={events}
+                onSessionChange={() => void loadSessions().catch(() => undefined)}
+              />
+            )}
+          </>
         }
+        {...(inspectorOpen
+          ? {
+              inspector: (
+                <Inspector
+                  session={activeSession}
+                  status={events.state.status}
+                  usage={events.state.usage}
+                  turnStartedAt={events.state.turnStartedAt}
+                  lastTurn={events.state.lastTurn}
+                  files={events.state.files}
+                  plan={events.state.plan}
+                  approvalTitles={events.state.approval === undefined ? [] : [events.state.approval.title]}
+                  onClose={() => setInspectorOpen(false)}
+                />
+              ),
+            }
+          : {})}
         status={statusbar}
       />
-    );
-  }
-
-  return (
-    <Shell
-      rail={rail}
-      topbar={topbar}
-      list={
-        <>
-          <WorkspacePanel
-            projects={projects}
-            workspaces={workspaces}
-            workspaceId={workspaceId}
-            onSelectWorkspace={setWorkspaceId}
-            onAddProject={addProject}
-            onCreateWorkspace={createWorkspace}
-          />
-          <section aria-label="Sessions" className="sessions-region">
-            <div className="new-chat-row">
-              <label>
-                New chat model
-                <select
-                  aria-label="New chat model"
-                  value={newChatModelId}
-                  onChange={(event) => setNewChatModelId(event.target.value)}
-                >
-                  {models.map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {model.displayName}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-            <SessionList
-              sessions={workspaceSessions}
-              models={models}
-              activeId={activeId}
-              read={read}
-              filter={filter}
-              onFilterChange={setFilter}
-              query={query}
-              onQueryChange={setQuery}
-              onSelect={openSession}
-              onNewChat={() => void newChat()}
-              canCreate={workspaceId !== ""}
-            />
-          </section>
-        </>
-      }
-      main={
-        <>
-          {error === undefined ? null : <p role="alert">{error}</p>}
-          <Tabs sessions={openSessions} activeId={activeId} onSelect={setActiveId} onClose={closeTab} />
-          {activeSession === undefined ? (
-            <p className="empty">
-              {workspaces.length === 0 ? "Add a workspace to start." : "Create a chat to start talking to the agent."}
-            </p>
-          ) : (
-            <Chat
-              key={activeSession.id}
-              session={activeSession}
-              models={models}
-              request={request}
-              events={events}
-              onSessionChange={() => void loadSessions().catch(() => undefined)}
-            />
-          )}
-        </>
-      }
-      {...(inspectorOpen
-        ? {
-            inspector: (
-              <Inspector
-                session={activeSession}
-                status={events.state.status}
-                usage={events.state.usage}
-                turnStartedAt={events.state.turnStartedAt}
-                lastTurn={events.state.lastTurn}
-                files={events.state.files}
-                plan={events.state.plan}
-                approvalTitles={events.state.approval === undefined ? [] : [events.state.approval.title]}
-                onClose={() => setInspectorOpen(false)}
-              />
-            ),
-          }
-        : {})}
-      status={statusbar}
-    />
+      {palette}
+    </>
   );
 }
