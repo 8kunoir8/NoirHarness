@@ -809,6 +809,8 @@ describe("EngineManager over the fake ACP server", () => {
     db.prepare("INSERT INTO sessions (id, workspace_id, agent_id, engine, status, created_at) VALUES ('run','w','a','acp','running',1)").run();
     db.prepare("INSERT INTO sessions (id, workspace_id, agent_id, engine, status, created_at) VALUES ('wait','w','a','acp','waiting',2)").run();
     db.prepare("INSERT INTO sessions (id, workspace_id, agent_id, engine, status, created_at) VALUES ('done','w','a','acp','closed',3)").run();
+    db.prepare("INSERT INTO sessions (id, workspace_id, agent_id, engine, status, created_at) VALUES ('start','w','a','acp','starting',4)").run();
+    db.prepare("INSERT INTO turns (id, session_id, idx, status, started_at) VALUES ('t1','run',1,'running',1)").run();
 
     const events = new EventStore(db);
     const manager = new EngineManager({ db, events, sessions: new SessionService(db, events), models: new ModelService(db), providers: new ProviderService(db, memorySecrets()), skills: new SkillService(db, tempDir()), dataDir: tempDir() });
@@ -818,8 +820,11 @@ describe("EngineManager over the fake ACP server", () => {
     expect(statuses).toEqual([
       { id: "done", status: "closed" },
       { id: "run", status: "error" },
+      { id: "start", status: "error" },
       { id: "wait", status: "error" },
     ]);
+    const turn = db.prepare("SELECT status FROM turns WHERE id = 't1'").get() as { status: string };
+    expect(turn.status).toBe("failed");
     expect(events.list("run").some((event) => event.type === "session.status" && PayloadSchemas["session.status"].safeParse(event.payload).data?.reason === "kernel_restart")).toBe(true);
     expect(events.list("done")).toHaveLength(0);
   });
