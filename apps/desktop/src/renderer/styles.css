@@ -218,6 +218,15 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; colo
 .sessions-region { display: flex; flex-direction: column; min-height: 0; }
 .new-chat-row { padding: 10px 12px 0; }
 
+.list-mode { display: flex; gap: 4px; padding: 8px 12px 0; }
+.list-mode button { flex: 1; padding: 3px 8px; font-size: 0.75rem; background: transparent; color: var(--muted); }
+.list-mode button[aria-pressed="true"] {
+  background: var(--surface-sunken);
+  border-color: var(--border);
+  color: var(--text);
+  font-weight: 600;
+}
+
 .session-list { display: flex; flex-direction: column; padding: 8px 8px 16px; gap: 8px; }
 .session-list-head { display: flex; gap: 6px; }
 .session-list-head input { flex: 1; }
@@ -280,6 +289,9 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; colo
   background: transparent;
 }
 .tab[data-active="true"] { background: var(--surface-raised); border-color: var(--border); }
+.tab[data-active="false"] { color: var(--muted); }
+.tab[data-kind="editor"] > button[role="tab"],
+.tab[data-kind="diff"] > button[role="tab"] { font-family: var(--font-mono); font-size: 0.78rem; }
 .tab > button[role="tab"] {
   border: none;
   background: transparent;
@@ -289,6 +301,12 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; colo
   white-space: nowrap;
 }
 .tab-close { border: none; background: transparent; color: var(--muted); padding: 2px 6px; }
+
+/* --- editor and diff panes --- */
+
+.editor-pane { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.editor-host { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.editor-surface { flex: 1; min-height: 0; }
 
 /* --- chat --- */
 

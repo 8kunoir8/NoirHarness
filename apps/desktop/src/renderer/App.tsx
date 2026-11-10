@@ -4,13 +4,27 @@ import { connect, offEvent, request } from "./api.js";
 import { Chat } from "./Chat.js";
 import { CommandPalette } from "./CommandPalette.js";
 import type { Command } from "./commands.js";
+import { DiffView } from "./DiffView.js";
 import { useSessionEvents } from "./events.js";
+import { FileTree } from "./FileTree.js";
 import { Inspector } from "./Inspector.js";
+import { MonacoEditor } from "./MonacoEditor.js";
+import { QuickOpen } from "./QuickOpen.js";
 import { SessionList, type ReadState, type SessionFilter } from "./SessionList.js";
 import { Setup } from "./Setup.js";
 import { Shell } from "./Shell.js";
 import { StatusBar } from "./StatusBar.js";
-import { Tabs } from "./TabStrip.js";
+import { TabStrip } from "./TabStrip.js";
+import {
+  activateTab,
+  chatTab,
+  closeTab,
+  editorTab,
+  loadTabs,
+  openTab,
+  TABS_KEY,
+  type TabsState,
+} from "./tabs.js";
 import { useTheme } from "./theme.js";
 import { useShortcuts } from "./useShortcuts.js";
 import { WorkspacePanel, type ProjectView, type WorkspaceView } from "./WorkspacePanel.js";
@@ -18,13 +32,16 @@ import "./styles.css";
 
 type View = "setup" | "chats";
 
-const READ_KEY = "noir.read.sessions";
-const TABS_KEY = "noir.tabs";
+type ListMode = "chats" | "files";
 
-interface StoredTabs {
-  open: string[];
-  active?: string;
+/** One open editor document: the text last read from (or written to) disk, and the editable draft. */
+interface DocumentState {
+  text: string;
+  draft: string;
+  mtimeMs: number;
 }
+
+const READ_KEY = "noir.read.sessions";
 
 function loadJson<T>(key: string, fallback: T): T {
   try {
@@ -47,7 +64,7 @@ export function App() {
   const [status, setStatus] = useState("connecting");
   const [engineDir, setEngineDir] = useState<string | undefined>(undefined);
   const [view, setView] = useState<View>("setup");
-  const [, , toggleTheme] = useTheme();
+  const [theme, , toggleTheme] = useTheme();
 
   const [projects, setProjects] = useState<ProjectView[]>([]);
   const [workspaces, setWorkspaces] = useState<WorkspaceView[]>([]);
@@ -55,18 +72,46 @@ export function App() {
   const [sessions, setSessions] = useState<SessionView[]>([]);
   const [workspaceId, setWorkspaceId] = useState("");
   const [newChatModelId, setNewChatModelId] = useState("");
-  const [openIds, setOpenIds] = useState<string[]>(() => loadJson<StoredTabs>(TABS_KEY, { open: [] }).open);
-  const [activeId, setActiveId] = useState<string | undefined>(() => loadJson<StoredTabs>(TABS_KEY, { open: [] }).active);
+  const [tabState, setTabState] = useState<TabsState>(() =>
+    loadTabs(loadJson<unknown>(TABS_KEY, loadJson<unknown>("noir.tabs", null))),
+  );
+  const [documents, setDocuments] = useState<Record<string, DocumentState>>({});
+  const [listMode, setListMode] = useState<ListMode>("chats");
+  const [quickOpen, setQuickOpen] = useState(false);
   const [read, setRead] = useState<ReadState>(() => loadJson<ReadState>(READ_KEY, {}));
   const [filter, setFilter] = useState<SessionFilter>("all");
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | undefined>(undefined);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+
+  const activeTab = tabState.tabs.find((tab) => tab.id === tabState.active);
+  const activeChatId =
+    activeTab?.kind === "chat"
+      ? activeTab.sessionId
+      : tabState.tabs.filter((tab) => tab.kind === "chat").at(-1)?.sessionId;
   // Subscribe only once the socket is up: a restored tab mounts before `loadAll` connects, and a
   // subscribe request on a cold socket fails without retrying.
-  const events = useSessionEvents(status === "kernel ok" ? (activeId ?? "") : "", request);
+  const events = useSessionEvents(status === "kernel ok" ? (activeChatId ?? "") : "", request);
   const refreshTimer = useRef<number | undefined>(undefined);
+  // Every asynchronous document read/write records the generation it started in; a workspace
+  // switch bumps it so a late response cannot overwrite state belonging to another workspace.
+  const generation = useRef(0);
+  const tabsRef = useRef<readonly { kind: string; path?: string }[]>(tabState.tabs);
+  const documentsRef = useRef(documents);
+  const readWorkspace = useRef<string | undefined>(undefined);
+
+  useEffect(() => {
+    tabsRef.current = tabState.tabs;
+  }, [tabState]);
+
+  useEffect(() => {
+    documentsRef.current = documents;
+  }, [documents]);
+
+  useEffect(() => {
+    storeJson(TABS_KEY, tabState);
+  }, [tabState]);
 
   const loadSessions = useCallback(async (): Promise<SessionView[]> => {
     const result = await request<{ sessions: SessionView[] }>("session.list");
@@ -119,58 +164,129 @@ export function App() {
     };
   }, [loadSessions]);
 
-  // Keep the read watermark on the active session so "Unread" means "not opened since it changed".
+  // Keep the read watermark on the active chat so "Unread" means "not opened since it changed".
   useEffect(() => {
-    if (activeId === undefined) return;
-    const session = sessions.find((candidate) => candidate.id === activeId);
+    if (activeChatId === undefined) return;
+    const session = sessions.find((candidate) => candidate.id === activeChatId);
     if (session === undefined) return;
-    setRead((current) => (current[activeId] === session.lastEventSeq ? current : { ...current, [activeId]: session.lastEventSeq }));
-  }, [activeId, sessions]);
+    setRead((current) => (current[activeChatId] === session.lastEventSeq ? current : { ...current, [activeChatId]: session.lastEventSeq }));
+  }, [activeChatId, sessions]);
 
   useEffect(() => {
     storeJson(READ_KEY, read);
   }, [read]);
 
+  // Paths are workspace-relative, so a workspace switch must re-read every open editor document;
+  // drafts that belonged to the previous workspace are dropped with an explicit notice.
   useEffect(() => {
-    const stored: StoredTabs = { open: openIds };
-    if (activeId !== undefined) stored.active = activeId;
-    storeJson(TABS_KEY, stored);
-  }, [openIds, activeId]);
-
-  // Drop tabs whose sessions no longer exist (a fresh database, or rows removed by hand).
-  useEffect(() => {
-    if (sessions.length === 0) return;
-    const known = new Set(sessions.map((session) => session.id));
-    setOpenIds((current) => {
-      const kept = current.filter((id) => known.has(id));
-      return kept.length === current.length ? current : kept;
-    });
-    setActiveId((current) => (current !== undefined && known.has(current) ? current : undefined));
-  }, [sessions]);
+    generation.current += 1;
+    const started = generation.current;
+    if (workspaceId === "" || status !== "kernel ok") return;
+    const switched = readWorkspace.current !== undefined && readWorkspace.current !== workspaceId;
+    readWorkspace.current = workspaceId;
+    const paths = tabsRef.current.flatMap((tab) => (tab.kind === "editor" && typeof tab.path === "string" ? [tab.path] : []));
+    if (paths.length === 0) return;
+    if (switched) {
+      setDocuments((current) => {
+        const next = { ...current };
+        for (const path of paths) delete next[path];
+        return next;
+      });
+      const dropped = paths.filter((path) => {
+        const document = documentsRef.current[path];
+        return document !== undefined && document.draft !== document.text;
+      });
+      if (dropped.length > 0) setError(`Unsaved changes discarded for ${dropped.join(", ")}`);
+    }
+    const pending = paths.filter((path) => switched || documentsRef.current[path] === undefined);
+    void (async () => {
+      for (const path of pending) {
+        try {
+          const file = await request<{ content: string; mtimeMs: number }>("fs.read", { workspaceId, path });
+          if (started !== generation.current) return;
+          setDocuments((current) => ({ ...current, [path]: { text: file.content, draft: file.content, mtimeMs: file.mtimeMs } }));
+        } catch (cause) {
+          if (started !== generation.current) return;
+          setError(cause instanceof Error ? cause.message : `Could not read ${path}`);
+        }
+      }
+    })();
+  }, [request, status, workspaceId]);
 
   const workspaceSessions = sessions.filter((session) => workspaceId === "" || session.workspaceId === workspaceId);
-  const activeSession = sessions.find((session) => session.id === activeId);
-  const openSessions = openIds
-    .map((id) => sessions.find((session) => session.id === id))
-    .filter((session): session is SessionView => session !== undefined);
+  const activeSession = activeTab?.kind === "chat" ? sessions.find((session) => session.id === activeTab.sessionId) : undefined;
   const running = workspaceSessions.filter((session) => session.status === "running" || session.status === "starting").length;
   const pendingApprovals = workspaceSessions.filter((session) => session.pendingApproval).length;
 
+  // Task 11 replaces this stub with the real `git.status` refresh.
+  const refreshGit = useCallback(async (): Promise<void> => undefined, []);
+
+  // `noUncheckedIndexedAccess` does not narrow a repeated `documents[path]` read; resolve it once.
+  const editorPath = activeTab?.kind === "editor" ? activeTab.path : undefined;
+  const editorDocument = editorPath === undefined ? undefined : documents[editorPath];
+
+  const dirty = (path: string): boolean => {
+    const document = documents[path];
+    return document !== undefined && document.draft !== document.text;
+  };
+
+  const openFile = useCallback(async (path: string): Promise<void> => {
+    setTabState((current) => openTab(current, editorTab(path)));
+    if (workspaceId === "" || documents[path] !== undefined) return;
+    const started = generation.current;
+    try {
+      const file = await request<{ content: string; mtimeMs: number }>("fs.read", { workspaceId, path });
+      // Ignore a response whose workspace and tab are no longer the state this read started from.
+      if (started !== generation.current) return;
+      if (!tabsRef.current.some((tab) => tab.kind === "editor" && tab.path === path)) return;
+      setDocuments((current) => ({ ...current, [path]: { text: file.content, draft: file.content, mtimeMs: file.mtimeMs } }));
+    } catch (cause) {
+      if (started !== generation.current) return;
+      setError(cause instanceof Error ? cause.message : `Could not open ${path}`);
+    }
+  }, [documents, request, workspaceId]);
+
+  const saveActive = useCallback(async (): Promise<void> => {
+    const tab = tabState.tabs.find((candidate) => candidate.id === tabState.active);
+    if (tab?.kind !== "editor" || workspaceId === "") return;
+    const document = documents[tab.path];
+    if (document === undefined || document.draft === document.text) return;
+    const started = generation.current;
+    try {
+      const saved = await request<{ mtimeMs: number }>("fs.write", {
+        workspaceId,
+        path: tab.path,
+        content: document.draft,
+        expectedMtimeMs: document.mtimeMs,
+      });
+      if (started !== generation.current) return;
+      setDocuments((current) => {
+        const latest = current[tab.path];
+        // Keep a draft typed while the write was in flight; only the disk copy moved.
+        return latest === undefined
+          ? current
+          : { ...current, [tab.path]: { text: document.draft, draft: latest.draft, mtimeMs: saved.mtimeMs } };
+      });
+      setError(undefined);
+      void refreshGit();
+    } catch (cause) {
+      if (started !== generation.current) return;
+      setError(cause instanceof Error ? cause.message : `Could not save ${tab.path}`);
+    }
+  }, [documents, request, tabState, workspaceId, refreshGit]);
+
   function openSession(session: SessionView): void {
-    setOpenIds((current) => (current.includes(session.id) ? current : [...current, session.id]));
-    setActiveId(session.id);
+    setTabState((current) => openTab(current, chatTab(session.id)));
   }
 
-  function closeTab(sessionId: string): void {
-    setOpenIds((current) => {
-      const index = current.indexOf(sessionId);
-      const next = current.filter((id) => id !== sessionId);
-      if (sessionId === activeId) {
-        const fallback = next[Math.min(index, Math.max(next.length - 1, 0))];
-        setActiveId(fallback);
-      }
-      return next;
-    });
+  function closeTabById(id: string): void {
+    const tab = tabState.tabs.find((candidate) => candidate.id === id);
+    // A dirty editor tab must not lose its edits to a stray ⌘W; saving or reverting comes first.
+    if (tab?.kind === "editor" && dirty(tab.path)) {
+      setError(`${tab.path} has unsaved changes — save with ⌘S before closing`);
+      return;
+    }
+    setTabState((current) => closeTab(current, id));
   }
 
   async function addProject(path: string): Promise<void> {
@@ -259,13 +375,32 @@ export function App() {
       run: () => void newChat(),
     },
     {
+      id: "open-file",
+      label: "Open file",
+      keywords: "quick open goto",
+      shortcut: { key: "p", mod: true },
+      enabled: workspaceId !== "" && view === "chats",
+      allowInInput: true,
+      run: () => setQuickOpen(true),
+    },
+    {
+      id: "save-file",
+      label: "Save file",
+      keywords: "write disk",
+      shortcut: { key: "s", mod: true },
+      enabled: activeTab?.kind === "editor" && dirty(activeTab.path),
+      allowInInput: true,
+      run: () => void saveActive(),
+    },
+    {
       id: "close-tab",
-      label: "Close chat tab",
+      label: "Close tab",
       keywords: "close tab",
       shortcut: { key: "w", mod: true },
-      enabled: activeId !== undefined,
+      enabled: tabState.active !== undefined,
+      allowInInput: true,
       run: () => {
-        if (activeId !== undefined) closeTab(activeId);
+        if (tabState.active !== undefined) closeTabById(tabState.active);
       },
     },
     {
@@ -280,7 +415,7 @@ export function App() {
       label: "Focus the composer",
       keywords: "prompt message input",
       shortcut: { key: "j", mod: true },
-      enabled: activeId !== undefined,
+      enabled: activeTab?.kind === "chat",
       allowInInput: true,
       run: () => {
         const prompt = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Prompt"]');
@@ -292,11 +427,11 @@ export function App() {
       label: "Interrupt the running turn",
       keywords: "stop cancel",
       shortcut: { key: ".", mod: true },
-      enabled: activeId !== undefined && (events.state.status === "running" || events.state.status === "waiting"),
+      enabled: activeChatId !== undefined && (events.state.status === "running" || events.state.status === "waiting"),
       allowInInput: true,
       run: () => {
-        if (activeId === undefined) return;
-        void request("session.interrupt", { sessionId: activeId }).catch((interruptError: unknown) => {
+        if (activeChatId === undefined) return;
+        void request("session.interrupt", { sessionId: activeChatId }).catch((interruptError: unknown) => {
           setError(interruptError instanceof Error ? interruptError.message : "Could not interrupt the turn");
         });
       },
@@ -321,10 +456,10 @@ export function App() {
       id: "copy-session-id",
       label: "Copy session id",
       keywords: "clipboard identifier",
-      enabled: activeId !== undefined,
+      enabled: activeChatId !== undefined,
       run: () => {
-        if (activeId === undefined) return;
-        void navigator.clipboard?.writeText(activeId).catch(() => undefined);
+        if (activeChatId === undefined) return;
+        void navigator.clipboard?.writeText(activeChatId).catch(() => undefined);
       },
     },
     {
@@ -350,6 +485,17 @@ export function App() {
       onClose={() => setPaletteOpen(false)}
     />
   ) : null;
+
+  const listModeSwitch = (
+    <div className="list-mode" role="group" aria-label="List pane">
+      <button type="button" aria-pressed={listMode === "chats"} onClick={() => setListMode("chats")}>
+        Chat list
+      </button>
+      <button type="button" aria-pressed={listMode === "files"} onClick={() => setListMode("files")}>
+        File list
+      </button>
+    </div>
+  );
 
   if (view === "setup" || models.length === 0) {
     return (
@@ -398,6 +544,7 @@ export function App() {
         topbar={topbar}
         list={
           <>
+            {listModeSwitch}
             <WorkspacePanel
               projects={projects}
               workspaces={workspaces}
@@ -406,57 +553,108 @@ export function App() {
               onAddProject={addProject}
               onCreateWorkspace={createWorkspace}
             />
-            <section aria-label="Sessions" className="sessions-region">
-              <div className="new-chat-row">
-                <label>
-                  New chat model
-                  <select
-                    aria-label="New chat model"
-                    value={newChatModelId}
-                    onChange={(event) => setNewChatModelId(event.target.value)}
-                  >
-                    {models.map((model) => (
-                      <option key={model.id} value={model.id}>
-                        {model.displayName}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-              <SessionList
-                sessions={workspaceSessions}
-                models={models}
-                activeId={activeId}
-                read={read}
-                filter={filter}
-                onFilterChange={setFilter}
-                query={query}
-                onQueryChange={setQuery}
-                onSelect={openSession}
-                onNewChat={() => void newChat()}
-                canCreate={workspaceId !== ""}
+            {listMode === "files" ? (
+              <FileTree
+                request={request}
+                workspaceId={workspaceId}
+                activePath={activeTab?.kind === "editor" ? activeTab.path : undefined}
+                onOpenFile={(path) => void openFile(path)}
               />
-            </section>
+            ) : (
+              <section aria-label="Sessions" className="sessions-region">
+                <div className="new-chat-row">
+                  <label>
+                    New chat model
+                    <select
+                      aria-label="New chat model"
+                      value={newChatModelId}
+                      onChange={(event) => setNewChatModelId(event.target.value)}
+                    >
+                      {models.map((model) => (
+                        <option key={model.id} value={model.id}>
+                          {model.displayName}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <SessionList
+                  sessions={workspaceSessions}
+                  models={models}
+                  activeId={activeTab?.kind === "chat" ? activeTab.sessionId : undefined}
+                  read={read}
+                  filter={filter}
+                  onFilterChange={setFilter}
+                  query={query}
+                  onQueryChange={setQuery}
+                  onSelect={openSession}
+                  onNewChat={() => void newChat()}
+                  canCreate={workspaceId !== ""}
+                />
+              </section>
+            )}
           </>
         }
         main={
           <>
             {error === undefined ? null : <p role="alert">{error}</p>}
-            <Tabs sessions={openSessions} activeId={activeId} onSelect={setActiveId} onClose={closeTab} />
-            {activeSession === undefined ? (
+            <TabStrip
+              tabs={tabState.tabs}
+              activeId={tabState.active}
+              onSelect={(id) => setTabState((current) => activateTab(current, id))}
+              onClose={closeTabById}
+              titles={Object.fromEntries(sessions.map((session) => [session.id, session.title]))}
+              dirty={dirty}
+            />
+            {activeTab === undefined ? (
               <p className="empty">
                 {workspaces.length === 0 ? "Add a workspace to start." : "Create a chat to start talking to the agent."}
               </p>
+            ) : activeTab.kind === "chat" ? (
+              activeSession === undefined ? null : (
+                <Chat
+                  key={activeSession.id}
+                  session={activeSession}
+                  models={models}
+                  request={request}
+                  events={events}
+                  onSessionChange={() => void loadSessions().catch(() => undefined)}
+                />
+              )
+            ) : activeTab.kind === "editor" ? (
+              <section aria-label="Editor" className="editor-pane">
+                {editorDocument === undefined ? (
+                  <p className="empty">
+                    {workspaceId === "" ? "Select a workspace to read this file." : `Loading ${activeTab.path}…`}
+                  </p>
+                ) : (
+                  <MonacoEditor
+                    path={activeTab.path}
+                    value={editorDocument.draft}
+                    theme={theme}
+                    onChange={(draft) =>
+                      setDocuments((current) => {
+                        const document = current[activeTab.path];
+                        return document === undefined ? current : { ...current, [activeTab.path]: { ...document, draft } };
+                      })
+                    }
+                  />
+                )}
+              </section>
             ) : (
-              <Chat
-                key={activeSession.id}
-                session={activeSession}
-                models={models}
-                request={request}
-                events={events}
-                onSessionChange={() => void loadSessions().catch(() => undefined)}
-              />
+              <DiffView request={request} workspaceId={workspaceId} path={activeTab.path} />
             )}
+            {quickOpen ? (
+              <QuickOpen
+                request={request}
+                workspaceId={workspaceId}
+                onPick={(path) => {
+                  setQuickOpen(false);
+                  void openFile(path);
+                }}
+                onClose={() => setQuickOpen(false)}
+              />
+            ) : null}
           </>
         }
         {...(inspectorOpen
