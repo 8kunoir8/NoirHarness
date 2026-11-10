@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   SkillListResult,
   SkillReadResult,
-  SkillSetEnabledResult,
   type SkillScopeSchema,
   type SkillView,
 } from "@noir/protocol";
@@ -76,19 +75,21 @@ export function Skills({ workspaceId, request }: SkillsProps) {
   const selectionTicket = useRef(0);
   const selection = useRef<SkillRef | undefined>(undefined);
 
-  const load = useCallback(async (): Promise<SkillListResult | undefined> => {
-    const ticket = generation.current;
-    try {
-      const result = SkillListResult.parse(await request<unknown>("skill.list", { workspaceId }));
-      if (generation.current !== ticket) return undefined;
-      setList(result);
-      setError(undefined);
-      return result;
-    } catch (loadError) {
-      if (generation.current === ticket) setError(errorMessage(loadError));
-      return undefined;
-    }
-  }, [request, workspaceId]);
+  const load = useCallback(
+    async (ticket: number, workspace: string): Promise<SkillListResult | undefined> => {
+      try {
+        const result = SkillListResult.parse(await request<unknown>("skill.list", { workspaceId: workspace }));
+        if (generation.current !== ticket) return undefined;
+        setList(result);
+        setError(undefined);
+        return result;
+      } catch (loadError) {
+        if (generation.current === ticket) setError(errorMessage(loadError));
+        return undefined;
+      }
+    },
+    [request],
+  );
 
   useEffect(() => {
     generation.current += 1;
@@ -99,21 +100,21 @@ export function Skills({ workspaceId, request }: SkillsProps) {
     setSelected(undefined);
     setBody(undefined);
     if (workspaceId === "") return;
-    void load();
+    void load(generation.current, workspaceId);
   }, [workspaceId, load]);
 
-  async function readBody(skill: SkillRef): Promise<void> {
+  async function readBody(skill: SkillRef, ticket: number, workspace: string): Promise<void> {
     selectionTicket.current += 1;
-    const ticket = selectionTicket.current;
+    const selectionNow = selectionTicket.current;
     try {
       const result = SkillReadResult.parse(
-        await request<unknown>("skill.read", { workspaceId, scope: skill.scope, name: skill.name }),
+        await request<unknown>("skill.read", { workspaceId: workspace, scope: skill.scope, name: skill.name }),
       );
-      if (selectionTicket.current !== ticket) return;
+      if (generation.current !== ticket || selectionTicket.current !== selectionNow) return;
       setBody(result.content);
       setError(undefined);
     } catch (readError) {
-      if (selectionTicket.current !== ticket) return;
+      if (generation.current !== ticket || selectionTicket.current !== selectionNow) return;
       setError(errorMessage(readError));
     }
   }
@@ -122,27 +123,32 @@ export function Skills({ workspaceId, request }: SkillsProps) {
     selection.current = skill;
     setSelected(skill);
     setBody(undefined);
-    void readBody(skill);
+    void readBody(skill, generation.current, workspaceId);
   }
 
   async function toggle(skill: SkillView): Promise<void> {
+    const ticket = generation.current;
+    const workspace = workspaceId;
     setBusy(true);
     try {
-      const result = SkillSetEnabledResult.parse(
-        await request<unknown>("skill.setEnabled", {
-          workspaceId,
-          scope: skill.scope,
-          name: skill.name,
-          enabled: !skill.enabled,
-        }),
-      );
-      if (!result.ok) return;
-      const next = await load();
+      await request<unknown>("skill.setEnabled", {
+        workspaceId: workspace,
+        scope: skill.scope,
+        name: skill.name,
+        enabled: !skill.enabled,
+      });
+      if (generation.current !== ticket) return;
+      const next = await load(ticket, workspace);
       if (next === undefined) return;
       // Keep the viewer in sync when the row the user is reading is the one they just toggled.
-      if (sameSkill(selection.current, skill)) void readBody(skill);
+      if (sameSkill(selection.current, skill)) void readBody(skill, ticket, workspace);
     } catch (toggleError) {
-      setError(errorMessage(toggleError));
+      if (generation.current !== ticket) return;
+      const message = `${skill.name}: ${errorMessage(toggleError)}`;
+      // Reload so the row reflects whatever the kernel actually kept after the failed write.
+      await load(ticket, workspace);
+      if (generation.current !== ticket) return;
+      setError(message);
     } finally {
       setBusy(false);
     }
@@ -220,7 +226,7 @@ export function Skills({ workspaceId, request }: SkillsProps) {
         {selected === undefined ? (
           <p className="skills-empty">Select a skill</p>
         ) : body === undefined ? (
-          <p className="skills-empty">{`Loading ${selected.name}…`}</p>
+          <p className="skills-empty" role="status">{`Loading ${selected.name}…`}</p>
         ) : (
           <pre>{body}</pre>
         )}

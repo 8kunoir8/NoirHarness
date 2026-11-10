@@ -1,6 +1,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+import { SkillListParams } from "@noir/protocol";
 import type { RequestFn } from "../src/renderer/api.js";
 import { Skills } from "../src/renderer/Skills.js";
 
@@ -96,5 +97,71 @@ describe("Skills", () => {
     await waitFor(() =>
       expect(screen.getByRole("status").textContent).toContain("skills directory unreadable"),
     );
+  });
+
+  it("names the skill in a failed toggle and refreshes the list", async () => {
+    const calls: string[] = [];
+    const request = vi.fn(async (method: string): Promise<unknown> => {
+      calls.push(method);
+      if (method === "skill.list") {
+        return {
+          skills: [
+            { scope: "global", name: "stubborn", description: "won't move", hash: "s".repeat(64), enabled: true },
+          ],
+          shadowed: [],
+          warnings: [],
+        };
+      }
+      if (method === "skill.setEnabled") throw new Error("write failed");
+      throw new Error(method);
+    }) as unknown as RequestFn;
+
+    render(<Skills workspaceId="ws-1" request={request} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Disable stubborn" }));
+
+    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("write failed"));
+    expect(screen.getByRole("status").textContent).toContain("stubborn");
+    expect(calls.filter((method) => method === "skill.list")).toHaveLength(2);
+  });
+
+  it("keeps the new workspace's rows when a toggle settles after a switch", async () => {
+    const { promise: pendingToggle, resolve: finishToggle } = Promise.withResolvers<void>();
+    const listCalls: string[] = [];
+    const request = vi.fn(async (method: string, params: unknown): Promise<unknown> => {
+      if (method === "skill.setEnabled") {
+        await pendingToggle;
+        return { ok: true };
+      }
+      if (method === "skill.list") {
+        const workspaceId = SkillListParams.parse(params).workspaceId ?? "";
+        listCalls.push(workspaceId);
+        return {
+          skills: [
+            {
+              scope: "global",
+              name: workspaceId === "ws-1" ? "alpha" : "beta",
+              description: workspaceId,
+              hash: "a".repeat(64),
+              enabled: true,
+            },
+          ],
+          shadowed: [],
+          warnings: [],
+        };
+      }
+      throw new Error(method);
+    }) as unknown as RequestFn;
+
+    const { rerender } = render(<Skills workspaceId="ws-1" request={request} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Disable alpha" }));
+
+    rerender(<Skills workspaceId="ws-2" request={request} />);
+    await waitFor(() => expect(screen.getByRole("region", { name: "Global skills" }).textContent).toContain("beta"));
+
+    finishToggle?.();
+    await waitFor(() =>
+      expect(screen.getByRole("region", { name: "Global skills" }).textContent).not.toContain("alpha"),
+    );
+    expect(listCalls).toEqual(["ws-1", "ws-2"]);
   });
 });

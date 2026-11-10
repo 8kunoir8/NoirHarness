@@ -665,7 +665,7 @@ button.diff-gutter:hover, button.diff-gutter:focus-visible { color: var(--accent
 .skills-row-selected { border-color: var(--accent, var(--muted)); }
 .skills-row-shadowed { color: var(--muted); font-size: 0.84rem; }
 .skills-row-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.skills-hash { font-family: var(--font-mono); font-size: 0.72rem; color: var(--muted); }
+.skills-hash { font-size: 0.72rem; color: var(--muted); }
 .skills-description { margin: 0; color: var(--muted); font-size: 0.84rem; }
 .skills-empty { color: var(--muted); font-size: 0.84rem; }
 .skills-warnings { margin: 0; color: var(--warning); font-size: 0.78rem; }
@@ -676,7 +676,6 @@ button.diff-gutter:hover, button.diff-gutter:focus-visible { color: var(--accent
   padding: 10px 12px;
   background: var(--surface-sunken);
   border-radius: var(--radius);
-  font-family: var(--font-mono);
   font-size: 0.8rem;
   line-height: 1.5;
   white-space: pre-wrap;

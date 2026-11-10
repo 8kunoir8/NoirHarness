@@ -20,8 +20,8 @@ import { MonacoEditor } from "./MonacoEditor.js";
 import { QuickOpen } from "./QuickOpen.js";
 import { SessionList, type ReadState, type SessionFilter } from "./SessionList.js";
 import { Setup } from "./Setup.js";
-import { Skills } from "./Skills.js";
 import { Shell } from "./Shell.js";
+import { Skills } from "./Skills.js";
 import { StatusBar } from "./StatusBar.js";
 import { TabStrip } from "./TabStrip.js";
 import {
@@ -736,7 +736,7 @@ export function App() {
     </div>
   );
 
-  if (view === "setup" || models.length === 0) {
+  if (view === "setup" || (models.length === 0 && view !== "skills")) {
     return (
       <>
         <Shell
@@ -836,7 +836,10 @@ export function App() {
         }
         main={
           view === "skills" ? (
-            <Skills workspaceId={workspaceId} request={request} />
+            <>
+              {error === undefined ? null : <p role="alert">{error}</p>}
+              <Skills key={workspaceId} workspaceId={workspaceId} request={request} />
+            </>
           ) : (
             <>
               {error === undefined ? null : <p role="alert">{error}</p>}
