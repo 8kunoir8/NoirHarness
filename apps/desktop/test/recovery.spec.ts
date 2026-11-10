@@ -14,12 +14,18 @@ test("recovers a crashed session to error and resumes on the next prompt", async
     await bootstrap(page, mock, harness.workspacePath);
     await page.getByLabel("Prompt", { exact: true }).fill("slow");
     await page.getByRole("button", { name: "Send" }).click();
-    await expect(page.locator(".composer")).toHaveAttribute("data-state", "streaming", { timeout: 20_000 });
+    // `starting` also reports `streaming`, so wait for the engine to actually reach the provider:
+    // the mock writes its first delta the moment it receives the prompt.
+    await expect.poll(() => mock.prompts(), { timeout: 30_000 }).toContain("slow");
 
     // The kernel dies mid-turn, exactly as a crash would: no shutdown, no status update.
     await killKernel(harness.dataDir);
-    await app.close().catch(() => undefined);
-    app = undefined;
+    try {
+      await app.close();
+      app = undefined;
+    } catch {
+      // Leave `app` set so the finally block retries the close.
+    }
     await waitForKernelExit(harness.dataDir).catch(() => undefined);
 
     app = await launchApp(harness);
@@ -44,8 +50,12 @@ test("recovers a crashed session to error and resumes on the next prompt", async
 
     // Clear the keyring entry while the kernel is still up; a spec must not leave a credential behind.
     await deleteProviderThroughKernel(harness.dataDir, "Mock").catch(() => undefined);
-    await app.close().catch(() => undefined);
-    app = undefined;
+    try {
+      await app.close();
+      app = undefined;
+    } catch {
+      // Leave `app` set so the finally block retries the close.
+    }
   } finally {
     if (app !== undefined) await deleteProviderThroughKernel(harness.dataDir, "Mock").catch(() => undefined);
     await app?.close().catch(() => undefined);
