@@ -390,6 +390,35 @@ describe("EngineManager over the fake ACP server", () => {
   );
 
   it(
+    "drops a queued turn without inventing events for it",
+    async () => {
+      const { db, events, manager, session } = setup();
+      await manager.prompt({
+        sessionId: session.id,
+        requestId: "cancel-queued-running",
+        content: [{ type: "text", text: "slow" }],
+      });
+      await waitForEvent(events, session.id, (event) => event.type === "message.delta");
+      const queued = await manager.prompt({
+        sessionId: session.id,
+        requestId: "cancel-queued-waiting",
+        content: [{ type: "text", text: "later" }],
+      });
+      expect(queued.queued).toBe(true);
+
+      expect(await manager.cancelQueued({ sessionId: session.id, turnId: queued.turnId })).toEqual({ cancelled: true });
+      expect(await manager.cancelQueued({ sessionId: session.id, turnId: queued.turnId })).toEqual({ cancelled: false });
+      expect(events.list(session.id).filter((event) => event.turnId === queued.turnId)).toEqual([]);
+      expect(db.prepare("SELECT id FROM turns WHERE id = ?").get(queued.turnId)).toBeUndefined();
+
+      // Cancelling the queued turn leaves the running turn alone.
+      expect((await manager.interrupt(session.id)).interrupted).toBe(true);
+      await waitForEvent(events, session.id, (event) => event.type === "turn.completed");
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
     "fails the turn and the session when the engine dies mid-turn",
     async () => {
       const { db, events, manager, session } = setup();

@@ -15,6 +15,7 @@ import {
   ProviderDeleteParams,
   SessionCloseParams,
   SessionCreateParams,
+  SessionCancelQueuedParams,
   SessionInterruptParams,
   SessionPromptParams,
   SessionSetModelParams,
@@ -214,6 +215,8 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
         [Methods.sessionList]: async () => ({ sessions: sessions.list() }),
         [Methods.sessionPrompt]: async (params) => engineManager.prompt(SessionPromptParams.parse(params)),
         [Methods.sessionInterrupt]: async (params) => engineManager.interrupt(SessionInterruptParams.parse(params).sessionId),
+        [Methods.sessionCancelQueued]: async (params) =>
+          engineManager.cancelQueued(SessionCancelQueuedParams.parse(params)),
         [Methods.sessionClose]: async (params) => {
           await engineManager.closeSession(SessionCloseParams.parse(params).sessionId);
           return { ok: true };

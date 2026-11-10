@@ -15,6 +15,7 @@ export const Methods = {
   modelDelete: "model.delete",
   sessionPrompt: "session.prompt",
   sessionInterrupt: "session.interrupt",
+  sessionCancelQueued: "session.cancelQueued",
   sessionClose: "session.close",
   sessionSetModel: "session.setModel",
   approvalRespond: "approval.respond",
@@ -81,8 +82,11 @@ export const SessionInterruptParams = z.object({ sessionId: z.string().min(1) })
 export type SessionInterruptParams = z.infer<typeof SessionInterruptParams>;
 export const SessionInterruptResult = z.object({ interrupted: z.boolean() });
 export type SessionInterruptResult = z.infer<typeof SessionInterruptResult>;
+export const SessionCancelQueuedParams = z.object({ sessionId: z.string().min(1), turnId: z.string().min(1) });
+export type SessionCancelQueuedParams = z.infer<typeof SessionCancelQueuedParams>;
+export const SessionCancelQueuedResult = z.object({ cancelled: z.boolean() });
+export type SessionCancelQueuedResult = z.infer<typeof SessionCancelQueuedResult>;
 export const SessionCloseParams = z.object({ sessionId: z.string().min(1) });
-export type SessionCloseParams = z.infer<typeof SessionCloseParams>;
 
 export const SessionSetModelParams = z.object({ sessionId: z.string().min(1), modelId: z.string().min(1) });
 export type SessionSetModelParams = z.infer<typeof SessionSetModelParams>;
