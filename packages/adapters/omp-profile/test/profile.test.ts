@@ -236,6 +236,43 @@ describe("renderModelsYaml", () => {
     expect(doc.providers["mock"]!.models).toEqual([{ id: "bare", contextWindow: 8000 }]);
   });
 
+  it("accepts a model id that contains slashes", () => {
+    const slashId = "meta-llama/Llama-3.3-70B";
+    const doc = parseModels(
+      renderModelsYaml(
+        [providers[0]!],
+        [
+          { providerName: "mock", modelId: slashId, contextWindow: 131_072 },
+          { providerName: "mock", modelId: "plain", contextWindow: 1000 },
+        ],
+        { providerName: "mock", modelId: slashId },
+      ),
+    );
+    expect(doc.providers["mock"]!.models.map((m) => m.id)).toEqual([slashId, "plain"]);
+  });
+
+  it("rejects whitespace in a model id", () => {
+    const error = collectError(() =>
+      renderModelsYaml(
+        [providers[0]!],
+        [{ providerName: "mock", modelId: "bad id", contextWindow: 1000 }],
+        { providerName: "mock", modelId: "bad id" },
+      ),
+    );
+    expect(error.message).toMatch(/model id "bad id" must not contain whitespace/);
+  });
+
+  it("rejects a provider name that contains a slash", () => {
+    const error = collectError(() =>
+      renderModelsYaml(
+        [{ name: "bad/name", baseUrl: "https://x.example/v1", apiKind: "openai-completions", apiKey: "k" }],
+        [],
+        { providerName: "bad/name", modelId: "m" },
+      ),
+    );
+    expect(error.message).toMatch(/provider "bad\/name" is not a valid provider name/);
+  });
+
   it("maps every ApiKind literal through API_KIND_TO_OMP", () => {
     const doc = parseModels(
       renderModelsYaml(
@@ -362,6 +399,19 @@ describe("renderConfigYaml", () => {
   it("rejects a role reference that is not <provider>/<model>", () => {
     const error = collectError(() => renderConfigYaml({ roles: { default: "no-slash" } }));
     expect(error.message).toMatch(/role "default"/);
+  });
+
+  it("accepts a role reference whose model id contains slashes", () => {
+    expect(renderConfigYaml({ roles: { default: "mock/meta-llama/Llama-3.3-70B" } })).toBe(
+      ["modelRoles:", "  default: mock/meta-llama/Llama-3.3-70B", ""].join("\n"),
+    );
+  });
+
+  it("rejects a role reference with an empty provider or model", () => {
+    for (const ref of ["/model", "mock/", "mock"]) {
+      const error = collectError(() => renderConfigYaml({ roles: { default: ref } }));
+      expect(error.message).toMatch(/role "default"/);
+    }
   });
 });
 

@@ -82,11 +82,28 @@ describe("startKernel", () => {
       name: "Local", baseUrl: "http://localhost:11434/v1", apiKind: "openai-completions", apiKey: "k",
     });
     const bad = await call(kernel.port, kernel.token, "model.create", {
-      providerId: provider.result.id, modelId: "openai/gpt-4o",
+      providerId: provider.result.id, modelId: "gpt 4o",
     });
     expect(bad.error).toBeDefined();
     const listed = await call(kernel.port, kernel.token, "model.list");
     expect(listed.result.models).toEqual([]);
+    await kernel.close();
+  });
+
+  it("keeps a model whose id contains slashes", async () => {
+    const dir = tempDir();
+    const kernel = await startKernel({ dataDir: dir });
+    const provider = await call(kernel.port, kernel.token, "provider.create", {
+      name: "Local", baseUrl: "http://localhost:11434/v1", apiKind: "openai-completions", apiKey: "k",
+    });
+    const created = await call(kernel.port, kernel.token, "model.create", {
+      providerId: provider.result.id, modelId: "openai/gpt-4o",
+    });
+    expect(created.error).toBeUndefined();
+    const rendered = readFileSync(join(profileAgentDir(dir), "models.yml"), "utf8");
+    expect(rendered).toContain("id: openai/gpt-4o");
+    const listed = await call(kernel.port, kernel.token, "model.list");
+    expect(listed.result.models.map((model: { modelId: string }) => model.modelId)).toEqual(["openai/gpt-4o"]);
     await kernel.close();
   });
 

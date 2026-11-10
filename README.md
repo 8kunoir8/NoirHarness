@@ -31,7 +31,10 @@ the **Setup** page (the app opens there until a model exists); the last two live
 1. **Provider.** Enter a name, base URL, API kind, and API key. The key is sent once over the local
    socket, kept in the OS keyring, and written only to the owner-only `models.yml` below so the
    engine can use it; it never enters SQLite, logs, or any RPC response.
-2. **Model.** Pick the provider and enter the model id, display name, and context window.
+2. **Model.** Pick the provider and enter the model id, display name, and context window. The id is
+   the model's own id (`gpt-4.1`, `claude-sonnet-4-5`) and may contain `/` when the provider uses
+   path-style ids (`meta-llama/Llama-3.3-70B`): the engine selector is `<provider>/<id>` and the
+   engine splits it at the first slash, so the id's slashes are preserved.
 3. **Workspace.** Add a project path, create a workspace for it, then select that workspace.
 4. **Chat.** Create a new chat on the workspace with a model, type a prompt, and press send.
 

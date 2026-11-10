@@ -53,21 +53,31 @@ const ROLE_ORDER = ["default", "smol", "slow", "plan", "commit"] as const;
 
 const PROVIDER_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
-/** Model selectors are `<providerName>/<modelId>`, so neither half may contain `/` or spaces. */
-function checkName(kind: string, value: string): void {
+/**
+ * Provider names are the left half of `<providerName>/<modelId>` and omp splits the selector at
+ * the first `/`, so a provider keeps the strict name rule.
+ */
+function checkProviderName(kind: string, value: string): void {
+  if (value.length === 0) throw new Error(`${kind} must not be empty`);
+  if (!PROVIDER_NAME.test(value)) throw new Error(`${kind} "${value}" is not a valid provider name`);
+}
+
+/**
+ * Model ids are the right half of the selector and may themselves contain `/` (for example
+ * `meta-llama/Llama-3.3-70B`); omp resolves the remainder of the selector as the id.
+ */
+function checkModelId(kind: string, value: string): void {
   if (value.length === 0) throw new Error(`${kind} must not be empty`);
   if (/\s/.test(value)) throw new Error(`${kind} "${value}" must not contain whitespace`);
-  if (value.includes("/")) throw new Error(`${kind} "${value}" must not contain "/"`);
 }
 
 function checkRef(kind: string, value: string): void {
   const slash = value.indexOf("/");
-  if (slash <= 0 || slash === value.length - 1) {
+  const provider = slash === -1 ? "" : value.slice(0, slash);
+  if (slash <= 0 || slash === value.length - 1 || !PROVIDER_NAME.test(provider)) {
     throw new Error(`${kind} "${value}" must be "<providerName>/<modelId>"`);
   }
-  if (value.indexOf("/", slash + 1) !== -1) {
-    throw new Error(`${kind} "${value}" must be "<providerName>/<modelId>"`);
-  }
+  checkModelId(`${kind} model id`, value.slice(slash + 1));
 }
 
 function modelDoc(model: ProfileModel): Record<string, unknown> {
@@ -110,9 +120,7 @@ export function renderModelsYaml(
 
   const known = new Set<string>();
   for (const provider of providers) {
-    if (!PROVIDER_NAME.test(provider.name)) {
-      throw new Error(`provider "${provider.name}" is not a valid provider name`);
-    }
+    checkProviderName("provider", provider.name);
     if (known.has(provider.name)) throw new Error(`duplicate provider "${provider.name}"`);
     if (provider.baseUrl.trim().length === 0) throw new Error(`provider "${provider.name}" has an empty baseUrl`);
     if (provider.apiKey.length === 0) throw new Error(`provider "${provider.name}" has an empty apiKey`);
@@ -122,7 +130,7 @@ export function renderModelsYaml(
   const grouped = new Map<string, ProfileModel[]>();
   const seen = new Set<string>();
   for (const model of models) {
-    checkName("model id", model.modelId);
+    checkModelId("model id", model.modelId);
     if (!known.has(model.providerName)) {
       throw new Error(
         `model "${model.providerName}/${model.modelId}" has no provider "${model.providerName}"`,
@@ -136,8 +144,8 @@ export function renderModelsYaml(
     else group.push(model);
   }
 
-  checkName("default model provider", defaultModel.providerName);
-  checkName("default model id", defaultModel.modelId);
+  checkProviderName("default model provider", defaultModel.providerName);
+  checkModelId("default model id", defaultModel.modelId);
   const defaultSelector = `${defaultModel.providerName}/${defaultModel.modelId}`;
   if (!seen.has(defaultSelector)) {
     throw new Error(`default model "${defaultSelector}" is not declared in models`);
