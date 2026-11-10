@@ -5,6 +5,7 @@ import { PayloadSchemas } from "./events.js";
 export interface MessageState { id: string; role: "user" | "assistant"; blocks: ContentBlock[]; status: "streaming" | "done" | "interrupted" | "failed"; }
 export interface ChangedFileState { path: string; change: "created" | "modified" | "deleted"; add: number; del: number; }
 export interface UsageState { inputTokens: number; outputTokens: number; contextUsed: number; contextWindow: number; costUsd: number; }
+export interface LoadedSkillState { name: string; scope: "global" | "project"; hash: string; }
 export interface SessionState {
   sessionId: string;
   status: SessionStatus;
@@ -12,6 +13,7 @@ export interface SessionState {
   messages: MessageState[];
   usage: UsageState;
   changedFiles: ChangedFileState[];
+  skillsLoaded: LoadedSkillState[];
 }
 
 function payload<T extends EventType>(e: AgentEvent, type: T): ZodInfer<(typeof PayloadSchemas)[T]> {
@@ -25,6 +27,7 @@ const EMPTY: Omit<SessionState, "sessionId"> = {
   messages: [],
   usage: { inputTokens: 0, outputTokens: 0, contextUsed: 0, contextWindow: 0, costUsd: 0 },
   changedFiles: [],
+  skillsLoaded: [],
 };
 
 export function reduceSession(state: SessionState | undefined, e: AgentEvent): SessionState {
@@ -59,6 +62,11 @@ export function reduceSession(state: SessionState | undefined, e: AgentEvent): S
     case "file.changed": {
       const p = payload(e, "file.changed");
       return { ...s, changedFiles: [...s.changedFiles.filter((f) => f.path !== p.path), { path: p.path, change: p.change, add: p.add, del: p.del }] };
+    }
+    case "skill.loaded": {
+      const p = payload(e, "skill.loaded");
+      if (s.skillsLoaded.some((skill) => skill.name === p.name)) return s;
+      return { ...s, skillsLoaded: [...s.skillsLoaded, { name: p.name, scope: p.scope, hash: p.hash }] };
     }
     default:
       return s;

@@ -77,11 +77,12 @@ export interface ChatState {
   lastTurn?: ChatTurn;
   files: ChatFile[];
   plan: ChatPlanItem[];
+  skillsLoaded: Array<{ name: string; scope: "global" | "project"; hash: string }>;
   lastSeq: number;
 }
 
 export function emptyChatState(sessionId?: string): ChatState {
-  const base: ChatState = { messages: [], tools: [], files: [], plan: [], status: "idle", lastSeq: 0 };
+  const base: ChatState = { messages: [], tools: [], files: [], plan: [], skillsLoaded: [], status: "idle", lastSeq: 0 };
   return sessionId === undefined ? base : { ...base, sessionId };
 }
 
@@ -257,6 +258,13 @@ export function reduceChat(state: ChatState, event: AgentEvent): ChatState {
     case "plan.updated": {
       const parsed = PayloadSchemas["plan.updated"].safeParse(event.payload);
       return parsed.success ? { ...next, plan: parsed.data.items } : next;
+    }
+    case "skill.loaded": {
+      const parsed = PayloadSchemas["skill.loaded"].safeParse(event.payload);
+      if (!parsed.success) return next;
+      const { name, scope, hash } = parsed.data;
+      if (next.skillsLoaded.some((skill) => skill.name === name)) return next;
+      return { ...next, skillsLoaded: [...next.skillsLoaded, { name, scope, hash }] };
     }
     default:
       return next;

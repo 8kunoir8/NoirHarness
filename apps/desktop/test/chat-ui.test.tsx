@@ -175,6 +175,26 @@ describe("Chat", () => {
     expect(sent[0]?.requestId).not.toBe(sent[1]?.requestId);
   });
 
+  it("shows loaded skills above the transcript", async () => {
+    const request = vi.fn(async (method: string, _params?: unknown): Promise<unknown> => {
+      if (method === "session.subscribe") {
+        return {
+          events: [
+            makeEvent(1, "session.status", { status: "running" }),
+            makeEvent(2, "skill.loaded", { name: "demo", scope: "project", hash: "a".repeat(64) }),
+          ],
+          lastSeq: 2,
+        };
+      }
+      throw new Error(method);
+    });
+
+    render(<ChatHarness request={request as unknown as RequestFn} />);
+    await waitFor(() =>
+      expect(screen.getByRole("group", { name: "Skills loaded" }).textContent).toContain("demo"),
+    );
+  });
+
   it("shows a failed request and keeps the draft", async () => {
     const request = vi.fn(async (method: string): Promise<unknown> => {
       if (method === "session.subscribe") return { events: [], lastSeq: 0 };

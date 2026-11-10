@@ -174,6 +174,16 @@ export function Chat({
         onModelChange={(modelId) => void changeModel(modelId)}
       />
 
+      {state.skillsLoaded.length === 0 ? null : (
+        <div className="chat-skills" role="group" aria-label="Skills loaded">
+          {state.skillsLoaded.map((skill) => (
+            <span key={skill.name} className="chat-skill" title={skill.hash.slice(0, 12)}>
+              {skill.name}
+            </span>
+          ))}
+        </div>
+      )}
+
       <ol className="messages">
         {state.messages.map((message) => (
           <li key={message.id} className={`message message-${message.role}`} data-testid={message.role === "assistant" ? "message-assistant" : undefined}>
