@@ -20,6 +20,7 @@ import { MonacoEditor } from "./MonacoEditor.js";
 import { QuickOpen } from "./QuickOpen.js";
 import { SessionList, type ReadState, type SessionFilter } from "./SessionList.js";
 import { Setup } from "./Setup.js";
+import { Skills } from "./Skills.js";
 import { Shell } from "./Shell.js";
 import { StatusBar } from "./StatusBar.js";
 import { TabStrip } from "./TabStrip.js";
@@ -42,7 +43,7 @@ import { useShortcuts } from "./useShortcuts.js";
 import { WorkspacePanel, type ProjectView, type WorkspaceView } from "./WorkspacePanel.js";
 import "./styles.css";
 
-type View = "setup" | "chats";
+type View = "setup" | "chats" | "skills";
 
 type ListMode = "chats" | "files";
 
@@ -238,7 +239,9 @@ export function App() {
       setSessions(sessionList.sessions);
       setNewChatModelId((current) => (current !== "" ? current : (modelResult.models[0]?.id ?? "")));
       setWorkspaceId((current) => current !== "" ? current : (workspaceResult.workspaces[0]?.id ?? ""));
-      setView((current) => (current === "chats" || modelResult.models.length === 0 ? current : "chats"));
+      setView((current) =>
+        current === "setup" && modelResult.models.length > 0 ? "chats" : current,
+      );
       setError(undefined);
     } catch (loadError) {
       setStatus("kernel error");
@@ -539,6 +542,9 @@ export function App() {
       >
         Chats
       </button>
+      <button type="button" aria-pressed={view === "skills"} onClick={() => setView("skills")} title="Skills">
+        Skills
+      </button>
       <button type="button" aria-pressed={view === "setup"} onClick={() => setView("setup")} title="Setup">
         Setup
       </button>
@@ -669,6 +675,13 @@ export function App() {
       shortcut: { key: ",", mod: true },
       enabled: true,
       run: () => setView("setup"),
+    },
+    {
+      id: "skills",
+      label: "Open skills",
+      keywords: "skills capabilities instructions",
+      enabled: workspaceId !== "",
+      run: () => setView("skills"),
     },
     {
       id: "switch-theme",
@@ -822,73 +835,77 @@ export function App() {
           </>
         }
         main={
-          <>
-            {error === undefined ? null : <p role="alert">{error}</p>}
-            <TabStrip
-              tabs={tabState.tabs}
-              activeId={tabState.active}
-              onSelect={(id) => setTabState((current) => activateTab(current, id))}
-              onClose={closeTabById}
-              titles={Object.fromEntries(sessions.map((session) => [session.id, session.title]))}
-              dirty={dirty}
-            />
-            {activeTab === undefined ? (
-              emptyMain
-            ) : activeTab.kind === "chat" ? (
-              activeSession === undefined ? (
-                emptyMain
-              ) : (
-                <Chat
-                  key={activeSession.id}
-                  session={activeSession}
-                  models={models}
-                  request={request}
-                  events={events}
-                  diffStats={diffStats}
-                  onSessionChange={() => void loadSessions().catch(() => undefined)}
-                />
-              )
-            ) : activeTab.kind === "editor" ? (
-              <section aria-label="Editor" className="editor-pane">
-                {editorDocument === undefined ? (
-                  editorFailure === undefined ? (
-                    <p className="empty">
-                      {workspaceId === "" ? "Select a workspace to read this file." : `Loading ${activeTab.path}…`}
-                    </p>
-                  ) : (
-                    <p role="status">
-                      Could not open {activeTab.path}: {editorFailure}
-                    </p>
-                  )
-                ) : (
-                  <MonacoEditor
-                    path={activeTab.path}
-                    value={editorDocument.draft}
-                    theme={theme}
-                    onChange={(draft) =>
-                      setDocuments((current) => {
-                        const document = current[activeTab.path];
-                        return document === undefined ? current : { ...current, [activeTab.path]: { ...document, draft } };
-                      })
-                    }
-                  />
-                )}
-              </section>
-            ) : (
-              <DiffView request={request} workspaceId={workspaceId} path={activeTab.path} />
-            )}
-            {quickOpen ? (
-              <QuickOpen
-                request={request}
-                workspaceId={workspaceId}
-                onPick={(path) => {
-                  setQuickOpen(false);
-                  void openFile(path);
-                }}
-                onClose={() => setQuickOpen(false)}
+          view === "skills" ? (
+            <Skills workspaceId={workspaceId} request={request} />
+          ) : (
+            <>
+              {error === undefined ? null : <p role="alert">{error}</p>}
+              <TabStrip
+                tabs={tabState.tabs}
+                activeId={tabState.active}
+                onSelect={(id) => setTabState((current) => activateTab(current, id))}
+                onClose={closeTabById}
+                titles={Object.fromEntries(sessions.map((session) => [session.id, session.title]))}
+                dirty={dirty}
               />
-            ) : null}
-          </>
+              {activeTab === undefined ? (
+                emptyMain
+              ) : activeTab.kind === "chat" ? (
+                activeSession === undefined ? (
+                  emptyMain
+                ) : (
+                  <Chat
+                    key={activeSession.id}
+                    session={activeSession}
+                    models={models}
+                    request={request}
+                    events={events}
+                    diffStats={diffStats}
+                    onSessionChange={() => void loadSessions().catch(() => undefined)}
+                  />
+                )
+              ) : activeTab.kind === "editor" ? (
+                <section aria-label="Editor" className="editor-pane">
+                  {editorDocument === undefined ? (
+                    editorFailure === undefined ? (
+                      <p className="empty">
+                        {workspaceId === "" ? "Select a workspace to read this file." : `Loading ${activeTab.path}…`}
+                      </p>
+                    ) : (
+                      <p role="status">
+                        Could not open {activeTab.path}: {editorFailure}
+                      </p>
+                    )
+                  ) : (
+                    <MonacoEditor
+                      path={activeTab.path}
+                      value={editorDocument.draft}
+                      theme={theme}
+                      onChange={(draft) =>
+                        setDocuments((current) => {
+                          const document = current[activeTab.path];
+                          return document === undefined ? current : { ...current, [activeTab.path]: { ...document, draft } };
+                        })
+                      }
+                    />
+                  )}
+                </section>
+              ) : (
+                <DiffView request={request} workspaceId={workspaceId} path={activeTab.path} />
+              )}
+              {quickOpen ? (
+                <QuickOpen
+                  request={request}
+                  workspaceId={workspaceId}
+                  onPick={(path) => {
+                    setQuickOpen(false);
+                    void openFile(path);
+                  }}
+                  onClose={() => setQuickOpen(false)}
+                />
+              ) : null}
+            </>
+          )
         }
         {...(inspectorOpen
           ? {
