@@ -216,7 +216,13 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
         },
         [Methods.modelCreate]: async (params) => {
           const created = models.create(ModelCreateParams.parse(params));
-          await sync();
+          try {
+            await sync();
+          } catch (error) {
+            // A profile the renderer rejects must not leave a row that poisons every later sync.
+            models.remove(created.id);
+            throw error;
+          }
           return created;
         },
         [Methods.modelList]: async (params) => ({ models: models.list(ModelListParams.parse(params ?? {}).providerId) }),
@@ -227,7 +233,12 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
         },
         [Methods.providerCreate]: async (params) => {
           const created = providers.create(ProviderCreateParams.parse(params));
-          await sync();
+          try {
+            await sync();
+          } catch (error) {
+            providers.remove(created.id);
+            throw error;
+          }
           return created;
         },
         [Methods.providerList]: async () => ({ providers: providers.list() }),

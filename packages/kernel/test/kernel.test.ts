@@ -87,6 +87,21 @@ describe("startKernel", () => {
     await kernel.close();
   });
 
+  it("rolls back a model whose id the profile renderer rejects", async () => {
+    const dir = tempDir();
+    const kernel = await startKernel({ dataDir: dir });
+    const provider = await call(kernel.port, kernel.token, "provider.create", {
+      name: "Local", baseUrl: "http://localhost:11434/v1", apiKind: "openai-completions", apiKey: "k",
+    });
+    const bad = await call(kernel.port, kernel.token, "model.create", {
+      providerId: provider.result.id, modelId: "openai/gpt-4o",
+    });
+    expect(bad.error).toBeDefined();
+    const listed = await call(kernel.port, kernel.token, "model.list");
+    expect(listed.result.models).toEqual([]);
+    await kernel.close();
+  });
+
   it("reports invalid params for bad provider input and malformed requests", async () => {
     const dir = tempDir();
     const kernel = await startKernel({ dataDir: dir });

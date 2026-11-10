@@ -1,3 +1,4 @@
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { materializeProfile, type ProfileModel, type ProfileProvider } from "@noir/omp-profile";
 import { ErrorCodes, RpcFault } from "@noir/protocol";
@@ -53,7 +54,11 @@ export async function syncProfile(deps: SyncProfileDeps): Promise<void> {
     });
   }
 
-  if (providers.length === 0 || models.length === 0) return;
+  if (providers.length === 0 || models.length === 0) {
+    // Nothing can be rendered; drop the old file so a deleted provider's key does not linger on disk.
+    await rm(join(profileAgentDir(deps.home), "models.yml"), { force: true });
+    return;
+  }
 
   const defaultModel = deps.models.defaultModel();
   if (

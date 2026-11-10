@@ -60,6 +60,7 @@ interface QueuedTurn {
 interface TurnContext extends QueuedTurn {
   openMessages: Map<string, true>;
   nextMessageSeq: number;
+  cancelRequested: boolean;
 }
 
 interface PendingApproval {
@@ -191,8 +192,13 @@ export class EngineManager {
   }
 
   async prompt(params: SessionPromptParams): Promise<SessionPromptResult> {
+    if (this.shuttingDown) throw new RpcFault(ErrorCodes.conflict, "Kernel is shutting down");
     const row = this.loadSession(params.sessionId);
     if (row.status === "closed") throw new RpcFault(ErrorCodes.conflict, "Session is closed");
+
+    const fresh = !this.states.has(params.sessionId);
+    const state = this.stateFor(row);
+    if (fresh) this.reconcile(state);
 
     const existing = this.deps.db
       .prepare("SELECT id, status FROM turns WHERE session_id = ? AND client_request_id = ?")
@@ -200,13 +206,13 @@ export class EngineManager {
     if (existing !== undefined) return { turnId: existing.id, queued: existing.status === "queued" };
 
     const content = promptText(params.content);
-    const state = this.stateFor(row);
     const queued = this.deps.db
       .prepare("SELECT COUNT(*) AS count FROM turns WHERE session_id = ?")
       .get(params.sessionId) as { count: number };
     const idx = queued.count + 1;
     const turnId = uuidv7();
-    const immediate = state.turn === undefined && row.status !== "running" && row.status !== "waiting";
+    // Delivery is decided by the live turn, never by a persisted status a crashed kernel may have left behind.
+    const immediate = state.turn === undefined;
 
     this.deps.db
       .prepare("INSERT INTO turns (id, session_id, idx, status, started_at, client_request_id) VALUES (?,?,?,?,?,?)")
@@ -225,8 +231,10 @@ export class EngineManager {
   async interrupt(sessionId: string): Promise<{ interrupted: boolean }> {
     const state = this.states.get(sessionId);
     if (state === undefined) return { interrupted: false };
-    const active = state.turn !== undefined;
-    if (active) {
+    const turn = state.turn;
+    if (turn !== undefined) {
+      turn.cancelRequested = true;
+      for (const approval of [...state.approvals.values()]) this.settleApproval(approval, "reject");
       try {
         await state.engineSession?.cancel();
       } catch {
@@ -234,7 +242,7 @@ export class EngineManager {
       }
     }
     this.dropQueue(state, "interrupted");
-    return { interrupted: active };
+    return { interrupted: turn !== undefined };
   }
 
   async respond(approvalId: string, decision: PermissionDecision): Promise<void> {
@@ -313,6 +321,25 @@ export class EngineManager {
     return row;
   }
 
+  /**
+   * First touch after a kernel restart: turns persisted as queued/running have no live engine
+   * behind them, so fail them and release a persisted running/waiting status.
+   */
+  private reconcile(state: SessionState): void {
+    const stale = this.deps.db
+      .prepare("SELECT id FROM turns WHERE session_id = ? AND status IN ('queued','running') ORDER BY idx ASC")
+      .all(state.sessionId) as Array<{ id: string }>;
+    for (const turn of stale) {
+      this.emit(state, "turn.failed", { turnId: turn.id, message: "Engine restarted" }, turn.id);
+    }
+    const row = this.deps.db.prepare("SELECT status FROM sessions WHERE id = ?").get(state.sessionId) as
+      | { status: SessionStatus }
+      | undefined;
+    if (row !== undefined && (row.status === "running" || row.status === "waiting")) {
+      this.setStatus(state.sessionId, "idle");
+    }
+  }
+
   private stateFor(row: SessionRow): SessionState {
     const existing = this.states.get(row.id);
     if (existing !== undefined) return existing;
@@ -389,11 +416,25 @@ export class EngineManager {
   }
 
   private async startTurn(state: SessionState, turn: QueuedTurn): Promise<void> {
-    const context: TurnContext = { ...turn, openMessages: new Map(), nextMessageSeq: 0 };
+    const context: TurnContext = { ...turn, openMessages: new Map(), nextMessageSeq: 0, cancelRequested: false };
     state.turn = context;
     state.usage = undefined;
     try {
       const engineSession = await this.ensureEngine(state);
+      if (state.closing) {
+        // The session closed while the engine was spawning: reap it and stay silent.
+        state.turn = undefined;
+        await this.disposeEngine(state);
+        return;
+      }
+      if (context.cancelRequested) {
+        this.emit(state, "turn.failed", { turnId: context.turnId, message: "interrupted" }, context.turnId);
+        state.turn = undefined;
+        state.usage = undefined;
+        this.setStatus(state.sessionId, "idle");
+        this.drain(state);
+        return;
+      }
       const selector = this.selectorFor(state.sessionId);
       if (state.selector !== selector) {
         await engineSession.setConfigOption("model", selector);
@@ -413,6 +454,9 @@ export class EngineManager {
 
   private finishTurn(state: SessionState, turn: TurnContext, result: EnginePromptResult): void {
     if (state.closing) return;
+    // Clear the turn first: settling a straggling approval must not flip a finished turn back to running.
+    state.turn = undefined;
+    for (const approval of [...state.approvals.values()]) this.settleApproval(approval, "reject");
     const interrupted = result.stopReason === "cancelled" || result.timedOut;
     const messageStatus = interrupted ? "interrupted" : "done";
     for (const messageId of turn.openMessages.keys()) {
@@ -438,7 +482,6 @@ export class EngineManager {
       { turnId: turn.turnId, status: interrupted ? "interrupted" : "completed", stopReason: result.stopReason },
       turn.turnId,
     );
-    state.turn = undefined;
     this.setStatus(state.sessionId, "idle");
     this.drain(state);
   }
@@ -647,7 +690,7 @@ export class EngineManager {
         provenance: PROVENANCE,
       });
     }
-    if (state !== undefined) this.setStatus(state.sessionId, "running");
+    if (state !== undefined && state.turn !== undefined) this.setStatus(state.sessionId, "running");
     pending.resolve(decision);
   }
 }

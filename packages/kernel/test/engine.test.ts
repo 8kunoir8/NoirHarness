@@ -1,8 +1,8 @@
 import { once } from "node:events";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type Database from "better-sqlite3";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import WebSocket from "ws";
@@ -74,7 +74,7 @@ async function waitForEvent(
   }
 }
 
-function setup(opts: { turnTimeoutMs?: number } = {}) {
+function setup(opts: { turnTimeoutMs?: number; acpArgs?: string[] } = {}) {
   const root = tempDir();
   const dataDir = tempDir();
   const home = tempDir();
@@ -100,7 +100,7 @@ function setup(opts: { turnTimeoutMs?: number } = {}) {
   const session = sessions.create(workspace.id, model.id);
 
   // The manager parses its launch argv at construction time.
-  process.env.NOIR_OMP_ARGS_JSON = JSON.stringify([FAKE_SERVER]);
+  process.env.NOIR_OMP_ARGS_JSON = JSON.stringify(opts.acpArgs ?? [FAKE_SERVER]);
   const manager = new EngineManager({
     db,
     events,
@@ -166,6 +166,15 @@ afterEach(() => {
     else process.env[key] = value;
   }
 });
+
+async function waitFor(predicate: () => boolean, timeoutMs = TEST_TIMEOUT_MS, label = "condition"): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (predicate()) return;
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${label}`);
+    await tick();
+  }
+}
 
 describe("EngineManager over the fake ACP server", () => {
   it(
@@ -471,6 +480,61 @@ describe("EngineManager over the fake ACP server", () => {
         const rows = db.prepare(`SELECT * FROM "${table}"`).all();
         expect(JSON.stringify(rows), `table ${table}`).not.toContain(SECRET);
       }
+    },
+    TEST_TIMEOUT_MS,
+  );
+  it(
+    "does not leak the engine or emit events when the session closes during startup",
+    async () => {
+      const pidFile = join(tempDir(), "acp.pid");
+      const script = `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(async () => { await import(${JSON.stringify(pathToFileURL(FAKE_SERVER).href)}); }, 700);`;
+      const { db, events, manager, session } = setup({ acpArgs: ["-e", script, "--"] });
+      await manager.prompt({
+        sessionId: session.id,
+        requestId: "close-startup",
+        content: [{ type: "text", text: "stream" }],
+      });
+      await waitFor(() => existsSync(pidFile), TEST_TIMEOUT_MS, "the spawned engine pid file");
+      const pid = Number(readFileSync(pidFile, "utf8"));
+
+      await manager.closeSession(session.id);
+      const closedAt = events.list(session.id).at(-1)!.seq;
+      await waitFor(() => !isAlive(pid), 10_000, "the engine child to exit");
+      await tick(1_200);
+
+      const late = events.list(session.id).filter((event) => event.seq > closedAt);
+      expect(late).toEqual([]);
+      expect((db.prepare("SELECT status FROM sessions WHERE id = ?").get(session.id) as { status: string }).status).toBe("closed");
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "settles a pending approval when interrupted and never revives the finished turn",
+    async () => {
+      const { db, events, manager, session } = setup({ turnTimeoutMs: 400 });
+      await manager.prompt({
+        sessionId: session.id,
+        requestId: "interrupt-approval",
+        content: [{ type: "text", text: "permission" }],
+      });
+      await waitForEvent(events, session.id, (event) => event.type === "permission.requested");
+      expect((await manager.interrupt(session.id)).interrupted).toBe(true);
+      await waitForEvent(events, session.id, (event) => event.type === "turn.completed");
+
+      const resolvedCount = () => events.list(session.id).filter((event) => event.type === "permission.resolved").length;
+      expect(resolvedCount()).toBe(1);
+      await tick(1_200);
+      expect(resolvedCount()).toBe(1);
+      expect((db.prepare("SELECT status FROM sessions WHERE id = ?").get(session.id) as { status: string }).status).toBe("idle");
+
+      const next = await manager.prompt({
+        sessionId: session.id,
+        requestId: "after-interrupt",
+        content: [{ type: "text", text: "stream" }],
+      });
+      expect(next.queued).toBe(false);
+      await waitForEvent(events, session.id, (event) => event.type === "turn.completed" && event.turnId === next.turnId);
     },
     TEST_TIMEOUT_MS,
   );
