@@ -6,6 +6,11 @@ import WebSocket from "ws";
 import { z } from "zod";
 import {
   ApprovalRespondParams,
+  ErrorCodes,
+  FsFilesParams,
+  FsListParams,
+  FsReadParams,
+  FsWriteParams,
   Methods,
   ModelCreateParams,
   ModelDeleteParams,
@@ -13,6 +18,7 @@ import {
   ProjectAddParams,
   ProviderCreateParams,
   ProviderDeleteParams,
+  RpcFault,
   SessionCloseParams,
   SessionCreateParams,
   SessionCancelQueuedParams,
@@ -27,6 +33,7 @@ import { dataDir as defaultDataDir } from "./appdata.js";
 import { openDb } from "./db.js";
 import { EngineManager } from "./engineManager.js";
 import { EventStore } from "./eventStore.js";
+import { findFiles, listDirectory, readFileText, writeFileText } from "./fsService.js";
 import { ModelService } from "./models.js";
 import { clearProfileModels, profileAgentDir, syncProfile } from "./profile.js";
 import { ProjectService } from "./projects.js";
@@ -176,6 +183,11 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
       const events = new EventStore(db, (event) => broadcast(event));
       const projects = new ProjectService(db);
       const workspaces = new WorkspaceService(db, projects);
+      const workspaceRoot = (workspaceId: string): string => {
+        const workspace = workspaces.list().find((candidate) => candidate.id === workspaceId);
+        if (workspace === undefined) throw new RpcFault(ErrorCodes.notFound, "Workspace not found");
+        return workspace.path;
+      };
       const sessions = new SessionService(db, events);
       const providers = new ProviderService(db, new KeyringSecrets());
       const models = new ModelService(db);
@@ -206,6 +218,19 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
         [Methods.projectList]: async () => ({ projects: projects.list() }),
         [Methods.workspaceCreate]: async (params) => workspaces.createLocal(WorkspaceCreateParams.parse(params).projectId),
         [Methods.workspaceList]: async () => ({ workspaces: workspaces.list() }),
+        [Methods.fsList]: async (params) => {
+          const { workspaceId, path } = FsListParams.parse(params);
+          return listDirectory(workspaceRoot(workspaceId), path);
+        },
+        [Methods.fsRead]: async (params) => {
+          const { workspaceId, path } = FsReadParams.parse(params);
+          return readFileText(workspaceRoot(workspaceId), path);
+        },
+        [Methods.fsWrite]: async (params) => {
+          const { workspaceId, path, content, expectedMtimeMs } = FsWriteParams.parse(params);
+          return writeFileText(workspaceRoot(workspaceId), path, content, expectedMtimeMs);
+        },
+        [Methods.fsFiles]: async (params) => findFiles(workspaceRoot(FsFilesParams.parse(params).workspaceId)),
         [Methods.sessionCreate]: async (params) => {
           const { workspaceId, modelId } = SessionCreateParams.parse(params);
           await sync();

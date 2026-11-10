@@ -22,6 +22,10 @@ export const Methods = {
   providerCreate: "provider.create",
   providerList: "provider.list",
   providerDelete: "provider.delete",
+  fsList: "fs.list",
+  fsRead: "fs.read",
+  fsWrite: "fs.write",
+  fsFiles: "fs.files",
 } as const;
 
 /** `system.health` result. `engineDir` is the agent directory the kernel materializes and omp reads. */
@@ -92,6 +96,47 @@ export const SessionSetModelParams = z.object({ sessionId: z.string().min(1), mo
 export type SessionSetModelParams = z.infer<typeof SessionSetModelParams>;
 export const ApprovalRespondParams = z.object({ approvalId: z.string().min(1), decision: PermissionDecision });
 export type ApprovalRespondParams = z.infer<typeof ApprovalRespondParams>;
+
+export const FsEntry = z.object({
+  name: z.string(),
+  path: z.string(),
+  kind: z.enum(["file", "dir"]),
+  size: z.number().int().nonnegative(),
+});
+export type FsEntry = z.infer<typeof FsEntry>;
+
+export const FsListParams = z.object({
+  workspaceId: z.string().min(1),
+  path: z.string().default(""),
+});
+export type FsListParams = z.infer<typeof FsListParams>;
+export const FsListResult = z.object({ entries: z.array(FsEntry), truncated: z.boolean() });
+export type FsListResult = z.infer<typeof FsListResult>;
+
+export const FsReadParams = z.object({ workspaceId: z.string().min(1), path: z.string() });
+export type FsReadParams = z.infer<typeof FsReadParams>;
+export const FsReadResult = z.object({
+  content: z.string(),
+  size: z.number().int().nonnegative(),
+  mtimeMs: z.number().int(),
+  truncated: z.boolean(),
+});
+export type FsReadResult = z.infer<typeof FsReadResult>;
+
+export const FsWriteParams = z.object({
+  workspaceId: z.string().min(1),
+  path: z.string().min(1),
+  content: z.string().max(5_000_000),
+  expectedMtimeMs: z.number().int().optional(),
+});
+export type FsWriteParams = z.infer<typeof FsWriteParams>;
+export const FsWriteResult = z.object({ mtimeMs: z.number().int() });
+export type FsWriteResult = z.infer<typeof FsWriteResult>;
+
+export const FsFilesParams = z.object({ workspaceId: z.string().min(1) });
+export type FsFilesParams = z.infer<typeof FsFilesParams>;
+export const FsFilesResult = z.object({ files: z.array(z.string()), truncated: z.boolean() });
+export type FsFilesResult = z.infer<typeof FsFilesResult>;
 
 export const EventNotificationParams = z.object({ event: AgentEvent });
 export type EventNotificationParams = z.infer<typeof EventNotificationParams>;
