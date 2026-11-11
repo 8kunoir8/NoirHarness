@@ -113,7 +113,13 @@ importers:
         specifier: ^3.24.0
         version: 3.25.76
 
-  packages/engines/acp: {}
+  packages/engines/acp:
+    dependencies:
+      '@noir/engine-core':
+        specifier: workspace:*
+        version: link:../core
+
+  packages/engines/core: {}
 
   packages/kernel:
     dependencies:
@@ -123,6 +129,9 @@ importers:
       '@noir/engine-acp':
         specifier: workspace:*
         version: link:../engines/acp
+      '@noir/engine-core':
+        specifier: workspace:*
+        version: link:../engines/core
       '@noir/omp-profile':
         specifier: workspace:*
         version: link:../adapters/omp-profile

@@ -6,11 +6,13 @@ import {
   createAcpClient,
   type AcpClient,
   type AcpSession,
-  type EnginePermissionRequest,
-  type EnginePromptResult,
-  type EngineUpdate,
-  type PermissionDecision,
 } from "@noir/engine-acp";
+import type {
+  EnginePermissionRequest,
+  EnginePromptResult,
+  EngineUpdate,
+  PermissionDecision,
+} from "@noir/engine-core";
 import {
   ErrorCodes,
   PayloadSchemas,

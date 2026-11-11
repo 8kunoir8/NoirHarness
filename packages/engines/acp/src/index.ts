@@ -1,7 +1,18 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { isAbsolute, resolve } from "node:path";
+import type {
+  Engine,
+  EnginePermissionRequest,
+  EnginePromptResult,
+  EngineSession,
+  EngineUpdate,
+  PermissionDecision,
+  PermissionOptionKind,
+} from "@noir/engine-core";
 import { JsonRpcClient, type JsonRpcTransport } from "./jsonRpc.js";
 import { ClientRequestHandler } from "./terminals.js";
+
+export * from "@noir/engine-core";
 
 const DEFAULT_TURN_TIMEOUT_MS = 120_000;
 const DEFAULT_CANCEL_GRACE_MS = 5_000;
@@ -18,36 +29,6 @@ const INITIALIZE_PARAMS = {
     terminal: true,
   },
 };
-
-export type PermissionOptionKind = "allow_once" | "allow_always" | "reject_once" | "reject_always";
-
-export interface EnginePromptResult {
-  stopReason: string;
-  timedOut: boolean;
-  usage?: { inputTokens: number; outputTokens: number; totalTokens?: number };
-}
-
-export type EngineUpdate =
-  | { kind: "message"; messageId: string; text: string; reasoning: boolean }
-  | { kind: "tool.started"; toolCallId: string; title: string; toolKind: string; rawInput: unknown }
-  | {
-      kind: "tool.updated";
-      toolCallId: string;
-      status: "pending" | "in_progress" | "completed" | "failed";
-      text?: string;
-    }
-  | { kind: "usage"; size: number; used: number; costAmount?: number }
-  | { kind: "plan"; entries: Array<{ content: string; status: string }> }
-  | { kind: "title"; title: string }
-  | { kind: "raw"; update: unknown };
-
-export interface EnginePermissionRequest {
-  sessionId: string;
-  toolCall: { toolCallId: string; title: string; kind?: string; rawInput?: unknown };
-  options: Array<{ optionId: string; name: string; kind: PermissionOptionKind }>;
-}
-
-export type PermissionDecision = "allow_once" | "allow_always" | "reject" | "reject_always";
 
 export interface AcpSession {
   readonly sessionId: string;
@@ -661,6 +642,48 @@ export async function createAcpClient(opts: CreateAcpClientOptions): Promise<Acp
     throw error;
   }
   return runtime;
+}
+
+/**
+ * One `AcpClient` (and so one child process) per engine instance, matching what `EngineManager`
+ * does today: the session owns the client and reaps it on dispose, so no call site can leak the
+ * child by forgetting the second half of a two-object teardown.
+ */
+export function createAcpEngine(opts: CreateAcpClientOptions): Engine {
+  return {
+    id: "acp",
+    capabilities: {
+      streaming: true,
+      tools: true,
+      diffs: true,
+      approvals: true,
+      subagents: true,
+      steering: true,
+      modelSelection: true,
+    },
+    async start(startOpts) {
+      const client = await createAcpClient(opts);
+      let session: AcpSession;
+      try {
+        session = await client.newSession(startOpts.cwd);
+      } catch (error) {
+        await client.dispose().catch(() => undefined);
+        throw error;
+      }
+      const engineSession: EngineSession = {
+        pid: client.pid,
+        prompt: (content, handlers) => session.prompt(content, handlers),
+        interrupt: () => session.cancel(),
+        setModel: async (model) =>
+          session.setConfigOption("model", `${model.providerName}/${model.modelId}`),
+        dispose: async () => {
+          await session.close().catch(() => undefined);
+          await client.dispose().catch(() => undefined);
+        },
+      };
+      return engineSession;
+    },
+  };
 }
 
 export { ClientRequestHandler, resolveInsideWorkspace } from "./terminals.js";
