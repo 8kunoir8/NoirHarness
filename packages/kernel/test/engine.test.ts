@@ -158,6 +158,7 @@ function setup(
             modelRef: model.id,
             permissionPolicy: opts.agentPermissionPolicy,
             defaultWorkspaceId: workspace.id,
+            mcpServerIds: [],
           }).id,
         });
 

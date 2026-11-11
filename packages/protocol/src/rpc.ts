@@ -153,6 +153,8 @@ export const AgentView = z.object({
   modelRef: z.string().nullable(),
   permissionPolicy: PermissionPolicySchema,
   defaultWorkspaceId: z.string().nullable(),
+  /** MCP servers this agent may use; empty means none, never "all". */
+  mcpServerIds: z.array(z.string()).default([]),
   archivedAt: z.number().int().nullable(),
   createdAt: z.number().int(),
 });
@@ -165,6 +167,7 @@ export const AgentCreateParams = z.object({
   modelRef: z.string().min(1).nullable().default(null),
   permissionPolicy: PermissionPolicySchema.default({}),
   defaultWorkspaceId: z.string().min(1).nullable().default(null),
+  mcpServerIds: z.array(z.string()).default([]),
 });
 export type AgentCreateParams = z.infer<typeof AgentCreateParams>;
 export const AgentUpdateParams = AgentCreateParams.partial().extend({ id: z.string().min(1) });

@@ -62,6 +62,7 @@ const AGENT: AgentView = {
   modelRef: null,
   permissionPolicy: {},
   defaultWorkspaceId: null,
+  mcpServerIds: [],
   archivedAt: null,
   createdAt: 1,
 };

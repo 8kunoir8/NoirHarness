@@ -21,6 +21,9 @@ import {
   FsWriteParams,
   GitDiffParams,
   GitStatusParams,
+  McpServerCreateParams,
+  McpServerDeleteParams,
+  McpServerUpdateParams,
   Methods,
   ModelCreateParams,
   ModelDeleteParams,
@@ -51,6 +54,7 @@ import { EngineManager } from "./engineManager.js";
 import { EventStore } from "./eventStore.js";
 import { findFiles, listDirectory, readArtifact, readFileText, writeFileText } from "./fsService.js";
 import { gitDiff, gitStatus } from "./gitService.js";
+import { McpService } from "./mcp/service.js";
 import { ModelService } from "./models.js";
 import { clearProfileModels, profileAgentDir, syncProfile } from "./profile.js";
 import { ProjectService } from "./projects.js";
@@ -223,6 +227,7 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
       const agents = new AgentService(db, models, sessions);
       // Task 5 shares this instance with EngineManager so enabled flags match what is materialized.
       const skills = new SkillService(database, dir);
+      const mcp = new McpService(database);
       const engineManager = new EngineManager({
         db,
         events,
@@ -290,6 +295,10 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
           const root = workspaceId === undefined ? undefined : workspaceRoot(workspaceId);
           return skills.read(workspaceId ?? "", root, scope, name);
         },
+        [Methods.mcpList]: async () => ({ servers: mcp.list() }),
+        [Methods.mcpCreate]: async (params) => mcp.create(McpServerCreateParams.parse(params)),
+        [Methods.mcpUpdate]: async (params) => mcp.update(McpServerUpdateParams.parse(params)),
+        [Methods.mcpDelete]: async (params) => ({ deleted: mcp.delete(McpServerDeleteParams.parse(params).id) }),
         [Methods.annotationList]: async (params) => {
           const { workspaceId, path } = AnnotationListParams.parse(params);
           return listAnnotations(database, workspaceRoot(workspaceId), workspaceId, path);

@@ -64,7 +64,19 @@ function pendingApprovalFrom(state: ActiveSessionState | undefined): AgentRoster
   return { approvalId: request.approvalId ?? "", title: "", category: request.category };
 }
 
-const AGENT_COLUMNS = "id, name, role, engine_id, model_ref, permission_policy, default_workspace_id, archived_at, created_at";
+const AGENT_COLUMNS =
+  "id, name, role, engine_id, model_ref, permission_policy, default_workspace_id, mcp_server_ids, archived_at, created_at";
+
+/** A row written before migration 7 has no `mcp_server_ids`; a malformed one reads as no bindings. */
+function parseServerIds(text: unknown): string[] {
+  if (typeof text !== "string") return [];
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
+}
 
 function toView(row: Record<string, unknown>): AgentView {
   return {
@@ -75,6 +87,7 @@ function toView(row: Record<string, unknown>): AgentView {
     modelRef: (row.model_ref as string | null) ?? null,
     permissionPolicy: parsePermissionPolicy(row.permission_policy as string),
     defaultWorkspaceId: (row.default_workspace_id as string | null) ?? null,
+    mcpServerIds: parseServerIds(row.mcp_server_ids),
     archivedAt: (row.archived_at as number | null) ?? null,
     createdAt: row.created_at as number,
   };
@@ -112,13 +125,14 @@ export class AgentService {
       modelRef: params.modelRef,
       permissionPolicy: params.permissionPolicy,
       defaultWorkspaceId: params.defaultWorkspaceId,
+      mcpServerIds: params.mcpServerIds ?? [],
       archivedAt: null,
       createdAt: Date.now(),
     };
     this.db
       .prepare(
-        `INSERT INTO agents (id, name, role, engine_id, model_ref, permission_policy, default_workspace_id, created_at)
-         VALUES (?,?,?,?,?,?,?,?)`,
+        `INSERT INTO agents (id, name, role, engine_id, model_ref, permission_policy, default_workspace_id, mcp_server_ids, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         view.id,
@@ -128,6 +142,7 @@ export class AgentService {
         view.modelRef,
         JSON.stringify(view.permissionPolicy),
         view.defaultWorkspaceId,
+        JSON.stringify(view.mcpServerIds),
         view.createdAt,
       );
     return view;
@@ -173,6 +188,10 @@ export class AgentService {
     if (params.defaultWorkspaceId !== undefined) {
       sets.push("default_workspace_id = ?");
       values.push(defaultWorkspaceId);
+    }
+    if (params.mcpServerIds !== undefined) {
+      sets.push("mcp_server_ids = ?");
+      values.push(JSON.stringify(params.mcpServerIds));
     }
     if (sets.length === 0) return existing;
     this.db.prepare(`UPDATE agents SET ${sets.join(", ")} WHERE id = ?`).run(...values, params.id);

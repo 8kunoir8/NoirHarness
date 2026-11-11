@@ -118,6 +118,22 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
       CREATE INDEX idx_agents_archived ON agents(archived_at);
     `,
   },
+  {
+    id: 7,
+    sql: `
+      CREATE TABLE mcp_servers (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        command TEXT NOT NULL,
+        args_json TEXT NOT NULL,
+        env_json TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      ALTER TABLE agents ADD COLUMN mcp_server_ids TEXT NOT NULL DEFAULT '[]';
+    `,
+  },
 ];
 
 export function migrate(db: Database.Database): void {
