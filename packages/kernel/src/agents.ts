@@ -164,13 +164,7 @@ export class AgentService {
   private assertModel(engineId: AgentView["engineId"], modelRef: string): void {
     const model = this.models.enabledModel(modelRef);
     if (model === undefined) throw new RpcFault(ErrorCodes.notFound, "Model not found");
-    if (engineId !== "native") return;
-    const provider = this.db.prepare("SELECT api_kind FROM providers WHERE id = ?").get(model.providerId) as
-      | { api_kind: string }
-      | undefined;
-    if (provider?.api_kind !== "openai-completions") {
-      throw new RpcFault(ErrorCodes.conflict, "Native engine supports openai-completions providers only");
-    }
+    this.models.assertEngine(model.providerId, engineId);
   }
 
   private assertWorkspace(workspaceId: string | null): void {

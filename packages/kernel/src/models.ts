@@ -109,7 +109,8 @@ export class ModelService {
     return this.find(id);
   }
 
-  private assertEngine(providerId: string, engine: EngineKind): void {
+  /** A native engine needs an openai-completions provider because the loop speaks that protocol. */
+  assertEngine(providerId: string, engine: EngineKind): void {
     if (engine !== "native") return;
     const p = this.db.prepare("SELECT api_kind FROM providers WHERE id = ?").get(providerId) as { api_kind: string } | undefined;
     if (p?.api_kind !== "openai-completions") throw new RpcFault(ErrorCodes.conflict, "Native engine supports openai-completions providers only");

@@ -231,6 +231,26 @@ describe("AgentService", () => {
     expect(agents.list().find((a) => a.id === agent.id)?.defaultWorkspaceId).toBeNull();
   });
 
+  it("does not reapply create defaults on a partial update", () => {
+    const services = setup();
+    const { agents, projects, workspaces } = services;
+    const model = addModel(services);
+    const project = projects.add(tempDir());
+    const workspace = workspaces.createLocal(project.id);
+    const agent = agents.create(
+      agentInput({ name: "Native", engineId: "native", modelRef: model.id, defaultWorkspaceId: workspace.id }),
+    );
+
+    const updated = agents.update({ id: agent.id, role: "Review" });
+    expect(updated).toEqual({ ...agent, role: "Review" });
+
+    expectFault(
+      () => agents.update({ id: agent.id, defaultWorkspaceId: "missing" }),
+      ErrorCodes.notFound,
+      /Workspace not found/,
+    );
+  });
+
   it("round-trips the permission policy as JSON text", () => {
     const { db, agents } = setup();
     const agent = agents.create(agentInput({ permissionPolicy: { shell: "allow", network: "reject" } }));
