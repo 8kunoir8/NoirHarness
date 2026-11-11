@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { lstat, open, readFile, readdir, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, matchesGlob, relative, resolve, sep } from "node:path";
 import { z } from "zod";
-import type { EnginePermissionRequest, EngineStartOptions, PermissionDecision } from "@noir/engine-core";
+import type { EngineMcpTool, EnginePermissionRequest, EngineStartOptions, PermissionDecision } from "@noir/engine-core";
 
 /** The result every tool returns when its approval was not granted. The loop marks it failed. */
 export const PERMISSION_DENIED = "Permission denied by the user";
@@ -36,10 +36,12 @@ export interface ToolContext {
   skills: ReadonlyArray<EngineStartOptions["skills"][number]>;
   /** Loads a skill body the kernel controls the location of. */
   readSkill(name: string): Promise<string>;
+  /** Runs a namespaced `mcp__<server>__<tool>` call on the session's MCP servers. */
+  callMcpTool?: (name: string, args: Record<string, unknown>) => Promise<string>;
 }
 
 /** The ACP tool-call kinds `EngineManager.permissionCategory` maps to approval categories. */
-type ApprovalKind = "edit" | "delete" | "execute";
+type ApprovalKind = "edit" | "delete" | "execute" | "mcp";
 
 type ToolKind = "read" | "write" | "shell" | "search" | "skill" | "other";
 
@@ -528,6 +530,16 @@ export const NATIVE_TOOLS = Object.entries(TOOL_SPECS).map(([name, spec]) => ({
   function: { name, description: spec.description, parameters: spec.parameters },
 }));
 
+/** The MCP half of the `tools` array: the session's discovered tools, schemas unchanged. */
+export function mcpToolDefinitions(
+  tools: ReadonlyArray<EngineMcpTool>,
+): Array<{ type: "function"; function: { name: string; description: string; parameters: Record<string, unknown> } }> {
+  return tools.map((tool) => ({
+    type: "function" as const,
+    function: { name: tool.name, description: tool.description, parameters: tool.parameters },
+  }));
+}
+
 export function toolKind(name: string): string {
   return TOOL_SPECS[name]?.kind ?? "other";
 }
@@ -569,7 +581,17 @@ export async function readMaterializedSkill(root: string, name: string): Promise
   return await readFile(target.absolute, "utf8");
 }
 
+/** `mcp__<server>__<tool>`: approved as its own category, then handed to the kernel's broker. */
+async function runMcpTool(name: string, args: unknown, ctx: ToolContext): Promise<string> {
+  const call = ctx.callMcpTool;
+  if (call === undefined) throw new Error(`Unknown tool: ${name}`);
+  const record = typeof args === "object" && args !== null ? (args as Record<string, unknown>) : {};
+  if (!(await approve(ctx, name, "mcp", record))) return PERMISSION_DENIED;
+  return await call(name, record);
+}
+
 export async function runTool(name: string, args: unknown, ctx: ToolContext): Promise<string> {
+  if (name.startsWith("mcp__")) return await runMcpTool(name, args, ctx);
   const spec = TOOL_SPECS[name];
   if (spec === undefined) throw new Error(`Unknown tool: ${name}`);
   return await spec.run(args, ctx);

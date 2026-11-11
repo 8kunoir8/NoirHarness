@@ -242,6 +242,7 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets } 
         models,
         providers,
         skills,
+        mcp,
         dataDir: dir,
       });
       engines = engineManager;

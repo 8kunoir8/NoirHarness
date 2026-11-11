@@ -10,6 +10,7 @@ import type {
 } from "@noir/engine-core";
 import { ProviderHttpError, streamChat } from "./client.js";
 import {
+  mcpToolDefinitions,
   NATIVE_TOOLS,
   PERMISSION_DENIED,
   readMaterializedSkill,
@@ -251,7 +252,7 @@ class NativeSession implements EngineSession {
       stream: true,
       stream_options: { include_usage: true },
       messages: wireMessages(this.#opts, this.#history),
-      tools: NATIVE_TOOLS,
+      tools: [...NATIVE_TOOLS, ...mcpToolDefinitions(this.#opts.mcpTools ?? [])],
       tool_choice: "auto",
       ...(this.#model.maxTokens === null ? {} : { max_tokens: this.#model.maxTokens }),
     };
@@ -383,6 +384,7 @@ class NativeSession implements EngineSession {
         handlers.onSkillRead(name);
         return body;
       },
+      ...(this.#opts.callMcpTool === undefined ? {} : { callMcpTool: this.#opts.callMcpTool }),
     };
   }
 }

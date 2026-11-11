@@ -27,6 +27,7 @@ import { EventStore } from "../src/eventStore.js";
 import { REDACTED, Redactor } from "../src/redact.js";
 import type { Kernel } from "../src/index.js";
 import { startKernel } from "./support.js";
+import { McpService } from "../src/mcp/service.js";
 import { ModelService } from "../src/models.js";
 import { profileAgentDir } from "../src/profile.js";
 import { ProjectService } from "../src/projects.js";
@@ -182,6 +183,7 @@ function setup(
     models,
     providers,
     skills,
+    mcp: new McpService(db),
     dataDir,
     ompCommand: process.execPath,
     ...(opts.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: opts.turnTimeoutMs }),
@@ -211,6 +213,7 @@ function restartedManager(deps: {
     models: deps.models,
     providers: deps.providers,
     skills: deps.skills,
+    mcp: new McpService(deps.db),
     dataDir: deps.dataDir,
     ompCommand: process.execPath,
   });
@@ -1211,6 +1214,7 @@ describe("EngineManager over the fake ACP server", () => {
       models,
       providers: new ProviderService(db, memorySecrets()),
       skills: new SkillService(db, tempDir()),
+      mcp: new McpService(db),
       dataDir: tempDir(),
     });
     managers.push(manager);

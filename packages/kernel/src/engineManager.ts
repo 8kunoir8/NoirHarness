@@ -32,6 +32,8 @@ import {
 import type { AgentService } from "./agents.js";
 import type { EventStore } from "./eventStore.js";
 import { resolveModelFor, type EngineRegistryDeps } from "./engineRegistry.js";
+import type { McpService } from "./mcp/service.js";
+import { SessionMcpManager } from "./mcp/sessionMcp.js";
 import type { ModelService } from "./models.js";
 import { profileAgentDir, syncProfile } from "./profile.js";
 import type { ProviderService } from "./providers.js";
@@ -125,6 +127,8 @@ interface SessionState {
   skillIndex: Map<string, { scope: SkillScope; hash: string }>;
   engine: Engine | undefined;
   engineSession: EngineSession | undefined;
+  /** The session's MCP servers; created with the engine and disposed with it. */
+  mcp: SessionMcpManager | undefined;
   selector: string | undefined;
   turn: TurnContext | undefined;
   queue: QueuedTurn[];
@@ -162,8 +166,12 @@ function promptText(content: SessionPromptParams["content"]): PromptContent {
   return blocks;
 }
 
-function permissionCategory(kind: string | undefined): "shell" | "delete" | "rename" | "write-outside-workspace" | "network" {
+function permissionCategory(
+  kind: string | undefined,
+): "shell" | "delete" | "rename" | "write-outside-workspace" | "network" | "mcp" {
   switch (kind) {
+    case "mcp":
+      return "mcp";
     case "execute":
       return "shell";
     case "delete":
@@ -326,6 +334,7 @@ export class EngineManager {
       models: ModelService;
       providers: ProviderService;
       skills: SkillService;
+      mcp: McpService;
       dataDir: string;
       ompCommand?: string;
       turnTimeoutMs?: number;
@@ -571,6 +580,7 @@ export class EngineManager {
       skillIndex: new Map(),
       engine: undefined,
       engineSession: undefined,
+      mcp: undefined,
       selector: undefined,
       turn: undefined,
       queue: [],
@@ -680,6 +690,17 @@ export class EngineManager {
         // Spec §8: a trimmed replay is visible in the log, never in the UI.
         if (trimmedTurns > 0) this.emit(state, "engine.raw", { engine: "native", payload: { trimmedTurns } });
       }
+      // The profile's bindings are read once per engine start: enabling a server mid-session
+      // would change the tool list the provider was already told about.
+      const bound = this.deps.mcp.forAgent(this.deps.agents.view(state.agentId).mcpServerIds);
+      const sessionMcp = bound.length === 0 ? undefined : new SessionMcpManager(bound, state.workspaceRoot);
+      if (sessionMcp !== undefined) {
+        await sessionMcp.initialize();
+        state.mcp = sessionMcp;
+        for (const warning of sessionMcp.warnings) {
+          this.emit(state, "engine.raw", { engine: "mcp", payload: { warning } }, currentTurnId);
+        }
+      }
       // `selector` is deliberately left unset: `start()` does not apply `EngineStartOptions.model`
       // for ACP, so the first turn's model branch applies it through `setModel`.
       state.engineSession = await engine.start({
@@ -692,6 +713,18 @@ export class EngineManager {
         history,
         skills,
         turnTimeoutMs: this.turnTimeoutMs,
+        ...(sessionMcp === undefined
+          ? {}
+          : {
+              mcpTools: sessionMcp.tools,
+              callMcpTool: (name: string, args: Record<string, unknown>) => sessionMcp.executeTool(name, args),
+              mcpServers: bound.map((server) => ({
+                name: server.name,
+                command: server.command,
+                args: server.args,
+                env: server.env,
+              })),
+            }),
       });
     } catch (error) {
       state.engine = undefined;
@@ -821,9 +854,19 @@ export class EngineManager {
 
   private async disposeEngine(state: SessionState): Promise<void> {
     const session = state.engineSession;
+    const mcp = state.mcp;
     state.engine = undefined;
     state.engineSession = undefined;
+    state.mcp = undefined;
     state.selector = undefined;
+    // The session's MCP processes die with its engine, whichever of the two is still running.
+    if (mcp !== undefined) {
+      try {
+        await mcp.dispose();
+      } catch {
+        // Already gone.
+      }
+    }
     if (session === undefined) return;
     try {
       await session.dispose();
