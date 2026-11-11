@@ -27,6 +27,7 @@ export const Methods = {
   fsRead: "fs.read",
   fsWrite: "fs.write",
   fsFiles: "fs.files",
+  artifactRead: "artifact.read",
   gitStatus: "git.status",
   gitDiff: "git.diff",
   annotationList: "annotation.list",
@@ -149,6 +150,17 @@ export const FsFilesParams = z.object({ workspaceId: z.string().min(1) });
 export type FsFilesParams = z.infer<typeof FsFilesParams>;
 export const FsFilesResult = z.object({ files: z.array(z.string()), truncated: z.boolean() });
 export type FsFilesResult = z.infer<typeof FsFilesResult>;
+
+export const ArtifactReadParams = z.object({ workspaceId: z.string().min(1), path: z.string().min(1) });
+export type ArtifactReadParams = z.infer<typeof ArtifactReadParams>;
+export const ArtifactReadResult = z.object({
+  encoding: z.enum(["utf8", "base64"]),
+  content: z.string(),
+  size: z.number().int().nonnegative(),
+  mtimeMs: z.number().int(),
+  truncated: z.boolean(),
+});
+export type ArtifactReadResult = z.infer<typeof ArtifactReadResult>;
 
 export const GitFileStatus = z.object({
   path: z.string(),

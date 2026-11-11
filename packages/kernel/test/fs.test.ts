@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { once } from "node:events";
 import WebSocket from "ws";
 import { ErrorCodes } from "@noir/protocol";
+import { MAX_ARTIFACT_PDF_BYTES, MAX_ARTIFACT_TEXT_BYTES, readArtifact } from "../src/fsService.js";
 import { startKernel, type Kernel } from "../src/index.js";
 
 const dirs: string[] = [];
@@ -181,5 +182,60 @@ describe("fs.* RPCs", () => {
     const found = await call(kernel, "fs.files", { workspaceId });
     expect(found.result.files).toEqual(["a.ts", "hello.txt", "src/b.ts"]);
     expect(found.result.truncated).toBe(false);
+  });
+});
+
+describe("artifact.read", () => {
+  it("reads markdown as utf8 and refuses an unsupported extension", async () => {
+    const root = tempDir();
+    writeFileSync(join(root, "notes.md"), "# hi");
+    await expect(readArtifact(root, "notes.md")).resolves.toMatchObject({
+      encoding: "utf8",
+      content: "# hi",
+      truncated: false,
+    });
+    await expect(readArtifact(root, "image.png")).rejects.toThrow(/Unsupported artifact type/);
+
+    // A binary file renamed to a text extension is refused instead of decoded as mojibake.
+    writeFileSync(join(root, "data.csv"), Buffer.from([0x41, 0x00, 0x42]));
+    await expect(readArtifact(root, "data.csv")).rejects.toThrow(/Not a UTF-8 text file/);
+  });
+
+  it("rejects a path outside the workspace", async () => {
+    const root = tempDir();
+    await expect(readArtifact(root, "../secret.md")).rejects.toThrow();
+  });
+
+  it("returns a PDF as base64 without decoding it as text", async () => {
+    const root = tempDir();
+    const pdf = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34, 0x0a, 0x00]);
+    writeFileSync(join(root, "report.pdf"), pdf);
+    await expect(readArtifact(root, "report.pdf")).resolves.toMatchObject({
+      encoding: "base64",
+      content: pdf.toString("base64"),
+      size: pdf.length,
+      truncated: false,
+    });
+  });
+
+  it("truncates a text artifact above 2 MiB and reports the real size", async () => {
+    const root = tempDir();
+    writeFileSync(join(root, "big.csv"), Buffer.alloc(MAX_ARTIFACT_TEXT_BYTES + 1, 0x61));
+    const result = await readArtifact(root, "big.csv");
+    expect(result.truncated).toBe(true);
+    expect(result.content.length).toBe(MAX_ARTIFACT_TEXT_BYTES);
+    expect(result.size).toBe(MAX_ARTIFACT_TEXT_BYTES + 1);
+  });
+
+  it("refuses a PDF above the 32 MB cap instead of truncating it", async () => {
+    const root = tempDir();
+    writeFileSync(join(root, "big.pdf"), Buffer.alloc(MAX_ARTIFACT_PDF_BYTES + 1));
+    await expect(readArtifact(root, "big.pdf")).rejects.toThrow(/larger than 32 MB/);
+  });
+
+  it("rejects an invalid request before touching the filesystem", async () => {
+    const { kernel, workspaceId } = await setup();
+    const reply = await call(kernel, "artifact.read", { workspaceId, path: "" });
+    expect(reply.error.code).toBe(ErrorCodes.invalidParams);
   });
 });

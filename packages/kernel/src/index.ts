@@ -9,6 +9,7 @@ import {
   AnnotationDeleteParams,
   AnnotationListParams,
   ApprovalRespondParams,
+  ArtifactReadParams,
   ErrorCodes,
   FsFilesParams,
   FsListParams,
@@ -43,7 +44,7 @@ import { addAnnotation, deleteAnnotation, listAnnotations } from "./annotations.
 import { openDb } from "./db.js";
 import { EngineManager } from "./engineManager.js";
 import { EventStore } from "./eventStore.js";
-import { findFiles, listDirectory, readFileText, writeFileText } from "./fsService.js";
+import { findFiles, listDirectory, readArtifact, readFileText, writeFileText } from "./fsService.js";
 import { gitDiff, gitStatus } from "./gitService.js";
 import { ModelService } from "./models.js";
 import { clearProfileModels, profileAgentDir, syncProfile } from "./profile.js";
@@ -252,6 +253,10 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
         [Methods.fsWrite]: async (params) => {
           const { workspaceId, path, content, expectedMtimeMs } = FsWriteParams.parse(params);
           return writeFileText(workspaceRoot(workspaceId), path, content, expectedMtimeMs);
+        },
+        [Methods.artifactRead]: async (params) => {
+          const { workspaceId, path } = ArtifactReadParams.parse(params);
+          return readArtifact(workspaceRoot(workspaceId), path);
         },
         [Methods.fsFiles]: async (params) => findFiles(workspaceRoot(FsFilesParams.parse(params).workspaceId)),
         [Methods.gitStatus]: async (params) => gitStatus(workspaceRoot(GitStatusParams.parse(params).workspaceId)),
