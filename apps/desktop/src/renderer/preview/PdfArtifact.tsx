@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { PDFDocumentLoadingTask, PDFDocumentProxy, RenderTask } from "pdfjs-dist";
+import type * as PdfJsModule from "pdfjs-dist/legacy/build/pdf.mjs";
 import { base64ToBytes } from "./bytes.js";
 
 const ZOOM_MIN = 0.5;
@@ -9,7 +10,7 @@ const RESIZE_DEBOUNCE_MS = 150;
 /** Horizontal breathing room in the scroll pane; fit width subtracts it from the pane. */
 const PANE_PADDING = 32;
 
-type PdfJs = typeof import("pdfjs-dist");
+type PdfJs = typeof PdfJsModule;
 type PdfStatus = "loading" | "ready" | "error";
 
 let loading: Promise<PdfJs> | undefined;
@@ -18,12 +19,15 @@ let loading: Promise<PdfJs> | undefined;
  * Both imports stay dynamic: pdf.js is ~1 MB and must not sit in the entry chunk. The worker
  * is a Vite `?url` asset (hashed into `dist/renderer/assets`), because a runtime
  * `new URL("pdfjs-dist/…", import.meta.url)` cannot resolve a bare package path.
+ *
+ * The legacy build ships the polyfills pdf.js needs on this Electron's Chromium; the regular
+ * build calls `Map.prototype.getOrInsertComputed`, which is missing there and aborts rendering.
  */
 function loadPdfJs(): Promise<PdfJs> {
   loading ??= (async () => {
     const [pdfjs, worker] = await Promise.all([
-      import("pdfjs-dist"),
-      import("pdfjs-dist/build/pdf.worker.min.mjs?url"),
+      import("pdfjs-dist/legacy/build/pdf.mjs"),
+      import("pdfjs-dist/legacy/build/pdf.worker.min.mjs?url"),
     ]);
     pdfjs.GlobalWorkerOptions.workerSrc = worker.default;
     return pdfjs;

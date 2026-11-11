@@ -4,7 +4,7 @@ import { expect, test, type ElectronApplication, type Page } from "@playwright/t
 import { bootstrap, createDirs, launchApp } from "./app-harness.js";
 import { writeArtifactFixtures } from "./fixtures/artifacts/build.mjs";
 import { deleteProviderThroughKernel, removeDir, waitForKernelExit } from "./helpers.js";
-import { startMockProvider } from "./mock-provider.js";
+import { startMockProvider, type MockProvider } from "./mock-provider.js";
 
 async function showFiles(page: Page): Promise<void> {
   await page.getByRole("group", { name: "List pane" }).getByRole("button", { name: "File list" }).click();
@@ -22,9 +22,10 @@ test("previews markdown, CSV, and PDF artifacts, then restores and reports a del
   // Generated inside the temp workspace: no fixture bytes (and no 32 MiB PDF) enter the repo.
   writeArtifactFixtures(harness.workspacePath);
 
-  const mock = await startMockProvider();
+  let mock: MockProvider | undefined;
   let app: ElectronApplication | undefined;
   try {
+    mock = await startMockProvider();
     app = await launchApp(harness);
     const page = await app.firstWindow();
     const dialogs: string[] = [];
@@ -58,10 +59,23 @@ test("previews markdown, CSV, and PDF artifacts, then restores and reports a del
     const pdf = page.getByRole("region", { name: "Preview small.pdf", exact: true });
     await expect(pdf.locator("canvas.pdf-canvas")).toBeVisible({ timeout: 30_000 });
     await expect(pdf.locator(".pdf-page")).toHaveText("1 / 1", { timeout: 30_000 });
-    const drawn = await pdf.locator("canvas.pdf-canvas").evaluate((canvas: HTMLCanvasElement) => {
-      return canvas.width > 0 && canvas.height > 0 && canvas.getContext("2d") !== null;
-    });
-    expect(drawn).toBe(true);
+    const painted = async (): Promise<boolean> =>
+      pdf.locator("canvas.pdf-canvas").evaluate((canvas: HTMLCanvasElement) => {
+        const context = canvas.getContext("2d");
+        if (context === null || canvas.width === 0 || canvas.height === 0) return false;
+        const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
+        for (let index = 0; index < data.length; index += 4) {
+          // A transparent pixel has no colour to inspect; the stroke's pixels are opaque.
+          if ((data[index + 3] ?? 0) === 0) continue;
+          const red = data[index] ?? 0;
+          const green = data[index + 1] ?? 0;
+          const blue = data[index + 2] ?? 0;
+          // build.mjs strokes a red 180×180 square: a rendered page has such a pixel.
+          if (red > 150 && red - Math.max(green, blue) > 80) return true;
+        }
+        return false;
+      });
+    await expect.poll(painted, { timeout: 30_000 }).toBe(true);
 
     // Oversized PDFs are refused by the kernel instead of silently truncated.
     await preview(page, "huge.pdf");
@@ -95,9 +109,9 @@ test("previews markdown, CSV, and PDF artifacts, then restores and reports a del
   } finally {
     if (app !== undefined) await deleteProviderThroughKernel(harness.dataDir, "Mock").catch(() => undefined);
     await app?.close().catch(() => undefined);
-    await mock.close().catch(() => undefined);
+    await mock?.close().catch(() => undefined);
+    await waitForKernelExit(harness.dataDir).catch(() => undefined);
+    await removeDir(harness.dataDir);
+    await removeDir(harness.workspacePath);
   }
-  await waitForKernelExit(harness.dataDir).catch(() => undefined);
-  await removeDir(harness.dataDir);
-  await removeDir(harness.workspacePath);
 });
