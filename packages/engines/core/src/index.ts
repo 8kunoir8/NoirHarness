@@ -59,6 +59,24 @@ export type EngineHistoryMessage =
   | { role: "assistant"; text: string; toolCalls?: Array<{ id: string; name: string; arguments: string }> }
   | { role: "tool"; toolCallId: string; name: string; text: string };
 
+/**
+ * A tool an MCP server advertises, already namespaced `mcp__<server>__<tool>`. `parameters` is the
+ * server's JSON Schema, passed to the provider unchanged.
+ */
+export interface EngineMcpTool {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+/** One MCP server a session may use. The ACP engine hands these to `session/new` as `mcpServers`. */
+export interface EngineMcpServer {
+  name: string;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+}
+
 export interface EngineStartOptions {
   sessionId: string;
   cwd: string;
@@ -68,6 +86,12 @@ export interface EngineStartOptions {
   history: EngineHistoryMessage[];
   skills: Array<{ name: string; scope: "global" | "project"; description: string }>;
   turnTimeoutMs: number;
+  /** Tools discovered from the session's MCP servers; the native engine appends them to its own. */
+  mcpTools?: EngineMcpTool[];
+  /** Runs one namespaced MCP tool. The kernel owns the subprocess, so the engine only asks. */
+  callMcpTool?: (name: string, args: Record<string, unknown>) => Promise<string>;
+  /** The servers themselves, for engines that speak MCP natively (ACP). */
+  mcpServers?: EngineMcpServer[];
 }
 
 export interface EngineSession {

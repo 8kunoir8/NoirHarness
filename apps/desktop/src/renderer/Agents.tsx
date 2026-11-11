@@ -49,20 +49,21 @@ function refreshesRoster(type: AgentEvent["type"]): boolean {
   );
 }
 
-/** The five policy categories, in the order the matrix renders them. */
+/** The six policy categories, in the order the matrix renders them. */
 const POLICY_CATEGORIES: readonly PermissionCategory[] = [
   "shell",
   "delete",
   "rename",
   "write-outside-workspace",
   "network",
+  "mcp",
 ];
 
 const DECISIONS: readonly Decision[] = ["ask", "allow", "reject"];
 
 const DECISION_LABEL: Record<Decision, string> = { ask: "Ask", allow: "Allow", reject: "Reject" };
 
-/** Missing key means `ask`; the form always sends all five so a save is a full replacement. */
+/** Missing key means `ask`; the form always sends every category so a save is a full replacement. */
 type PermissionDraft = Record<PermissionCategory, Decision>;
 
 const ASK_EVERYWHERE: PermissionDraft = {
@@ -71,6 +72,7 @@ const ASK_EVERYWHERE: PermissionDraft = {
   rename: "ask",
   "write-outside-workspace": "ask",
   network: "ask",
+  mcp: "ask",
 };
 
 const STATUS_LABEL: Record<AgentRosterEntry["status"], string> = {
@@ -87,6 +89,7 @@ function toDraft(policy: PermissionPolicy): PermissionDraft {
     rename: policy.rename ?? "ask",
     "write-outside-workspace": policy["write-outside-workspace"] ?? "ask",
     network: policy.network ?? "ask",
+    mcp: policy.mcp ?? "ask",
   };
 }
 

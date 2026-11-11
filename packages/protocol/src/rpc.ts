@@ -48,6 +48,11 @@ export const Methods = {
   skillList: "skill.list",
   skillSetEnabled: "skill.setEnabled",
   skillRead: "skill.read",
+  mcpList: "mcp.list",
+  mcpCreate: "mcp.create",
+  mcpUpdate: "mcp.update",
+  mcpDelete: "mcp.delete",
+  mcpTest: "mcp.test",
 } as const;
 
 /** `system.health` result. `engineDir` is the agent directory the kernel materializes and omp reads. */
@@ -134,6 +139,7 @@ export const PermissionPolicySchema = z
     rename: z.enum(["ask", "allow", "reject"]),
     "write-outside-workspace": z.enum(["ask", "allow", "reject"]),
     network: z.enum(["ask", "allow", "reject"]),
+    mcp: z.enum(["ask", "allow", "reject"]),
   })
   .partial()
   .strict();
@@ -340,6 +346,54 @@ export const SkillReadParams = z.object({
 export type SkillReadParams = z.infer<typeof SkillReadParams>;
 export const SkillReadResult = z.object({ content: z.string(), hash: z.string(), truncated: z.literal(false) });
 export type SkillReadResult = z.infer<typeof SkillReadResult>;
+/** A configured MCP server. `args` and `env` are decoded from the row's JSON columns. */
+export const McpServerView = z.object({
+  id: z.string(),
+  name: z.string(),
+  command: z.string(),
+  args: z.array(z.string()),
+  env: z.record(z.string()),
+  enabled: z.boolean(),
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
+});
+export type McpServerView = z.infer<typeof McpServerView>;
+
+/** Server names become tool-name segments (`mcp__<name>__<tool>`), so they stay narrow. */
+export const McpServerName = z.string().regex(/^[a-z0-9_-]{1,40}$/);
+
+export const McpServerCreateParams = z.object({
+  name: McpServerName,
+  command: z.string().trim().min(1),
+  args: z.array(z.string()).default([]),
+  env: z.record(z.string()).default({}),
+  enabled: z.boolean().default(true),
+});
+export type McpServerCreateParams = z.infer<typeof McpServerCreateParams>;
+export const McpServerUpdateParams = McpServerCreateParams.partial().extend({ id: z.string().min(1) });
+export type McpServerUpdateParams = z.infer<typeof McpServerUpdateParams>;
+export const McpServerDeleteParams = z.object({ id: z.string().min(1) });
+export type McpServerDeleteParams = z.infer<typeof McpServerDeleteParams>;
+export const McpServerListResult = z.object({ servers: z.array(McpServerView) });
+export type McpServerListResult = z.infer<typeof McpServerListResult>;
+export const McpServerDeleteResult = z.object({ deleted: z.boolean() });
+export type McpServerDeleteResult = z.infer<typeof McpServerDeleteResult>;
+
+/** A probe runs one server with these settings without saving it. */
+export const McpTestParams = z.object({
+  command: z.string().trim().min(1),
+  args: z.array(z.string()).default([]),
+  env: z.record(z.string()).default({}),
+});
+export type McpTestParams = z.infer<typeof McpTestParams>;
+export const McpDiscoveredTool = z.object({ name: z.string(), description: z.string().optional() });
+export type McpDiscoveredTool = z.infer<typeof McpDiscoveredTool>;
+export const McpTestResult = z.object({
+  ok: z.boolean(),
+  tools: z.array(McpDiscoveredTool),
+  error: z.string().optional(),
+});
+export type McpTestResult = z.infer<typeof McpTestResult>;
 
 export const EventNotificationParams = z.object({ event: AgentEvent });
 export type EventNotificationParams = z.infer<typeof EventNotificationParams>;

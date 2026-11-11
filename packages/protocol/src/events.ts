@@ -30,7 +30,7 @@ export const PermissionDecision = z.enum(["allow_once", "allow_always", "reject"
 export type PermissionDecision = z.infer<typeof PermissionDecision>;
 
 /** The policy categories a session can be configured for; also the `permission.*` event vocabulary. */
-export const PermissionCategory = z.enum(["shell", "delete", "rename", "write-outside-workspace", "network"]);
+export const PermissionCategory = z.enum(["shell", "delete", "rename", "write-outside-workspace", "network", "mcp"]);
 export type PermissionCategory = z.infer<typeof PermissionCategory>;
 
 export const PermissionOption = z.object({
