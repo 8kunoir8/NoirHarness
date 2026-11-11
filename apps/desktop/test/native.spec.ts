@@ -45,11 +45,11 @@ test("drives the native tool loop and reconstructs history after a restart", asy
     // The tool result went back to the provider as a `tool` message.
     expect(mock.toolMessageSeen()).toBe(true);
 
-    // `usage.updated` reached the renderer with the model's real window, not a zero-sized context.
+    // `usage.updated` reached the renderer: the meter prints its percentage of the model's real
+    // 200,000-token window, not of a zero-sized context.
     const meter = page.getByTestId("usage-meter");
     await expect(meter).toBeVisible({ timeout: 20_000 });
-    await expect(meter).toContainText("of 200k");
-    await expect(meter).not.toContainText("0% of 0");
+    await expect(meter).toContainText(/^\d+% of 200k\b/);
 
     await app.close();
     app = undefined;
@@ -71,14 +71,22 @@ test("drives the native tool loop and reconstructs history after a restart", asy
       page.getByTestId("message-assistant").filter({ hasText: "Hello from mock." }),
     ).toBeVisible({ timeout: 30_000 });
 
-    // The cold kernel rebuilt the turn from events: the earlier prompt is replayed once, ahead of
-    // this one, together with the tool result the provider answered.
+    // The cold kernel rebuilt the turn from events. The whole transcript goes back in wire order:
+    // the assistant message that owns `call_native_1`, its tool result, then the closing assistant
+    // text. Dropping the call but keeping the result would leave the provider an orphaned tool
+    // message, so the exact sequence is the guard.
     const rebuilt = mock.requestMessages().at(-1) ?? [];
-    expect(rebuilt.filter((message) => message.role === "user").map((message) => message.content)).toEqual([
-      "ntool",
-      "hello",
+    expect(rebuilt.map((message) => message.role)).toEqual([
+      "system",
+      "user",
+      "assistant",
+      "tool",
+      "assistant",
+      "user",
     ]);
-    expect(rebuilt.some((message) => message.role === "tool")).toBe(true);
+    expect(rebuilt[1]?.content).toBe("ntool");
+    expect(rebuilt[4]?.content).toBe("native tool finished");
+    expect(rebuilt[5]?.content).toBe("hello");
 
     // Clear the keyring entry while the kernel is still up; a spec must not leave a credential.
     await deleteProviderThroughKernel(harness.dataDir, "Mock").catch(() => undefined);

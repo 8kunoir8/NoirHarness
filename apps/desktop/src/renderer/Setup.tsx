@@ -130,7 +130,12 @@ export function Setup({ request, onOpenChat }: SetupProps) {
     setBusy(true);
     try {
       await request("provider.delete", ProviderDeleteParams.parse({ id: provider.id }));
-      if (providerId === provider.id) setProviderId("");
+      if (providerId === provider.id) {
+        setProviderId("");
+        // The native choice belonged to that provider's API kind; without one there is nothing to
+        // validate it against, and leaving it would show a value whose option is disabled.
+        setEngine("acp");
+      }
       setError(undefined);
       await load();
     } catch (deleteError) {
