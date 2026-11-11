@@ -140,6 +140,8 @@ function makeRequest(overrides: Partial<Record<string, (params?: unknown) => unk
         return { workspaces: [] };
       case "skill.list":
         return { skills: [], shadowed: [], warnings: [] };
+      case "mcp.list":
+        return { servers: [] };
       default:
         throw new Error(`unexpected ${method}`);
     }
@@ -636,6 +638,8 @@ describe("App agents rail", () => {
           return { agents: roster, generatedAt: 1 };
         case "skill.list":
           return { skills: [], shadowed: [], warnings: [] };
+        case "mcp.list":
+          return { servers: [] };
         default:
           throw new Error(`unexpected ${method}`);
       }

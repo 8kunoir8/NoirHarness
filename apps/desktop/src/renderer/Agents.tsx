@@ -13,6 +13,7 @@ import {
   type AgentRosterEntry,
   type AgentRosterResult,
   type AgentView,
+  type McpServerView,
   type ModelListResult,
   type ModelView,
   type PermissionCategory,
@@ -60,6 +61,9 @@ const POLICY_CATEGORIES: readonly PermissionCategory[] = [
 ];
 
 const DECISIONS: readonly Decision[] = ["ask", "allow", "reject"];
+
+/** Only the MCP row reads differently: "MCP tools" is what the user is being asked about. */
+const CATEGORY_LABEL: Partial<Record<PermissionCategory, string>> = { mcp: "MCP tools" };
 
 const DECISION_LABEL: Record<Decision, string> = { ask: "Ask", allow: "Allow", reject: "Reject" };
 
@@ -131,6 +135,8 @@ interface AgentDraft {
   modelRef: string;
   /** Empty means "no default workspace". */
   defaultWorkspaceId: string;
+  /** The MCP servers this profile runs; unbound servers never reach the engine. */
+  mcpServerIds: readonly string[];
   permissionPolicy: PermissionDraft;
 }
 
@@ -139,6 +145,7 @@ interface ConfigFormProps {
   agent: AgentView | undefined;
   models: readonly ModelView[];
   workspaces: readonly WorkspaceView[];
+  mcpServers: readonly McpServerView[];
   skills: readonly SkillView[];
   error: string | undefined;
   busy: boolean;
@@ -157,6 +164,7 @@ function AgentConfigForm({
   agent,
   models,
   workspaces,
+  mcpServers,
   skills,
   error,
   busy,
@@ -169,6 +177,7 @@ function AgentConfigForm({
   const [engineId, setEngineId] = useState<AgentView["engineId"]>(agent?.engineId ?? "acp");
   const [modelRef, setModelRef] = useState(agent?.modelRef ?? "");
   const [defaultWorkspaceId, setDefaultWorkspaceId] = useState(agent?.defaultWorkspaceId ?? "");
+  const [mcpServerIds, setMcpServerIds] = useState<readonly string[]>(agent?.mcpServerIds ?? []);
   const [policy, setPolicy] = useState<PermissionDraft>(() => toDraft(agent?.permissionPolicy ?? {}));
   const [validationError, setValidationError] = useState<string | undefined>(undefined);
 
@@ -193,6 +202,7 @@ function AgentConfigForm({
       engineId,
       modelRef,
       defaultWorkspaceId,
+      mcpServerIds,
       permissionPolicy: policy,
     });
   }
@@ -279,7 +289,7 @@ function AgentConfigForm({
           <legend>Permissions</legend>
           {POLICY_CATEGORIES.map((category) => (
             <fieldset key={category} className="agents-policy-row">
-              <legend>{category}</legend>
+              <legend>{CATEGORY_LABEL[category] ?? category}</legend>
               {DECISIONS.map((decision) => (
                 <label key={decision} className="agents-policy-choice">
                   <input
@@ -295,6 +305,34 @@ function AgentConfigForm({
               ))}
             </fieldset>
           ))}
+        </fieldset>
+
+        <fieldset className="agents-policy">
+          <legend>MCP servers</legend>
+          {mcpServers.length === 0 ? (
+            <p className="agents-hint">No MCP servers are configured. Add one in Setup.</p>
+          ) : (
+            mcpServers.map((server) => (
+              <label key={server.id} className="agents-policy-choice">
+                <input
+                  type="checkbox"
+                  checked={mcpServerIds.includes(server.id)}
+                  disabled={busy || !server.enabled}
+                  onChange={(event) =>
+                    setMcpServerIds((current) =>
+                      event.target.checked
+                        ? [...current, server.id]
+                        : current.filter((id) => id !== server.id),
+                    )
+                  }
+                />
+                {server.enabled ? server.name : `${server.name} (disabled)`}
+              </label>
+            ))
+          )}
+          {mcpServerIds.some((id) => !mcpServers.some((server) => server.id === id)) ? (
+            <p className="agents-hint">This agent is bound to a server that no longer exists.</p>
+          ) : null}
         </fieldset>
 
         <div className="agents-actions">
@@ -343,6 +381,7 @@ export function Agents({ workspaceId, request, onOpenChat, configRef }: AgentsPr
   const [roster, setRoster] = useState<AgentRosterEntry[]>([]);
   const [models, setModels] = useState<ModelView[]>([]);
   const [workspaces, setWorkspaces] = useState<WorkspaceView[]>([]);
+  const [mcpServers, setMcpServers] = useState<McpServerView[]>([]);
   const [skills, setSkills] = useState<SkillView[]>([]);
   const [includeArchived, setIncludeArchived] = useState(false);
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
@@ -380,19 +419,22 @@ export function Agents({ workspaceId, request, onOpenChat, configRef }: AgentsPr
     const run = ++loadSeq.current;
     const rosterSnapshot = ++rosterSeq.current;
     try {
-      const [agentResult, rosterResult, modelResult, workspaceResult, skillResult] = await Promise.all([
-        request<AgentListResult>("agent.list", { includeArchived }),
-        request<AgentRosterResult>("agent.roster", {}),
-        request<ModelListResult>("model.list"),
-        request<{ workspaces: WorkspaceView[] }>("workspace.list"),
-        request<SkillListResult>("skill.list", workspaceId === "" ? {} : { workspaceId }),
-      ]);
+      const [agentResult, rosterResult, modelResult, workspaceResult, skillResult, mcpResult] =
+        await Promise.all([
+          request<AgentListResult>("agent.list", { includeArchived }),
+          request<AgentRosterResult>("agent.roster", {}),
+          request<ModelListResult>("model.list"),
+          request<{ workspaces: WorkspaceView[] }>("workspace.list"),
+          request<SkillListResult>("skill.list", workspaceId === "" ? {} : { workspaceId }),
+          request<{ servers: McpServerView[] }>("mcp.list"),
+        ]);
       if (run !== loadSeq.current) return;
       setAgents(agentResult.agents);
       applyRoster(rosterSnapshot, rosterResult.agents);
       setModels(modelResult.models);
       setWorkspaces(workspaceResult.workspaces);
       setSkills(skillResult.skills);
+      setMcpServers(mcpResult.servers);
       setListError(undefined);
     } catch (loadError) {
       if (run !== loadSeq.current) return;
@@ -488,6 +530,7 @@ export function Agents({ workspaceId, request, onOpenChat, configRef }: AgentsPr
           modelRef: draft.modelRef === "" ? null : draft.modelRef,
           permissionPolicy: draft.permissionPolicy,
           defaultWorkspaceId: draft.defaultWorkspaceId === "" ? null : draft.defaultWorkspaceId,
+          mcpServerIds: [...draft.mcpServerIds],
         });
         await load();
         setCreating(false);
@@ -505,6 +548,7 @@ export function Agents({ workspaceId, request, onOpenChat, configRef }: AgentsPr
           modelRef?: string | null;
           permissionPolicy?: PermissionDraft;
           defaultWorkspaceId?: string | null;
+          mcpServerIds?: string[];
         } = { id: selectedAgent.id };
         if (draft.name !== selectedAgent.name) update.name = draft.name;
         if (draft.role !== selectedAgent.role) update.role = draft.role;
@@ -516,6 +560,13 @@ export function Agents({ workspaceId, request, onOpenChat, configRef }: AgentsPr
         const loadedPolicy = toDraft(selectedAgent.permissionPolicy);
         if (POLICY_CATEGORIES.some((category) => draft.permissionPolicy[category] !== loadedPolicy[category])) {
           update.permissionPolicy = draft.permissionPolicy;
+        }
+        const serverIds = [...draft.mcpServerIds];
+        if (
+          serverIds.length !== selectedAgent.mcpServerIds.length ||
+          serverIds.some((id) => !selectedAgent.mcpServerIds.includes(id))
+        ) {
+          update.mcpServerIds = serverIds;
         }
         if (Object.keys(update).length > 1) {
           await request<AgentView>("agent.update", update);
@@ -810,6 +861,7 @@ export function Agents({ workspaceId, request, onOpenChat, configRef }: AgentsPr
           agent={creating ? undefined : selectedAgent}
           models={models}
           workspaces={workspaces}
+          mcpServers={mcpServers}
           skills={skills}
           error={formError}
           busy={busy}

@@ -1,11 +1,18 @@
 import { useEffect, useState, type FormEvent } from "react";
 import {
+  McpServerCreateParams,
+  McpServerDeleteParams,
+  McpServerListResult,
+  McpServerUpdateParams,
+  McpTestParams,
+  McpTestResult,
   ModelListResult,
   ProviderDeleteParams,
   ProviderListResult,
   SystemHealthResult,
   type ApiKind,
   type EngineKind,
+  type McpServerView,
   type ModelCreateParams,
   type ModelView,
   type ProviderCreateParams,
@@ -19,6 +26,30 @@ const API_KIND_LABEL: Record<ApiKind, string> = {
   "anthropic-messages": "Anthropic",
   "google-generative-ai": "Google",
 };
+
+const MCP_NAME_PATTERN = /^[a-z0-9_-]{1,40}$/;
+const MCP_NAME_HINT = "Use lowercase letters, digits, _ or - (max 40)";
+
+/** `a b  c` → `["a","b","c"]`; the field is one line of arguments, not shell syntax. */
+function parseArgs(text: string): string[] {
+  return text.split(/\s+/).filter((arg) => arg !== "");
+}
+
+/** `KEY=value` per line; the value may be empty and keeps everything after the first `=`. */
+function parseEnv(text: string): Record<string, string> | undefined {
+  const env: Record<string, string> = {};
+  for (const line of text.split(/\r?\n/)) {
+    if (line.trim() === "") continue;
+    const index = line.indexOf("=");
+    if (index <= 0) return undefined;
+    env[line.slice(0, index).trim()] = line.slice(index + 1);
+  }
+  return env;
+}
+
+function envText(env: Record<string, string>): string {
+  return Object.entries(env).map(([key, value]) => `${key}=${value}`).join("\n");
+}
 
 interface SetupProps {
   request: RequestFn;
@@ -44,18 +75,28 @@ export function Setup({ request, onOpenChat }: SetupProps) {
   const [engine, setEngine] = useState<EngineKind>("acp");
   const [engineDir, setEngineDir] = useState("");
   const [error, setError] = useState<string | undefined>(undefined);
+  const [mcpServers, setMcpServers] = useState<McpServerView[]>([]);
+  const [mcpName, setMcpName] = useState("");
+  const [mcpCommand, setMcpCommand] = useState("");
+  const [mcpArgs, setMcpArgs] = useState("");
+  const [mcpEnv, setMcpEnv] = useState("");
+  const [mcpError, setMcpError] = useState<string | undefined>(undefined);
+  /** Probe outcome per server id; a successful probe reports the discovered tool count. */
+  const [mcpProbes, setMcpProbes] = useState<Record<string, McpTestResult>>({});
   const [busy, setBusy] = useState(false);
 
   async function load(): Promise<void> {
     try {
-      const [providerResult, modelResult, health] = await Promise.all([
+      const [providerResult, modelResult, health, mcpResult] = await Promise.all([
         request("provider.list").then((value) => ProviderListResult.parse(value)),
         request("model.list").then((value) => ModelListResult.parse(value)),
         request("system.health").then((value) => SystemHealthResult.parse(value)),
+        request("mcp.list").then((value) => McpServerListResult.parse(value)),
       ]);
       setProviders(providerResult.providers);
       setModels(modelResult.models);
       setEngineDir(health.engineDir);
+      setMcpServers(mcpResult.servers);
       setError(undefined);
     } catch (loadError) {
       setError(errorMessage(loadError));
@@ -153,6 +194,102 @@ export function Setup({ request, onOpenChat }: SetupProps) {
       await load();
     } catch (deleteError) {
       setError(errorMessage(deleteError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function addMcpServer(event: FormEvent): Promise<void> {
+    event.preventDefault();
+    if (busy) return;
+    const trimmed = mcpName.trim();
+    if (!MCP_NAME_PATTERN.test(trimmed)) {
+      setMcpError(MCP_NAME_HINT);
+      return;
+    }
+    if (mcpCommand.trim() === "") {
+      setMcpError("Command is required");
+      return;
+    }
+    const env = parseEnv(mcpEnv);
+    if (env === undefined) {
+      setMcpError("Each environment line must be KEY=value");
+      return;
+    }
+    setBusy(true);
+    try {
+      await request(
+        "mcp.create",
+        McpServerCreateParams.parse({
+          name: trimmed,
+          command: mcpCommand.trim(),
+          args: parseArgs(mcpArgs),
+          env,
+          enabled: true,
+        }),
+      );
+      setMcpName("");
+      setMcpCommand("");
+      setMcpArgs("");
+      setMcpEnv("");
+      setMcpError(undefined);
+      await load();
+    } catch (createError) {
+      // Keep the typed definition so a rejected name can be corrected without retyping.
+      setMcpError(errorMessage(createError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function setMcpEnabled(server: McpServerView, enabled: boolean): Promise<void> {
+    setBusy(true);
+    try {
+      await request("mcp.update", McpServerUpdateParams.parse({ id: server.id, enabled }));
+      setMcpError(undefined);
+      await load();
+    } catch (updateError) {
+      setMcpError(errorMessage(updateError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeMcpServer(server: McpServerView): Promise<void> {
+    setBusy(true);
+    try {
+      await request("mcp.delete", McpServerDeleteParams.parse({ id: server.id }));
+      setMcpProbes((current) => {
+        const next = { ...current };
+        delete next[server.id];
+        return next;
+      });
+      setMcpError(undefined);
+      await load();
+    } catch (deleteError) {
+      setMcpError(errorMessage(deleteError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Probes the saved settings: starting the real process is the only honest test of a server. */
+  async function testMcpServer(server: McpServerView): Promise<void> {
+    setBusy(true);
+    try {
+      const result = McpTestResult.parse(
+        await request(
+          "mcp.test",
+          McpTestParams.parse({ command: server.command, args: server.args, env: server.env }),
+        ),
+      );
+      setMcpProbes((current) => ({ ...current, [server.id]: result }));
+      setMcpError(undefined);
+    } catch (testError) {
+      setMcpProbes((current) => ({
+        ...current,
+        [server.id]: { ok: false, tools: [], error: errorMessage(testError) },
+      }));
     } finally {
       setBusy(false);
     }
@@ -290,6 +427,83 @@ export function Setup({ request, onOpenChat }: SetupProps) {
             <input value={contextWindow} onChange={(event) => setContextWindow(event.target.value)} />
           </label>
           <button type="submit" disabled={!modelValid}>Add model</button>
+        </form>
+      </section>
+
+      <section aria-label="MCP Servers">
+        <h3>MCP servers</h3>
+        <p className="hint">
+          Model Context Protocol servers run as local processes. An agent runs only the servers its
+          profile selects, and every MCP call passes through that agent&apos;s permission policy.
+        </p>
+        {mcpError === undefined ? null : <p role="alert">{mcpError}</p>}
+        <ul className="setup-list">
+          {mcpServers.map((server) => {
+            const probe = mcpProbes[server.id];
+            return (
+              <li key={server.id}>
+                <strong>{server.name}</strong>
+                <span>{[server.command, ...server.args].join(" ")}</span>
+                <label className="setup-inline">
+                  <input
+                    type="checkbox"
+                    checked={server.enabled}
+                    disabled={busy}
+                    onChange={(event) => void setMcpEnabled(server, event.target.checked)}
+                  />
+                  Enabled {server.name}
+                </label>
+                <button type="button" disabled={busy} onClick={() => void testMcpServer(server)}>
+                  Test {server.name}
+                </button>
+                {probe === undefined ? null : probe.ok ? (
+                  <span>{probe.tools.length === 1 ? "1 tool" : `${probe.tools.length} tools`}</span>
+                ) : (
+                  <span className="setup-error">{probe.error ?? "Probe failed"}</span>
+                )}
+                <button type="button" disabled={busy} onClick={() => void removeMcpServer(server)}>
+                  Remove {server.name}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+        {mcpServers.length === 0 ? <p className="hint">No MCP servers configured.</p> : null}
+        <form onSubmit={(event) => void addMcpServer(event)}>
+          <label>
+            Server name
+            <input
+              placeholder="calc"
+              value={mcpName}
+              onChange={(event) => setMcpName(event.target.value)}
+            />
+          </label>
+          <label>
+            Server command
+            <input
+              placeholder="node"
+              value={mcpCommand}
+              onChange={(event) => setMcpCommand(event.target.value)}
+            />
+          </label>
+          <label>
+            Arguments
+            <input
+              placeholder="server.js --stdio"
+              value={mcpArgs}
+              onChange={(event) => setMcpArgs(event.target.value)}
+            />
+          </label>
+          <label>
+            Environment
+            <textarea
+              rows={3}
+              placeholder="KEY=value"
+              value={mcpEnv}
+              onChange={(event) => setMcpEnv(event.target.value)}
+            />
+          </label>
+          <button type="submit" disabled={busy}>Add MCP server</button>
         </form>
       </section>
 

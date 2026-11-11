@@ -641,6 +641,8 @@ button.diff-gutter:hover, button.diff-gutter:focus-visible { color: var(--accent
   background: var(--surface-raised);
 }
 .setup-list li span { color: var(--muted); font-size: 0.84rem; }
+.setup-inline { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 0.84rem; }
+.setup-list li .setup-error { color: var(--danger); }
 
 /* --- skills --- */
 
