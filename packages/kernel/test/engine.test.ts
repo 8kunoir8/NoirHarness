@@ -1,5 +1,6 @@
 import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -591,7 +592,9 @@ describe("EngineManager over the fake ACP server", () => {
 
       const stream = events.list(session.id);
       expect(stream.filter((event) => event.type === "permission.requested")).toHaveLength(0);
-      expect(eventPayload(stream.find((event) => event.type === "permission.auto")!, "permission.auto")).toMatchObject({
+      const auto = stream.filter((event) => event.type === "permission.auto");
+      expect(auto).toHaveLength(1);
+      expect(eventPayload(auto[0]!, "permission.auto")).toMatchObject({
         category: "shell",
         decision: "allow_once",
       });
@@ -671,11 +674,67 @@ describe("EngineManager over the fake ACP server", () => {
 
       const stream = events.list(session.id);
       expect(stream.filter((event) => event.type === "permission.requested")).toHaveLength(0);
-      expect(eventPayload(stream.find((event) => event.type === "permission.auto")!, "permission.auto")).toMatchObject({
+      const auto = stream.filter((event) => event.type === "permission.auto");
+      expect(auto).toHaveLength(1);
+      expect(eventPayload(auto[0]!, "permission.auto")).toMatchObject({
         category: "write-outside-workspace",
         decision: "allow_once",
       });
       expect(approvalRows(db, session.id)).toBe(0);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "asks instead of auto-approving when a workspace link reaches outside",
+    async (context) => {
+      const { events, db, manager, session, root } = setup({
+        agentPermissionPolicy: { "write-outside-workspace": "allow" },
+        acpPermissionKind: "edit",
+        acpPermissionRawInput: { path: "linked/notes.txt" },
+      });
+      try {
+        await symlink(tempDir(), join(root, "linked"), process.platform === "win32" ? "junction" : "dir");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EPERM") {
+          context.skip();
+          return;
+        }
+        throw error;
+      }
+
+      await manager.prompt({ sessionId: session.id, requestId: "linked-write", content: [{ type: "text", text: "permission" }] });
+      const requested = await waitForEvent(events, session.id, (event) => event.type === "permission.requested");
+      expect(eventPayload(requested, "permission.requested").category).toBe("write-outside-workspace");
+      expect(events.list(session.id).filter((event) => event.type === "permission.auto")).toHaveLength(0);
+      expect(approvalRows(db, session.id)).toBe(1);
+
+      await manager.respond(eventPayload(requested, "permission.requested").approvalId, "allow_once");
+      await waitForEvent(events, session.id, (event) => event.type === "turn.completed");
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "reads a policy value outside the vocabulary as ask",
+    async () => {
+      const { events, db, manager, session } = setup({
+        agentPermissionPolicy: { shell: "allow" },
+        acpPermissionKind: "execute",
+      });
+      // A hand-edited snapshot can hold any string; the enum schema never saw it.
+      db.prepare("UPDATE sessions SET config_snapshot_json = ? WHERE id = ?").run(
+        JSON.stringify({ permissionPolicy: { shell: "Allow" } }),
+        session.id,
+      );
+
+      await manager.prompt({ sessionId: session.id, requestId: "unreadable-policy", content: [{ type: "text", text: "permission" }] });
+      const requested = await waitForEvent(events, session.id, (event) => event.type === "permission.requested");
+      expect(events.list(session.id).filter((event) => event.type === "permission.auto")).toHaveLength(0);
+      expect(approvalRows(db, session.id)).toBe(1);
+
+      await manager.respond(eventPayload(requested, "permission.requested").approvalId, "allow_once");
+      await waitForEvent(events, session.id, (event) => event.type === "turn.completed");
     },
     TEST_TIMEOUT_MS,
   );

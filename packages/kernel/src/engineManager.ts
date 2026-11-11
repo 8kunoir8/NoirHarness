@@ -1,4 +1,5 @@
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { lstat, realpath } from "node:fs/promises";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type Database from "better-sqlite3";
 import { v7 as uuidv7 } from "uuid";
 import {
@@ -177,17 +178,50 @@ function permissionCategory(kind: string | undefined): "shell" | "delete" | "ren
   }
 }
 
+/** The real path of the deepest existing ancestor. Errors other than "nothing here" fail closed. */
+async function existingRealPath(target: string): Promise<string | undefined> {
+  let probe = target;
+  for (;;) {
+    try {
+      return await realpath(probe);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+      const parent = dirname(probe);
+      if (parent === probe) return undefined;
+      probe = parent;
+    }
+  }
+}
+
 /**
- * Whether a write target is provably inside the workspace. Everything else fails closed: no
- * path, a relative escape, an absolute path elsewhere, or the workspace root itself.
+ * Whether a write target resolves inside the workspace. A link inside the workspace must not make
+ * an outside target look inside, so the real path of the deepest existing ancestor is compared
+ * too. Everything else fails closed: no path, a relative escape, an absolute path elsewhere, the
+ * workspace root itself, a dangling or looping link, or a filesystem error.
  */
-function isInsideWorkspace(root: string, rawInput: unknown): boolean {
+async function isInsideWorkspace(root: string, rawInput: unknown): Promise<boolean> {
   if (typeof rawInput !== "object" || rawInput === null) return false;
   const path = "path" in rawInput ? rawInput.path : undefined;
   if (typeof path !== "string" || path === "") return false;
   try {
-    const inside = relative(root, resolve(root, path));
-    return inside !== "" && !inside.startsWith("..") && !isAbsolute(inside);
+    const realRoot = await realpath(root);
+    const target = resolve(realRoot, path);
+    const lexical = relative(realRoot, target);
+    if (lexical === "" || lexical.startsWith("..") || isAbsolute(lexical)) return false;
+    const real = await existingRealPath(target);
+    if (real === undefined) return false;
+    const realRelative = relative(realRoot, real);
+    if (realRelative.startsWith("..") || isAbsolute(realRelative)) return false;
+    // The workspace root as the deepest existing ancestor is only enough for a target that does
+    // not exist yet; an existing target the realpath walk cannot resolve is a link, not a file.
+    if (real !== realRoot) return true;
+    try {
+      await lstat(target);
+      return false;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ENOENT";
+    }
   } catch {
     return false;
   }
@@ -922,24 +956,26 @@ export class EngineManager {
     }
   }
 
-  private handlePermission(
+  private async handlePermission(
     state: SessionState,
     turn: TurnContext,
     request: EnginePermissionRequest,
   ): Promise<PermissionDecision> {
-    if (state.closing) return Promise.resolve("reject");
+    if (state.closing) return "reject";
 
     const category = permissionCategory(request.toolCall.kind);
     // The policy lives in the session snapshot, so editing an agent profile cannot change a
-    // running session. A write the kernel cannot prove inside the workspace always asks.
-    const configured = this.deps.sessions.snapshot(state.sessionId).permissionPolicy?.[category] ?? "ask";
-    const forcedAsk = category === "write-outside-workspace" && !isInsideWorkspace(state.workspaceRoot, request.toolCall.rawInput);
+    // running session. Anything outside the vocabulary reads as `ask`, never as a silent decision.
+    const stored = this.deps.sessions.snapshot(state.sessionId).permissionPolicy?.[category];
+    const configured = stored === "allow" || stored === "reject" ? stored : "ask";
+    // A write the kernel cannot prove inside the workspace always asks, even if it is allowed.
+    const forcedAsk = category === "write-outside-workspace" && !(await isInsideWorkspace(state.workspaceRoot, request.toolCall.rawInput));
     const effective = forcedAsk ? "ask" : configured;
     const title = request.toolCall.title !== "" ? request.toolCall.title : "Permission required";
     if (effective !== "ask") {
       const decision: PermissionDecision = effective === "allow" ? "allow_once" : "reject";
       this.emit(state, "permission.auto", { category, title, decision }, turn.turnId);
-      return Promise.resolve(decision);
+      return decision;
     }
 
     const approvalId = uuidv7();
