@@ -106,19 +106,6 @@ export function assignDeskIndices(agentIds: readonly string[], deskCount: number
   return assignment;
 }
 
-/** The same assignment resolved to points, for the scene's destination tiles. */
-export function assignDesks(
-  agentIds: readonly string[],
-  desks: readonly OfficePoint[],
-): Map<string, OfficePoint> {
-  const assignment = new Map<string, OfficePoint>();
-  for (const [agentId, index] of assignDeskIndices(agentIds, desks.length)) {
-    const desk = desks[index];
-    if (desk !== undefined) assignment.set(agentId, desk);
-  }
-  return assignment;
-}
-
 /** Roster → office states, capped at {@link MAX_OFFICE_AGENTS} in roster order. */
 export function toOfficeStates(
   roster: readonly AgentRosterEntry[],

@@ -343,6 +343,9 @@ export function Agents({ workspaceId, request, onOpenChat, configRef }: AgentsPr
   const [skills, setSkills] = useState<SkillView[]>([]);
   const [includeArchived, setIncludeArchived] = useState(false);
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
+  // Focus is passive: it highlights the character in the office but must never move the inspector,
+  // whose form is keyed by `selectedId` and would otherwise lose an unsaved draft on a mere tab.
+  const [focusedId, setFocusedId] = useState<string | undefined>(undefined);
   const [creating, setCreating] = useState(false);
   const [listError, setListError] = useState<string | undefined>(undefined);
   const [formError, setFormError] = useState<string | undefined>(undefined);
@@ -359,8 +362,20 @@ export function Agents({ workspaceId, request, onOpenChat, configRef }: AgentsPr
 
   // The RPC server answers concurrently, so a slower earlier batch must not overwrite a newer one.
   const loadSeq = useRef(0);
+  // Roster snapshots are stamped when requested, not when they arrive: a refresh may overlap another
+  // refresh or a still-pending `load`, and only the newest snapshot may win. Otherwise a late answer
+  // would roll status, the active tool and a `needs_you` bubble back to an older value.
+  const rosterSeq = useRef(0);
+  const appliedRosterSeq = useRef(0);
+  const applyRoster = useCallback((snapshot: number, entries: AgentRosterEntry[]): void => {
+    if (snapshot <= appliedRosterSeq.current) return;
+    appliedRosterSeq.current = snapshot;
+    setRoster(entries);
+  }, []);
+
   const load = useCallback(async (): Promise<void> => {
     const run = ++loadSeq.current;
+    const rosterSnapshot = ++rosterSeq.current;
     try {
       const [agentResult, rosterResult, modelResult, workspaceResult, skillResult] = await Promise.all([
         request<AgentListResult>("agent.list", { includeArchived }),
@@ -371,7 +386,7 @@ export function Agents({ workspaceId, request, onOpenChat, configRef }: AgentsPr
       ]);
       if (run !== loadSeq.current) return;
       setAgents(agentResult.agents);
-      setRoster(rosterResult.agents);
+      applyRoster(rosterSnapshot, rosterResult.agents);
       setModels(modelResult.models);
       setWorkspaces(workspaceResult.workspaces);
       setSkills(skillResult.skills);
@@ -381,7 +396,7 @@ export function Agents({ workspaceId, request, onOpenChat, configRef }: AgentsPr
       setListError(errorMessage(loadError));
       setAgents([]);
     }
-  }, [request, includeArchived, workspaceId]);
+  }, [request, includeArchived, workspaceId, applyRoster]);
 
   useEffect(() => {
     void load();
@@ -391,15 +406,14 @@ export function Agents({ workspaceId, request, onOpenChat, configRef }: AgentsPr
   // roster is refetched; the event types are filtered so message and file traffic never schedules it.
   const refreshTimer = useRef<number | undefined>(undefined);
   const refreshRoster = useCallback(async (): Promise<void> => {
-    const run = loadSeq.current;
+    const snapshot = ++rosterSeq.current;
     try {
       const result = await request<AgentRosterResult>("agent.roster", {});
-      if (run !== loadSeq.current) return;
-      setRoster(result.agents);
+      applyRoster(snapshot, result.agents);
     } catch {
       // A failed live refresh keeps the last good snapshot; the next matching event retries.
     }
-  }, [request]);
+  }, [request, applyRoster]);
 
   useEffect(() => {
     const listener = (event: AgentEvent): void => {
@@ -617,9 +631,11 @@ export function Agents({ workspaceId, request, onOpenChat, configRef }: AgentsPr
                       aria-label={`Select ${agent.name}`}
                       aria-pressed={agent.id === selectedId && !creating}
                       onClick={() => select(agent.id)}
-                      // Spec §9.4: focusing a row highlights its character; Enter opens the chat
-                      // through this row's own handler instead of a second global listener.
-                      onFocus={() => setSelectedId(agent.id)}
+                      // Enter opens the chat through this row's own handler instead of a second
+                      // global listener. Spec §9.4: focusing a row highlights its character, but
+                      // focus is passive — it never moves the inspector selection or its draft.
+                      onFocus={() => setFocusedId(agent.id)}
+                      onBlur={() => setFocusedId(undefined)}
                       onKeyDown={(event) => {
                         if (event.key !== "Enter") return;
                         event.preventDefault();
@@ -725,7 +741,7 @@ export function Agents({ workspaceId, request, onOpenChat, configRef }: AgentsPr
             {showOffice && !officeUnavailable ? (
               <AgentOffice
                 states={officeStates}
-                selectedId={selectedAgent.id}
+                selectedId={focusedId ?? selectedAgent.id}
                 reducedMotion={reducedMotion}
                 onSelect={(agentId) => {
                   if (agents?.some((agent) => agent.id === agentId) === true) select(agentId);

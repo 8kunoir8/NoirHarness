@@ -7,7 +7,7 @@ import {
   MAX_OFFICE_AGENTS,
   actionFor,
   approvalBubbleText,
-  assignDesks,
+  assignDeskIndices,
   hashAgentId,
   toOfficeStates,
   type AgentOfficeState,
@@ -214,8 +214,8 @@ describe("office mapper", () => {
 
 describe("desk assignment", () => {
   it("is stable when the id order changes", () => {
-    const forward = assignDesks(["alpha", "beta", "gamma"], DESKS);
-    const reverse = assignDesks(["gamma", "beta", "alpha"], DESKS);
+    const forward = assignDeskIndices(["alpha", "beta", "gamma"], DESKS.length);
+    const reverse = assignDeskIndices(["gamma", "beta", "alpha"], DESKS.length);
     expect([...forward.entries()]).toEqual([...reverse.entries()]);
   });
 
@@ -223,19 +223,22 @@ describe("desk assignment", () => {
     const colliding = ["a", "b", "c", "d", "e", "f"].filter((id) => hashAgentId(id) % 2 === 0);
     const ids = colliding.slice(0, 2);
     expect(ids).toHaveLength(2);
-    const assigned = assignDesks(ids, DESKS.slice(0, 2));
+    const assigned = assignDeskIndices(ids, 2);
     const first = assigned.get(ids[0] ?? "");
     const second = assigned.get(ids[1] ?? "");
     expect(first).toBeDefined();
     expect(second).toBeDefined();
-    expect(second).not.toEqual(first);
+    expect(second).not.toBe(first);
   });
 
-  it("keeps every desk even when agents outnumber desks", () => {
+  it("keeps every agent when agents outnumber desks", () => {
     const ids = ["a", "b", "c", "d", "e"];
-    const assigned = assignDesks(ids, DESKS);
+    const assigned = assignDeskIndices(ids, DESKS.length);
     expect(assigned.size).toBe(ids.length);
-    for (const desk of assigned.values()) expect(DESKS).toContainEqual(desk);
+    for (const index of assigned.values()) {
+      expect(index).toBeGreaterThanOrEqual(0);
+      expect(index).toBeLessThan(DESKS.length);
+    }
   });
 
   // `desks.ts` is the eager copy of the map's desk anchors; this keeps it honest.

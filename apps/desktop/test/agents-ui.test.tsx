@@ -467,6 +467,58 @@ describe("Agents", () => {
     expect(rosterCalls(request)).toBe(2);
   });
 
+  it("keeps the newest roster snapshot when a slow full load answers after a refresh", async () => {
+    const loadRoster = Promise.withResolvers<{ agents: AgentRosterEntry[]; generatedAt: number }>();
+    let rosterCall = 0;
+    const request = makeRequest({
+      "agent.list": () => ({ agents: [AGENT] }),
+      "agent.roster": () => {
+        rosterCall += 1;
+        return rosterCall === 1
+          ? loadRoster.promise
+          : { agents: [{ ...ROSTER, status: "needs_you" }], generatedAt: 2 };
+      },
+    });
+    renderAgents(request);
+    await waitFor(() => expect(rosterCalls(request)).toBe(1));
+
+    const listener = appApi.connect.mock.calls.at(-1)?.[0] as ((event: AgentEvent) => void) | undefined;
+    act(() => listener?.(frame("permission.requested")));
+    await waitFor(() => expect(rosterCalls(request)).toBe(2), { timeout: 2000 });
+
+    // The refresh applied its newer snapshot while the mount batch was still pending; the older
+    // answer arriving late must not roll the row (and its `needs_you` bubble) back.
+    await act(async () => {
+      loadRoster.resolve({ agents: [{ ...ROSTER, status: "idle", activeToolKind: null }], generatedAt: 1 });
+    });
+
+    expect(await within(roster()).findByText("Needs you")).toBeTruthy();
+    expect(within(roster()).queryByText("Idle")).toBeNull();
+  });
+
+  it("keeps an unsaved draft when focus moves to another roster row", async () => {
+    const second: AgentView = { ...AGENT, id: "a-2", name: "Builder" };
+    const request = makeRequest({
+      "agent.list": () => ({ agents: [AGENT, second] }),
+      "agent.roster": () => ({
+        agents: [ROSTER, { ...ROSTER, agentId: "a-2", name: "Builder" }],
+        generatedAt: 1,
+      }),
+    });
+    renderAgents(request);
+
+    await userEvent.click(await within(roster()).findByRole("button", { name: "Select Scout" }));
+    const name = within(config()).getByLabelText("Name") as HTMLInputElement;
+    await userEvent.type(name, " Edited");
+    expect(name.value).toBe("Scout Edited");
+
+    act(() => within(roster()).getByRole("button", { name: "Select Builder" }).focus());
+
+    // Focus highlights Builder's character without moving the inspector, so the Scout draft stays.
+    expect((within(config()).getByLabelText("Name") as HTMLInputElement).value).toBe("Scout Edited");
+    expect(screen.getByTestId("agent-office").getAttribute("data-selected")).toBe("a-2");
+  });
+
   it("keeps the roster and office selection in sync in both directions", async () => {
     const second: AgentView = { ...AGENT, id: "a-2", name: "Builder" };
     const request = makeRequest({
