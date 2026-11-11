@@ -102,6 +102,13 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
       );
     `,
   },
+  {
+    id: 5,
+    sql: `
+      ALTER TABLE models ADD COLUMN engine TEXT NOT NULL DEFAULT 'acp';
+      CREATE INDEX idx_models_engine ON models(engine);
+    `,
+  },
 ];
 
 export function migrate(db: Database.Database): void {

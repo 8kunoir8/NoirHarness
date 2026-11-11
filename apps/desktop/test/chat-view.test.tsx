@@ -107,6 +107,7 @@ const models: ModelView[] = [
     maxTokens: null,
     enabled: true,
     createdAt: 1,
+    engine: "acp",
   },
   {
     id: "m2",
@@ -117,6 +118,7 @@ const models: ModelView[] = [
     maxTokens: null,
     enabled: true,
     createdAt: 1,
+    engine: "acp",
   },
 ];
 

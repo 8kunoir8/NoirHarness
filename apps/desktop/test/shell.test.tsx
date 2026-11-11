@@ -38,6 +38,7 @@ const model: ModelView = {
   maxTokens: null,
   enabled: true,
   createdAt: NOW,
+  engine: "acp",
 };
 
 function filterIds(sessions: readonly SessionView[], filter: SessionFilter, read: ReadState = {}): string[] {

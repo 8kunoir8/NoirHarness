@@ -104,6 +104,7 @@ export function Setup({ request, onOpenChat }: SetupProps) {
       modelId: modelId.trim(),
       contextWindow: Number(contextWindow),
       enabled: true,
+      engine: "acp",
     };
     if (displayName.trim() !== "") params.displayName = displayName.trim();
     setBusy(true);

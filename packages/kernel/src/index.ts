@@ -20,6 +20,7 @@ import {
   ModelCreateParams,
   ModelDeleteParams,
   ModelListParams,
+  ModelSetEngineParams,
   ProjectAddParams,
   ProviderCreateParams,
   ProviderDeleteParams,
@@ -321,6 +322,10 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
           return created;
         },
         [Methods.modelList]: async (params) => ({ models: models.list(ModelListParams.parse(params ?? {}).providerId) }),
+        [Methods.modelSetEngine]: async (params) => {
+          const { id, engine } = ModelSetEngineParams.parse(params);
+          return models.setEngine(id, engine);
+        },
         [Methods.modelDelete]: async (params) => {
           models.remove(ModelDeleteParams.parse(params).id);
           await sync();

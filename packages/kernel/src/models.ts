@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { v7 as uuidv7 } from "uuid";
-import { ErrorCodes, RpcFault, type ModelCreateParams, type ModelView } from "@noir/protocol";
+import { ErrorCodes, RpcFault, type EngineKind, type ModelCreateParams, type ModelView } from "@noir/protocol";
 
 /** An enabled model whose provider is enabled; `providerName` completes the engine selector. */
 export interface EnabledModelRef {
@@ -8,14 +8,17 @@ export interface EnabledModelRef {
   providerId: string;
   providerName: string;
   modelId: string;
+  engine: EngineKind;
 }
 
 const ENABLED_MODEL_SELECT = `
   SELECT m.id AS id, m.provider_id AS provider_id, p.name AS provider_name, m.model_id AS model_id,
-         m.created_at AS created_at
+         m.engine AS engine, m.created_at AS created_at
   FROM models m
   JOIN providers p ON p.id = m.provider_id
   WHERE m.enabled = 1 AND p.enabled = 1`;
+
+const MODEL_COLUMNS = "m.id, m.provider_id, m.model_id, m.display_name, m.context_window, m.max_tokens, m.enabled, m.created_at, m.engine";
 
 function toRef(row: Record<string, unknown>): EnabledModelRef {
   return {
@@ -23,6 +26,21 @@ function toRef(row: Record<string, unknown>): EnabledModelRef {
     providerId: row.provider_id as string,
     providerName: row.provider_name as string,
     modelId: row.model_id as string,
+    engine: row.engine as EngineKind,
+  };
+}
+
+function toModelView(r: Record<string, unknown>): ModelView {
+  return {
+    id: r.id as string,
+    providerId: r.provider_id as string,
+    modelId: r.model_id as string,
+    displayName: r.display_name as string,
+    contextWindow: (r.context_window as number | null) ?? 200_000,
+    maxTokens: (r.max_tokens as number | null) ?? null,
+    enabled: (r.enabled as number) === 1,
+    createdAt: r.created_at as number,
+    engine: r.engine as EngineKind,
   };
 }
 
@@ -63,6 +81,8 @@ export class ModelService {
     if (!provider) throw new RpcFault(ErrorCodes.notFound, "Provider not found");
     const exists = this.db.prepare("SELECT id FROM models WHERE provider_id = ? AND model_id = ?").get(params.providerId, params.modelId);
     if (exists) throw new RpcFault(ErrorCodes.conflict, "Model already exists for this provider");
+    const engine = params.engine;
+    this.assertEngine(params.providerId, engine);
     const row: ModelView = {
       id: uuidv7(),
       providerId: params.providerId,
@@ -72,30 +92,42 @@ export class ModelService {
       maxTokens: params.maxTokens ?? null,
       enabled: params.enabled,
       createdAt: Date.now(),
+      engine,
     };
     this.db.prepare(
-      "INSERT INTO models (id, provider_id, model_id, display_name, context_window, max_tokens, enabled, created_at) VALUES (?,?,?,?,?,?,?,?)",
-    ).run(row.id, row.providerId, row.modelId, row.displayName, row.contextWindow, row.maxTokens, row.enabled ? 1 : 0, row.createdAt);
+      "INSERT INTO models (id, provider_id, model_id, display_name, context_window, max_tokens, enabled, created_at, engine) VALUES (?,?,?,?,?,?,?,?,?)",
+    ).run(row.id, row.providerId, row.modelId, row.displayName, row.contextWindow, row.maxTokens, row.enabled ? 1 : 0, row.createdAt, row.engine);
     return row;
   }
 
+  /** Switches the engine; native needs an openai-completions provider because the loop speaks that protocol. */
+  setEngine(id: string, engine: EngineKind): ModelView {
+    const model = this.db.prepare("SELECT provider_id FROM models WHERE id = ?").get(id) as { provider_id: string } | undefined;
+    if (model === undefined) throw new RpcFault(ErrorCodes.notFound, "Model not found");
+    this.assertEngine(model.provider_id, engine);
+    this.db.prepare("UPDATE models SET engine = ? WHERE id = ?").run(engine, id);
+    return this.find(id);
+  }
+
+  private assertEngine(providerId: string, engine: EngineKind): void {
+    if (engine !== "native") return;
+    const p = this.db.prepare("SELECT api_kind FROM providers WHERE id = ?").get(providerId) as { api_kind: string } | undefined;
+    if (p?.api_kind !== "openai-completions") throw new RpcFault(ErrorCodes.conflict, "Native engine supports openai-completions providers only");
+  }
+
+  private find(id: string): ModelView {
+    const row = this.db.prepare(`SELECT ${MODEL_COLUMNS} FROM models m WHERE m.id = ?`).get(id) as Record<string, unknown> | undefined;
+    if (row === undefined) throw new RpcFault(ErrorCodes.notFound, "Model not found");
+    return toModelView(row);
+  }
+
   list(providerId?: string): ModelView[] {
-    const sql = `SELECT m.id, m.provider_id, m.model_id, m.display_name, m.context_window, m.max_tokens,
-                        m.enabled, m.created_at
+    const sql = `SELECT ${MODEL_COLUMNS}
                  FROM models m
                  ${providerId ? "WHERE m.provider_id = ?" : ""}
                  ORDER BY m.display_name`;
     const rows = (providerId ? this.db.prepare(sql).all(providerId) : this.db.prepare(sql).all()) as Array<Record<string, unknown>>;
-    return rows.map((r) => ({
-      id: r.id as string,
-      providerId: r.provider_id as string,
-      modelId: r.model_id as string,
-      displayName: r.display_name as string,
-      contextWindow: (r.context_window as number | null) ?? 200_000,
-      maxTokens: (r.max_tokens as number | null) ?? null,
-      enabled: (r.enabled as number) === 1,
-      createdAt: r.created_at as number,
-    }));
+    return rows.map(toModelView);
   }
 
   remove(id: string): void {

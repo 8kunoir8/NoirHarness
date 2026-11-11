@@ -13,6 +13,7 @@ export const Methods = {
   modelCreate: "model.create",
   modelList: "model.list",
   modelDelete: "model.delete",
+  modelSetEngine: "model.setEngine",
   sessionPrompt: "session.prompt",
   sessionInterrupt: "session.interrupt",
   sessionCancelQueued: "session.cancelQueued",
@@ -49,6 +50,9 @@ export const WorkspaceCreateParams = z.object({ projectId: z.string().min(1) });
 export const SessionCreateParams = z.object({ workspaceId: z.string().min(1), modelId: z.string().optional() });
 export const SessionSubscribeParams = z.object({ sessionId: z.string().min(1), sinceSeq: z.number().int().nonnegative().default(0) });
 
+export const EngineKind = z.enum(["acp", "native"]);
+export type EngineKind = z.infer<typeof EngineKind>;
+
 export const ModelCreateParams = z.object({
   providerId: z.string().min(1),
   modelId: z.string().trim().min(1).max(160),
@@ -56,19 +60,22 @@ export const ModelCreateParams = z.object({
   contextWindow: z.number().int().positive().default(200_000),
   maxTokens: z.number().int().positive().optional(),
   enabled: z.boolean().default(true),
+  engine: EngineKind.default("acp"),
 });
 export type ModelCreateParams = z.infer<typeof ModelCreateParams>;
 
 export const ModelView = z.object({
   id: z.string(), providerId: z.string(), modelId: z.string(), displayName: z.string(),
   contextWindow: z.number().int(), maxTokens: z.number().int().nullable(),
-  enabled: z.boolean(), createdAt: z.number().int(),
+  enabled: z.boolean(), createdAt: z.number().int(), engine: EngineKind,
 });
 export type ModelView = z.infer<typeof ModelView>;
 export const ModelListParams = z.object({ providerId: z.string().optional() });
 export const ModelListResult = z.object({ models: z.array(ModelView) });
 export type ModelListResult = z.infer<typeof ModelListResult>;
 export const ModelDeleteParams = z.object({ id: z.string().min(1) });
+export const ModelSetEngineParams = z.object({ id: z.string().min(1), engine: EngineKind });
+export type ModelSetEngineParams = z.infer<typeof ModelSetEngineParams>;
 
 export const SessionView = z.object({
   id: z.string(), workspaceId: z.string(), agentId: z.string(), engine: z.string(),

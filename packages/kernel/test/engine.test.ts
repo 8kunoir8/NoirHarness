@@ -99,7 +99,7 @@ function setup(
     apiKey: SECRET,
     enabled: true,
   });
-  const model = models.create({ providerId: provider.id, modelId: "fake-1", contextWindow: 200_000, enabled: true });
+  const model = models.create({ providerId: provider.id, modelId: "fake-1", contextWindow: 200_000, enabled: true, engine: "acp" });
   const session = sessions.create(workspace.id, model.id);
   const skills = new SkillService(db, dataDir);
 

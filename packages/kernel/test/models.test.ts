@@ -55,7 +55,7 @@ function addProvider(providers: ProviderService, overrides: { name?: string; ena
 }
 
 function modelParams(providerId: string, overrides: Partial<ModelCreateParams> = {}): ModelCreateParams {
-  return { providerId, modelId: "gpt-test", contextWindow: 200_000, enabled: true, ...overrides };
+  return { providerId, modelId: "gpt-test", contextWindow: 200_000, enabled: true, engine: "acp", ...overrides };
 }
 
 function expectFault(fn: () => unknown, code: number, message: RegExp): void {
@@ -140,6 +140,25 @@ describe("ModelService", () => {
     providers.remove(provider.id);
     expect(models.list()).toEqual([]);
     expect(db.prepare("SELECT COUNT(*) FROM models").pluck().get()).toBe(0);
+  });
+
+  it("stores an engine and rejects native for a non-openai provider", () => {
+    const { providers, models } = setup();
+    const provider = providers.create({ name: "anthropic", baseUrl: "https://example.test", apiKind: "anthropic-messages", apiKey: "k", enabled: true });
+    expect(() => models.create({ providerId: provider.id, modelId: "m", contextWindow: 1000, enabled: true, engine: "native" }))
+      .toThrow(/openai-completions/);
+  });
+
+  it("defaults the engine to acp and switches it only for openai-completions providers", () => {
+    const { providers, models } = setup();
+    const provider = addProvider(providers);
+    const model = models.create(modelParams(provider.id));
+    expect(model.engine).toBe("acp");
+
+    expect(models.setEngine(model.id, "native").engine).toBe("native");
+    expect(models.list(provider.id)[0]!.engine).toBe("native");
+
+    expectFault(() => models.setEngine("missing", "native"), ErrorCodes.notFound, /Model not found/);
   });
 });
 

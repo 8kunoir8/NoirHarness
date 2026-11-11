@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { RpcFault, reduceSession, type SessionState } from "@noir/protocol";
+import { ErrorCodes, RpcFault, reduceSession, type SessionState } from "@noir/protocol";
 import { openDb } from "../src/db.js";
 import { EventStore } from "../src/eventStore.js";
 import { ModelService } from "../src/models.js";
@@ -79,6 +79,7 @@ describe("SessionService", () => {
     const ws = workspaces.createLocal(project.id);
     const s = sessions.create(ws.id);
     expect(s.status).toBe("starting");
+    expect(s.engine).toBe("acp");
     sessions.setStatus(s.id, "idle");
     expect(sessions.list()[0]!.status).toBe("idle");
   });
@@ -142,8 +143,8 @@ describe("SessionService", () => {
   it("switches the model and rejects unknown or disabled models", () => {
     const { db, projects, workspaces, sessions, providers, models } = setup();
     const provider = providers.create({ name: "P", baseUrl: "http://localhost:1/v1", apiKind: "openai-completions", apiKey: "k", enabled: true });
-    const m1 = models.create({ providerId: provider.id, modelId: "m1", contextWindow: 1000, enabled: true });
-    const m2 = models.create({ providerId: provider.id, modelId: "m2", contextWindow: 1000, enabled: true });
+    const m1 = models.create({ providerId: provider.id, modelId: "m1", contextWindow: 1000, enabled: true, engine: "acp" });
+    const m2 = models.create({ providerId: provider.id, modelId: "m2", contextWindow: 1000, enabled: true, engine: "acp" });
     const s = sessions.create(workspaces.createLocal(projects.add(tempDir()).id).id, m1.id);
 
     expect(sessions.setModel(s.id, m2.id).modelId).toBe(m2.id);
@@ -155,5 +156,19 @@ describe("SessionService", () => {
 
     sessions.setStatus(s.id, "closed");
     expect(() => sessions.setModel(s.id, m1.id)).toThrow(/closed/);
+  });
+
+  it("stores the model's engine on the session and rejects a different engine on setModel", () => {
+    const { projects, workspaces, sessions, providers, models } = setup();
+    const openai = providers.create({ name: "OpenAI", baseUrl: "http://localhost:1/v1", apiKind: "openai-completions", apiKey: "k", enabled: true });
+    const anthropic = providers.create({ name: "Anthropic", baseUrl: "http://localhost:1", apiKind: "anthropic-messages", apiKey: "k", enabled: true });
+    const native = models.create({ providerId: openai.id, modelId: "native-1", contextWindow: 1000, enabled: true, engine: "native" });
+    const acp = models.create({ providerId: anthropic.id, modelId: "acp-1", contextWindow: 1000, enabled: true, engine: "acp" });
+    const session = sessions.create(workspaces.createLocal(projects.add(tempDir()).id).id, native.id);
+
+    expect(session.engine).toBe("native");
+    expect(sessions.view(session.id).engine).toBe("native");
+    expect(() => sessions.setModel(session.id, acp.id)).toThrow(expect.objectContaining({ code: ErrorCodes.conflict }));
+    expect(sessions.view(session.id).modelId).toBe(native.id);
   });
 });
