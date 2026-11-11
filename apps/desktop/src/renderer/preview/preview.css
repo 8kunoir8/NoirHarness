@@ -181,3 +181,141 @@
   font-size: 12px;
   color: var(--muted);
 }
+
+.artifact-csv,
+.artifact-pdf {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.artifact-csv-summary {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.artifact-csv-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.artifact-csv-table {
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.artifact-csv-table th,
+.artifact-csv-table td {
+  /* Must match ROW_HEIGHT in CsvArtifact.tsx: the window maths assumes this stride. */
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  text-align: left;
+  white-space: nowrap;
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.artifact-csv-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface-sunken);
+  font-weight: 600;
+}
+
+.artifact-csv-table tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--surface-sunken) 45%, transparent);
+}
+
+.pdf-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  flex: 0 0 auto;
+}
+
+.pdf-button {
+  min-width: 26px;
+  padding: 3px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pdf-button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.pdf-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.pdf-button[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.pdf-page {
+  min-width: 52px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.pdf-divider {
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  background: var(--border);
+}
+
+.pdf-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+.pdf-canvas {
+  display: block;
+  background: #fff;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.25);
+}
+
+.pdf-error {
+  margin: 16px;
+}
+
+.pdf-error-title {
+  margin: 0 0 4px;
+  font-weight: 600;
+}
+
+.pdf-error-detail {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}

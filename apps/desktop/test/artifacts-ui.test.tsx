@@ -1,9 +1,21 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RequestFn } from "../src/renderer/api.js";
 import { ArtifactPreview } from "../src/renderer/preview/ArtifactPreview.js";
 import { previewKind } from "../src/renderer/preview/kind.js";
+
+// pdf.js is a browser bundle; the component only needs its document API, so the tests
+// replace the whole module and assert the shapes handed to it.
+const pdfMock = vi.hoisted(() => ({ getDocument: vi.fn() }));
+
+vi.mock("pdfjs-dist", () => ({
+  getDocument: pdfMock.getDocument,
+  GlobalWorkerOptions: { workerSrc: "" },
+  RenderingCancelledException: class RenderingCancelledException extends Error {},
+}));
+
+vi.mock("pdfjs-dist/build/pdf.worker.min.mjs?url", () => ({ default: "/assets/pdf.worker.min.test.mjs" }));
 
 const markdown = "# Title\n\n| a |\n| - |\n| 1 |";
 
@@ -108,5 +120,112 @@ describe("ArtifactPreview", () => {
     expect(await screen.findByRole("heading", { name: "Title" })).toBeTruthy();
     await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
     expect(screen.queryByText("File not found: notes.md")).toBeNull();
+  });
+});
+
+const csvText = "name,qty\nwidget,3\nbolt,5";
+
+const pdfBytes = Uint8Array.from("%PDF-1.4\n", (char) => char.charCodeAt(0));
+const pdfBase64 = btoa(String.fromCharCode(...pdfBytes));
+
+const pdfResult = {
+  encoding: "base64" as const,
+  content: pdfBase64,
+  size: pdfBytes.length,
+  mtimeMs: 1,
+  truncated: false,
+};
+
+function mockPdfDocument(pageCount = 3) {
+  const render = vi.fn(() => ({ promise: Promise.resolve(), cancel: vi.fn() }));
+  const page = {
+    getViewport: ({ scale }: { scale: number }) => ({ width: 600 * scale, height: 800 * scale }),
+    render,
+  };
+  const destroy = vi.fn(async () => {});
+  pdfMock.getDocument.mockReturnValue({
+    promise: Promise.resolve({ numPages: pageCount, getPage: async () => page, destroy }),
+    destroy,
+  });
+  return { page, render, destroy };
+}
+
+beforeEach(() => {
+  pdfMock.getDocument.mockReset();
+});
+
+describe("CsvArtifact", () => {
+  it("renders CSV rows in a table and counts them", async () => {
+    const request = vi.fn(async () => ({ ...readResult, content: csvText }));
+    render(harness(request as unknown as RequestFn, "data.csv"));
+
+    const table = await screen.findByRole("table");
+    expect(within(table).getByRole("columnheader", { name: "name" })).toBeTruthy();
+    expect(within(table).getByRole("cell", { name: "widget" })).toBeTruthy();
+    expect(within(table).getByRole("cell", { name: "5" })).toBeTruthy();
+    expect(screen.getByText("2 rows")).toBeTruthy();
+  });
+
+  it("shows the empty state instead of a table for an empty file", async () => {
+    const request = vi.fn(async () => ({ ...readResult, content: "" }));
+    render(harness(request as unknown as RequestFn, "empty.csv"));
+
+    expect(await screen.findByText("Empty file")).toBeTruthy();
+    expect(screen.queryByRole("table")).toBeNull();
+  });
+
+  it("caps the rendered table and reports truncation at 5,000 rows", async () => {
+    const rows = Array.from({ length: 5_100 }, (_, index) => `row${index},${index}`);
+    const request = vi.fn(async () => ({ ...readResult, content: ["id,value", ...rows].join("\n") }));
+    render(harness(request as unknown as RequestFn, "big.csv"));
+
+    expect(await screen.findByText("5,000 rows shown (truncated)")).toBeTruthy();
+    const table = screen.getByRole("table");
+    expect(within(table).getByRole("cell", { name: "row0" })).toBeTruthy();
+    // Windowing keeps the DOM small: the tail of the file is not rendered up front.
+    expect(within(table).queryByRole("cell", { name: "row5099" })).toBeNull();
+  });
+
+  it("marks a cell cut at the 500-character cap", async () => {
+    const request = vi.fn(async () => ({ ...readResult, content: `text\n${"x".repeat(600)}` }));
+    const { container } = render(harness(request as unknown as RequestFn, "wide.csv"));
+
+    const cell = await waitFor(() => {
+      const found = container.querySelector("tbody td");
+      if (found === null) throw new Error("no cell yet");
+      return found;
+    });
+    expect(cell.textContent?.endsWith("…")).toBe(true);
+    expect(cell.textContent?.length).toBe(500);
+  });
+});
+
+describe("PdfArtifact", () => {
+  it("hands pdf.js the decoded bytes and shows the page count", async () => {
+    const { render: renderPage } = mockPdfDocument(3);
+    const request = vi.fn(async () => pdfResult);
+    render(harness(request as unknown as RequestFn, "manual.pdf"));
+
+    expect(await screen.findByText("1 / 3")).toBeTruthy();
+    const options = pdfMock.getDocument.mock.calls[0]?.[0] as { data: Uint8Array } | undefined;
+    expect(options?.data).toBeInstanceOf(Uint8Array);
+    expect(Array.from(options?.data.subarray(0, 4) ?? [])).toEqual([0x25, 0x50, 0x44, 0x46]);
+    await waitFor(() => expect(renderPage).toHaveBeenCalled());
+  });
+
+  it("reports a document pdf.js refuses to open", async () => {
+    const rejection = Promise.reject(new Error("Invalid PDF structure"));
+    // The component attaches its handler on mount; mark the rejection handled up front so a
+    // slow renderer tick does not surface it as an unhandled rejection in the runner.
+    rejection.catch(() => {});
+    pdfMock.getDocument.mockReturnValue({
+      promise: rejection,
+      destroy: vi.fn(async () => {}),
+    });
+    const request = vi.fn(async () => pdfResult);
+    render(harness(request as unknown as RequestFn, "broken.pdf"));
+
+    expect(await screen.findByText("Could not read PDF")).toBeTruthy();
+    expect(screen.getByText("Invalid PDF structure")).toBeTruthy();
   });
 });

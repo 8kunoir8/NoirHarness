@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import type { ArtifactReadResult } from "@noir/protocol";
 import type { RequestFn } from "../api.js";
+import { CsvArtifact } from "./CsvArtifact.js";
 import { MarkdownArtifact } from "./MarkdownArtifact.js";
+import { PdfArtifact } from "./PdfArtifact.js";
 import { previewKind } from "./kind.js";
 import "./preview.css";
 
@@ -62,10 +64,12 @@ export function ArtifactPreview({ workspaceId, path, request, onOpenPath }: Arti
           {state.result.truncated ? <p className="artifact-note">Showing the first 2 MB</p> : null}
           {kind === "markdown" ? (
             <MarkdownArtifact content={state.result.content} onOpenPath={onOpenPath} />
-          ) : kind === undefined ? (
-            <p className="empty">This file type cannot be previewed.</p>
+          ) : kind === "csv" ? (
+            <CsvArtifact text={state.result.content} />
+          ) : kind === "pdf" ? (
+            <PdfArtifact base64={state.result.content} />
           ) : (
-            <p className="empty">Rendering for {kind === "pdf" ? "PDF" : "CSV"} files is not available yet.</p>
+            <p className="empty">This file type cannot be previewed.</p>
           )}
         </>
       )}
