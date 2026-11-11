@@ -4,6 +4,7 @@ import type {
   Engine,
   EnginePermissionRequest,
   EnginePromptResult,
+  EngineMcpServer,
   EngineSession,
   EngineUpdate,
   PermissionDecision,
@@ -48,7 +49,7 @@ export interface AcpSession {
 export interface AcpClient {
   readonly client: JsonRpcClient;
   readonly pid: number;
-  newSession(cwd: string): Promise<AcpSession>;
+  newSession(cwd: string, mcpServers?: ReadonlyArray<EngineMcpServer>): Promise<AcpSession>;
   dispose(): Promise<void>;
 }
 
@@ -514,10 +515,17 @@ class AcpRuntime implements AcpClient {
     client.onNotification((method, params) => this.#handleNotification(method, params));
   }
 
-  async newSession(cwd: string): Promise<AcpSession> {
+  async newSession(cwd: string, mcpServers: ReadonlyArray<EngineMcpServer> = []): Promise<AcpSession> {
     if (!isAbsolute(cwd)) throw new Error(`ACP session cwd must be absolute: ${cwd}`);
     const absolute = resolve(cwd);
-    const response = await this.client.request("session/new", { cwd: absolute, mcpServers: [] });
+    // ACP spells stdio servers with `env` as `{name, value}[]`; the kernel stores a plain record.
+    const wireServers = mcpServers.map((server) => ({
+      name: server.name,
+      command: server.command,
+      args: server.args,
+      env: Object.entries(server.env).map(([name, value]) => ({ name, value })),
+    }));
+    const response = await this.client.request("session/new", { cwd: absolute, mcpServers: wireServers });
     const record = asObject(response);
     const sessionId = record?.sessionId;
     if (typeof sessionId !== "string") throw new Error("ACP session/new did not return a sessionId");
@@ -665,7 +673,7 @@ export function createAcpEngine(opts: CreateAcpClientOptions): Engine {
       const client = await createAcpClient(opts);
       let session: AcpSession;
       try {
-        session = await client.newSession(startOpts.cwd);
+        session = await client.newSession(startOpts.cwd, startOpts.mcpServers ?? []);
       } catch (error) {
         await client.dispose().catch(() => undefined);
         throw error;
