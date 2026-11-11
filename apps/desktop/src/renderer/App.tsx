@@ -8,6 +8,7 @@ import {
   type GitStatusResult,
 } from "@noir/protocol";
 import { connect, offEvent, request } from "./api.js";
+import { Agents } from "./Agents.js";
 import { Chat } from "./Chat.js";
 import type { DiffStats } from "./ChatHeader.js";
 import { CommandPalette } from "./CommandPalette.js";
@@ -46,7 +47,7 @@ import { useShortcuts } from "./useShortcuts.js";
 import { WorkspacePanel, type ProjectView, type WorkspaceView } from "./WorkspacePanel.js";
 import "./styles.css";
 
-type View = "setup" | "chats" | "skills";
+type View = "setup" | "chats" | "skills" | "agents";
 
 type ListMode = "chats" | "files";
 
@@ -556,6 +557,9 @@ export function App() {
       >
         Chats
       </button>
+      <button type="button" aria-pressed={view === "agents"} onClick={() => setView("agents")} title="Agents">
+        Agents
+      </button>
       <button type="button" aria-pressed={view === "skills"} onClick={() => setView("skills")} title="Skills">
         Skills
       </button>
@@ -701,6 +705,14 @@ export function App() {
       run: () => setView("setup"),
     },
     {
+      id: "agents",
+      label: "Open agents",
+      keywords: "roster office dashboard profiles",
+      shortcut: { key: "a", mod: true, shift: true },
+      enabled: true,
+      run: () => setView("agents"),
+    },
+    {
       id: "skills",
       label: "Open skills",
       keywords: "skills capabilities instructions",
@@ -787,7 +799,9 @@ export function App() {
     </div>
   );
 
-  if (view === "setup" || (models.length === 0 && view !== "skills")) {
+  // Agents may exist with `modelRef: null`, and the profile is configurable before any model is
+  // added, so only chats depend on a configured model.
+  if (view === "setup" || (models.length === 0 && view !== "skills" && view !== "agents")) {
     return (
       <>
         <Shell
@@ -892,6 +906,22 @@ export function App() {
             <>
               {error === undefined ? null : <p role="alert">{error}</p>}
               <Skills key={workspaceId} workspaceId={workspaceId} request={request} />
+            </>
+          ) : view === "agents" ? (
+            <>
+              {error === undefined ? null : <p role="alert">{error}</p>}
+              <Agents
+                key={workspaceId}
+                workspaceId={workspaceId}
+                request={request}
+                onOpenChat={(session) => {
+                  openSession(session);
+                  // A started session is only visible in the chats view; the session list must know
+                  // it before the tab body can resolve the row.
+                  setView("chats");
+                  void loadSessions().catch(() => undefined);
+                }}
+              />
             </>
           ) : (
             <>

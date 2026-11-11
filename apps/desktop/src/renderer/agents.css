@@ -1,0 +1,281 @@
+/* --- agents view: roster, office list view, config inspector --- */
+
+.agents-view {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-height: 0;
+  max-width: 1400px;
+}
+
+.agents-roster {
+  flex: 0 0 300px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.agents-roster-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.agents-roster-head h2 {
+  margin: 0 auto 0 0;
+  font-size: 0.95rem;
+}
+
+.agents-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.agents-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agents-row {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: var(--surface-raised);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agents-row-selected {
+  border-color: var(--accent, var(--muted));
+}
+
+.agents-row-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.agents-row-select {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agents-row-role {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.agents-row-meta {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.74rem;
+  overflow-wrap: anywhere;
+}
+
+.agents-status {
+  font-size: 0.72rem;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.agents-status::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.agents-status[data-status="working"] { color: var(--accent, var(--text)); }
+.agents-status[data-status="needs_you"] { color: var(--warning); }
+.agents-status[data-status="error"] { color: var(--danger); }
+
+.agents-office {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.agents-office-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.agents-office-head h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.agents-start {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-raised);
+}
+
+.agents-start label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.agents-config {
+  flex: 0 0 340px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.agents-config h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.agents-config h3 {
+  margin: 6px 0 0;
+  font-size: 0.82rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.agents-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.agents-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.agents-policy {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  margin: 0;
+}
+
+.agents-policy-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+
+.agents-policy-row legend {
+  float: left;
+  min-width: 22ch;
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+
+.agents-policy-choice {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 3px !important;
+  font-size: 0.75rem;
+}
+
+.agents-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.agents-skills {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.8rem;
+}
+
+.agents-skills li {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 5px;
+}
+
+.agents-skill-scope {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.agents-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.agents-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.agents-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 0.8rem;
+}
+
+@media (max-width: 1180px) {
+  .agents-view {
+    flex-wrap: wrap;
+  }
+
+  .agents-roster,
+  .agents-config {
+    flex: 1 1 300px;
+  }
+
+  .agents-office {
+    flex: 1 1 100%;
+    order: 3;
+  }
+}
