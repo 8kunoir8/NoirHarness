@@ -175,16 +175,26 @@ class NativeSession implements EngineSession {
     if (this.#disposed) throw new Error("Native session is disposed");
     if (this.#busy) throw new Error("Native session already has a prompt in flight");
     this.#busy = true;
-    try {
-      const text = content.map((block) => block.text).join("\n");
-      this.#history.push({ role: "user", text });
-      // One controller per turn: interrupt() aborts the live fetch and the live tool call.
-      this.#controller = new AbortController();
-      const messageId = `native-${randomUUID()}`;
-      let usage: Usage | undefined;
 
+    this.#history.push({ role: "user", text: content.map((block) => block.text).join("\n") });
+    // One controller per turn: interrupt() aborts the live fetch and the live tool call.
+    const controller = new AbortController();
+    this.#controller = controller;
+    // The watchdog settles the turn even when the provider holds the stream open indefinitely.
+    let timedOut = false;
+    const watchdog =
+      this.#opts.turnTimeoutMs > 0
+        ? setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+          }, this.#opts.turnTimeoutMs)
+        : undefined;
+    const messageId = `native-${randomUUID()}`;
+    let usage: Usage | undefined;
+
+    try {
       for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
-        if (this.#controller.signal.aborted) return { stopReason: "cancelled", timedOut: false };
+        if (controller.signal.aborted) return { stopReason: "cancelled", timedOut };
         const response = await this.#request();
         if (response.usage !== undefined) usage = response.usage;
         if (response.text !== "") {
@@ -203,11 +213,12 @@ class NativeSession implements EngineSession {
       throw new Error("Tool loop limit reached");
     } catch (error) {
       // An interrupt aborts the fetch (and any running shell), which is a settled turn, not a fault.
-      if (this.#controller.signal.aborted || isAbortError(error)) {
-        return { stopReason: "cancelled", timedOut: false };
+      if (controller.signal.aborted || isAbortError(error)) {
+        return { stopReason: "cancelled", timedOut };
       }
       throw error;
     } finally {
+      clearTimeout(watchdog);
       this.#busy = false;
     }
   }
@@ -342,7 +353,12 @@ class NativeSession implements EngineSession {
       signal: this.#controller.signal,
       onPermission: handlers.onPermission,
       skills: this.#opts.skills,
-      readSkill: (name) => readMaterializedSkill(this.#opts.cwd, name),
+      readSkill: async (name) => {
+        const body = await readMaterializedSkill(this.#opts.cwd, name);
+        // Only a successful read is a skill the kernel can attribute to its manifest.
+        handlers.onSkillRead(name);
+        return body;
+      },
     };
   }
 }

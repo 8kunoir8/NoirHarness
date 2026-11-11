@@ -7,6 +7,8 @@ export type ScriptStep = {
   text?: string;
   toolCall?: { id: string; name: string; args: string };
   finish?: string;
+  /** Hold the stream open this long before answering, so a turn can be interrupted or timed out. */
+  delayMs?: number;
 };
 
 export interface FakeOpenAiServer {
@@ -43,10 +45,18 @@ export async function startFakeOpenAiServer(script: ScriptStep[]): Promise<FakeO
       "cache-control": "no-cache",
       connection: "keep-alive",
     });
+    // A client that gave up mid-stream closes the socket; a late write must not fault the server.
+    res.on("error", () => undefined);
     const send = (payload: unknown): void => {
+      if (res.writableEnded || res.destroyed) return;
       res.write(`data: ${JSON.stringify(payload)}\n\n`);
     };
 
+    if (step.delayMs !== undefined) {
+      const delayed = Promise.withResolvers<void>();
+      setTimeout(delayed.resolve, step.delayMs);
+      await delayed.promise;
+    }
     if (step.text !== undefined && step.text !== "") {
       send({ choices: [{ delta: { content: step.text } }] });
     }

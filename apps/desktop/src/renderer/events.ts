@@ -192,6 +192,9 @@ export function reduceChat(state: ChatState, event: AgentEvent): ChatState {
       if (block.type !== "text" && block.type !== "reasoning") return next;
       const kind: ChatBlock["kind"] = block.type === "text" ? "text" : "reasoning";
       const index = next.messages.findIndex((message) => message.id === messageId);
+      // The sender renders its own prompt before the kernel's echo arrives; the echo must not
+      // append a second bubble for a message the transcript already holds.
+      if (role === "user" && index !== -1) return next;
       const messages = [...next.messages];
       if (index === -1) {
         messages.push({ id: messageId, role, blocks: [{ kind, text: block.text }], status: "streaming" });
@@ -283,6 +286,9 @@ export function reduceChat(state: ChatState, event: AgentEvent): ChatState {
 
 export function appendUserMessage(state: ChatState, text: string, id: string): ChatState {
   if (text.trim().length === 0) return state;
+  // The event log may have rendered this prompt first (it reaches the reducer before the RPC
+  // resolves); the id is the request id either way, so one prompt stays one bubble.
+  if (state.messages.some((message) => message.id === id)) return state;
   const message: ChatMessage = { id, role: "user", blocks: [{ kind: "text", text }], status: "done" };
   return { ...state, messages: [...state.messages, message] };
 }

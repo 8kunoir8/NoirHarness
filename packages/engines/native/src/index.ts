@@ -5,6 +5,7 @@
  * without changing the event stream it consumes.
  */
 export { NativeEngine, createNativeEngine, nativeEngine } from "./loop.js";
+export { reconstructHistory, type HistoryEvent, type HistoryLimits } from "./history.js";
 export {
   NATIVE_TOOLS,
   PERMISSION_DENIED,

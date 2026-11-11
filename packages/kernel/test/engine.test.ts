@@ -228,6 +228,8 @@ describe("EngineManager over the fake ACP server", () => {
 
       const types = stream.map((event) => event.type);
       expect(types.slice(2)).toEqual([
+        "message.delta",
+        "message.completed",
         "session.status",
         "turn.started",
         "message.delta",
@@ -239,7 +241,20 @@ describe("EngineManager over the fake ACP server", () => {
         "session.status",
       ]);
 
-      const deltas = stream.filter((event) => event.type === "message.delta");
+      // The prompt is persisted before the turn: one user block, then the assistant's stream.
+      const promptEvents = stream.filter(
+        (event) => event.type === "message.delta" && eventPayload(event, "message.delta").role === "user",
+      );
+      expect(promptEvents).toHaveLength(1);
+      expect(eventPayload(promptEvents[0]!, "message.delta")).toEqual({
+        messageId: "stream-1",
+        role: "user",
+        block: { type: "text", text: "stream" },
+      });
+
+      const deltas = stream.filter(
+        (event) => event.type === "message.delta" && eventPayload(event, "message.delta").role === "assistant",
+      );
       const text = deltas
         .map((event) => eventPayload(event, "message.delta"))
         .map((payload) => (payload.block.type === "text" ? payload.block.text : ""))
@@ -255,8 +270,11 @@ describe("EngineManager over the fake ACP server", () => {
       expect(usage).toEqual({ inputTokens: 11, outputTokens: 7, contextUsed: 11, contextWindow: 200_000, costUsd: 0 });
 
       const state = stream.reduce<SessionState | undefined>(reduceSession, undefined);
-      expect(state?.messages).toHaveLength(1);
-      expect(state?.messages[0]).toMatchObject({ id: "msg-fake-1", role: "assistant", status: "done" });
+      expect(state?.messages.map((message) => [message.id, message.role])).toEqual([
+        ["stream-1", "user"],
+        ["msg-fake-1", "assistant"],
+      ]);
+      expect(state?.messages[1]).toMatchObject({ id: "msg-fake-1", role: "assistant", status: "done" });
       expect(state?.status).toBe("idle");
     },
     TEST_TIMEOUT_MS,
@@ -531,13 +549,23 @@ describe("EngineManager over the fake ACP server", () => {
         requestId: "interrupt-1",
         content: [{ type: "text", text: "slow" }],
       });
-      await waitForEvent(events, session.id, (event) => event.type === "message.delta");
+      await waitForEvent(
+        events,
+        session.id,
+        (event) => event.type === "message.delta" && eventPayload(event, "message.delta").role === "assistant",
+      );
       const interrupted = await manager.interrupt(session.id);
       expect(interrupted.interrupted).toBe(true);
 
       const completed = await waitForEvent(events, session.id, (event) => event.type === "turn.completed");
       expect(eventPayload(completed, "turn.completed").status).toBe("interrupted");
-      const message = events.list(session.id).find((event) => event.type === "message.completed")!;
+      const message = events
+        .list(session.id)
+        .find(
+          (event) =>
+            event.type === "message.completed" &&
+            eventPayload(event, "message.completed").messageId === "msg-fake-slow",
+        )!;
       expect(eventPayload(message, "message.completed")).toEqual({ messageId: "msg-fake-slow", status: "interrupted" });
       expect(await manager.interrupt(session.id)).toEqual({ interrupted: false });
     },
@@ -553,7 +581,11 @@ describe("EngineManager over the fake ACP server", () => {
         requestId: "interrupt-queue-1",
         content: [{ type: "text", text: "slow" }],
       });
-      await waitForEvent(events, session.id, (event) => event.type === "message.delta");
+      await waitForEvent(
+        events,
+        session.id,
+        (event) => event.type === "message.delta" && eventPayload(event, "message.delta").role === "assistant",
+      );
       const second = await manager.prompt({
         sessionId: session.id,
         requestId: "interrupt-queue-2",
@@ -595,7 +627,11 @@ describe("EngineManager over the fake ACP server", () => {
         requestId: "cancel-queued-running",
         content: [{ type: "text", text: "slow" }],
       });
-      await waitForEvent(events, session.id, (event) => event.type === "message.delta");
+      await waitForEvent(
+        events,
+        session.id,
+        (event) => event.type === "message.delta" && eventPayload(event, "message.delta").role === "assistant",
+      );
       const queued = await manager.prompt({
         sessionId: session.id,
         requestId: "cancel-queued-waiting",
@@ -605,7 +641,11 @@ describe("EngineManager over the fake ACP server", () => {
 
       expect(await manager.cancelQueued({ sessionId: session.id, turnId: queued.turnId })).toEqual({ cancelled: true });
       expect(await manager.cancelQueued({ sessionId: session.id, turnId: queued.turnId })).toEqual({ cancelled: false });
-      expect(events.list(session.id).filter((event) => event.turnId === queued.turnId)).toEqual([]);
+      // The sender's own prompt is persisted at enqueue time; cancelling invents no turn lifecycle.
+      expect(events.list(session.id).filter((event) => event.turnId === queued.turnId).map((event) => event.type)).toEqual([
+        "message.delta",
+        "message.completed",
+      ]);
       expect(db.prepare("SELECT id FROM turns WHERE id = ?").get(queued.turnId)).toBeUndefined();
 
       // Cancelling the queued turn leaves the running turn alone.
@@ -771,7 +811,11 @@ describe("EngineManager over the fake ACP server", () => {
         requestId: "close-race-1",
         content: [{ type: "text", text: "slow" }],
       });
-      await waitForEvent(events, session.id, (event) => event.type === "message.delta");
+      await waitForEvent(
+        events,
+        session.id,
+        (event) => event.type === "message.delta" && eventPayload(event, "message.delta").role === "assistant",
+      );
       const pid = manager.enginePid(session.id);
       expect(pid).toBeGreaterThan(0);
 
@@ -923,8 +967,12 @@ describe("EngineManager over the fake ACP server", () => {
       expect(turn.status).toBe("failed");
       const row = db.prepare("SELECT status FROM sessions WHERE id = ?").get(session.id) as { status: string };
       expect(row.status).toBe("error");
-      // No zombie `running` and no status flap: the only new event is the failure itself.
-      expect(events.list(session.id).slice(before).map((event) => event.type)).toEqual(["turn.failed"]);
+      // The prompt is persisted; beyond it the only new event is the failure itself.
+      expect(events.list(session.id).slice(before).map((event) => event.type)).toEqual([
+        "message.delta",
+        "message.completed",
+        "turn.failed",
+      ]);
       expect(events.list(session.id).some((event) => event.type === "turn.started")).toBe(false);
       expect(manager.enginePid(session.id)).toBeUndefined();
     },
@@ -974,7 +1022,11 @@ describe("EngineManager with the native engine", () => {
 
         const started = stream.filter((event) => event.type === "tool.started");
         expect(started).toHaveLength(2);
-        expect(eventPayload(started[0]!, "tool.started")).toMatchObject({ toolCallId: "call_1", title: "Read note.txt" });
+        expect(eventPayload(started[0]!, "tool.started")).toMatchObject({
+          toolCallId: "call_1",
+          title: "Read note.txt",
+          kind: "read",
+        });
         const output = stream.find(
           (event) => event.type === "tool.output" && eventPayload(event, "tool.output").toolCallId === "call_1",
         );
@@ -1026,6 +1078,87 @@ describe("EngineManager with the native engine", () => {
         // stdout contains a line that looks like the trailer; the real trailer is appended last, so 0 wins.
         const completed = events.list(session.id).find((event) => event.type === "command.completed");
         expect(eventPayload(completed!, "command.completed")).toEqual({ commandId: "call_1", exitCode: 0 });
+        await manager.closeSession(session.id);
+      } finally {
+        await server.close();
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "persists the user prompt once, ahead of the turn it belongs to",
+    async () => {
+      const server = await startFakeOpenAiServer([{ text: "ok" }]);
+      try {
+        const { events, manager, session } = setup({ baseUrl: server.baseUrl, engine: "native" });
+        const result = await manager.prompt({
+          sessionId: session.id,
+          requestId: "native-user-1",
+          content: [{ type: "text", text: "hello there" }],
+        });
+        await waitForEvent(events, session.id, (event) => event.type === "turn.completed");
+
+        const userEvents = () =>
+          events
+            .list(session.id)
+            .filter((event) => event.type === "message.delta" && eventPayload(event, "message.delta").role === "user");
+        expect(userEvents()).toHaveLength(1);
+        expect(eventPayload(userEvents()[0]!, "message.delta")).toEqual({
+          messageId: "native-user-1",
+          role: "user",
+          block: { type: "text", text: "hello there" },
+        });
+        expect(userEvents()[0]!.turnId).toBe(result.turnId);
+
+        const stream = events.list(session.id);
+        const completed = stream.find(
+          (event) =>
+            event.type === "message.completed" &&
+            eventPayload(event, "message.completed").messageId === "native-user-1",
+        );
+        expect(eventPayload(completed!, "message.completed")).toEqual({ messageId: "native-user-1", status: "done" });
+        expect(userEvents()[0]!.seq).toBeLessThan(stream.find((event) => event.type === "turn.started")!.seq);
+
+        // A retried prompt returns the same turn and must not persist the text twice.
+        await manager.prompt({
+          sessionId: session.id,
+          requestId: "native-user-1",
+          content: [{ type: "text", text: "hello there" }],
+        });
+        expect(userEvents()).toHaveLength(1);
+        await manager.closeSession(session.id);
+      } finally {
+        await server.close();
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "attributes a skill.read through onSkillRead exactly once",
+    async () => {
+      const server = await startFakeOpenAiServer([
+        { toolCall: { id: "call_1", name: "skill.read", args: JSON.stringify({ name: "demo" }) } },
+        { text: "done" },
+      ]);
+      try {
+        const { events, manager, session, root } = setup({ baseUrl: server.baseUrl, engine: "native" });
+        writeProjectSkill(root, "demo");
+        await manager.prompt({
+          sessionId: session.id,
+          requestId: "native-skill-1",
+          content: [{ type: "text", text: "load the skill" }],
+        });
+        await waitForEvent(events, session.id, (event) => event.type === "turn.completed");
+
+        const stream = events.list(session.id);
+        const loaded = stream.filter((event) => event.type === "skill.loaded");
+        expect(loaded).toHaveLength(1);
+        expect(eventPayload(loaded[0]!, "skill.loaded")).toMatchObject({ name: "demo", scope: "project" });
+
+        const started = stream.find((event) => event.type === "tool.started");
+        expect(eventPayload(started!, "tool.started")).toMatchObject({ toolCallId: "call_1", kind: "skill" });
         await manager.closeSession(session.id);
       } finally {
         await server.close();

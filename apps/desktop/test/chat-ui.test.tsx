@@ -2,7 +2,7 @@ import { act, render, renderHook, screen, waitFor } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentEvent, SessionView } from "@noir/protocol";
-import { emptyChatState, reduceChat, useSessionEvents } from "../src/renderer/events.js";
+import { appendUserMessage, emptyChatState, reduceChat, useSessionEvents } from "../src/renderer/events.js";
 
 const api = vi.hoisted(() => ({
   connect: vi.fn(async (_listener?: unknown) => undefined),
@@ -99,6 +99,26 @@ describe("reduceChat", () => {
     state = reduceChat(state, makeEvent(2, "skill.loaded", { name: "demo", scope: "global", hash: "second" }));
 
     expect(state.skillsLoaded).toEqual([{ name: "demo", scope: "project", hash: "first" }]);
+  });
+
+  it("ignores the persisted user prompt the sender already rendered", () => {
+    const optimistic = appendUserMessage(emptyChatState(), "hello", "req-1");
+    const replayed = reduceChat(optimistic, makeEvent(1, "message.delta", {
+      messageId: "req-1", role: "user", block: { type: "text", text: "hello" },
+    }));
+    const completed = reduceChat(replayed, makeEvent(2, "message.completed", { messageId: "req-1", status: "done" }));
+
+    expect(completed.messages).toHaveLength(1);
+    expect(completed.messages[0]).toEqual({ id: "req-1", role: "user", blocks: [{ kind: "text", text: "hello" }], status: "done" });
+    expect(completed.lastSeq).toBe(2);
+  });
+
+  it("ignores a second append for a prompt the event log rendered first", () => {
+    const streamed = reduceChat(emptyChatState(), makeEvent(1, "message.delta", {
+      messageId: "req-2", role: "user", block: { type: "text", text: "hello" },
+    }));
+
+    expect(appendUserMessage(streamed, "hello", "req-2")).toBe(streamed);
   });
 });
 
@@ -205,6 +225,44 @@ describe("Chat", () => {
     const transcript = document.querySelector("ol.messages");
     expect(transcript).not.toBeNull();
     expect(skills.compareDocumentPosition(transcript!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("renders one user bubble when the kernel echoes the prompt back", async () => {
+    const listeners: Array<(event: AgentEvent) => void> = [];
+    api.connect.mockImplementationOnce(async (listener?: unknown) => {
+      listeners.push(listener as (event: AgentEvent) => void);
+    });
+    const settled = Promise.withResolvers<unknown>();
+    const request = vi.fn((method: string, params?: unknown): Promise<unknown> => {
+      if (method === "session.subscribe") return Promise.resolve({ events: [], lastSeq: 0 });
+      if (method === "session.prompt") {
+        const { requestId, content } = params as { requestId: string; content: Array<{ text: string }> };
+        // The kernel persists the prompt and broadcasts it before `session.prompt` resolves.
+        act(() => {
+          listeners[0]!(makeEvent(1, "message.delta", {
+            messageId: requestId, role: "user", block: { type: "text", text: content[0]!.text },
+          }));
+          listeners[0]!(makeEvent(2, "message.completed", { messageId: requestId, status: "done" }));
+        });
+        return settled.promise;
+      }
+      throw new Error(method);
+    });
+
+    render(<ChatHarness request={request as unknown as RequestFn} />);
+    await userEvent.type(screen.getByLabelText("Prompt"), "hello{Enter}");
+    await waitFor(() => {
+      expect(request.mock.calls.some(([method]) => method === "session.prompt")).toBe(true);
+    });
+
+    await act(async () => {
+      settled.resolve({ turnId: "t-1", queued: false });
+      await settled.promise;
+    });
+
+    const bubbles = await screen.findAllByText("hello");
+    expect(bubbles).toHaveLength(1);
+    expect(document.querySelectorAll("li.message-user")).toHaveLength(1);
   });
 
   it("shows a failed request and keeps the draft", async () => {

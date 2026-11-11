@@ -8,6 +8,13 @@ export type SessionStatus = z.infer<typeof SessionStatus>;
 export const EngineKind = z.enum(["acp", "native"]);
 export type EngineKind = z.infer<typeof EngineKind>;
 
+/**
+ * The kernel's coarse tool vocabulary. Engines name tools differently (`execute` vs `shell`,
+ * `edit` vs `write`); the kernel maps them here, so the wire stays one closed set.
+ */
+export const ToolKind = z.enum(["read", "write", "shell", "search", "skill", "other"]);
+export type ToolKind = z.infer<typeof ToolKind>;
+
 export const ContentBlock = z.discriminatedUnion("type", [
   z.object({ type: z.literal("text"), text: z.string() }),
   z.object({ type: z.literal("reasoning"), text: z.string() }),
@@ -55,7 +62,7 @@ export const PayloadSchemas = {
   "turn.failed": z.object({ turnId: z.string(), message: z.string() }),
   "message.delta": z.object({ messageId: z.string(), role: z.enum(["user", "assistant"]), block: ContentBlock }),
   "message.completed": z.object({ messageId: z.string(), status: z.enum(["done", "interrupted", "failed"]) }),
-  "tool.started": z.object({ toolCallId: z.string(), title: z.string() }),
+  "tool.started": z.object({ toolCallId: z.string(), title: z.string(), kind: ToolKind.optional() }),
   "tool.output": z.object({ toolCallId: z.string(), chunk: z.string() }),
   "tool.completed": z.object({ toolCallId: z.string(), status: z.string() }),
   "tool.failed": z.object({ toolCallId: z.string(), message: z.string() }),

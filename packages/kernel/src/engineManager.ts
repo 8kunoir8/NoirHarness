@@ -6,7 +6,7 @@ import {
   createAcpEngine,
   type CreateAcpClientOptions,
 } from "@noir/engine-acp";
-import { ADAPTER_VERSION as NATIVE_ADAPTER_VERSION, createNativeEngine } from "@noir/engine-native";
+import { ADAPTER_VERSION as NATIVE_ADAPTER_VERSION, createNativeEngine, reconstructHistory } from "@noir/engine-native";
 import type {
   Engine,
   EnginePermissionRequest,
@@ -25,6 +25,7 @@ import {
   type SessionPromptParams,
   type SessionPromptResult,
   type SessionStatus,
+  type ToolKind,
 } from "@noir/protocol";
 import type { AgentService } from "./agents.js";
 import type { EventStore } from "./eventStore.js";
@@ -232,6 +233,29 @@ function skillNameFromRawInput(raw: unknown): string | undefined {
   return name === "" ? undefined : name;
 }
 
+/**
+ * Native emits the kernel vocabulary directly; ACP emits its own (`execute`, `edit`, `fetch`, …).
+ * The event schema carries the closed kernel set, never an engine's spelling.
+ */
+function officeToolKind(kind: string | undefined): ToolKind {
+  switch (kind) {
+    case "read":
+    case "search":
+    case "skill":
+    case "write":
+    case "shell":
+      return kind;
+    case "execute":
+      return "shell";
+    case "edit":
+    case "delete":
+    case "move":
+      return "write";
+    default:
+      return "other";
+  }
+}
+
 export class EngineManager {
   private readonly command: string;
   private readonly baseArgs: string[];
@@ -294,6 +318,16 @@ export class EngineManager {
     this.deps.db
       .prepare("INSERT INTO turns (id, session_id, idx, status, started_at, client_request_id) VALUES (?,?,?,?,?,?)")
       .run(turnId, params.sessionId, idx, immediate ? "running" : "queued", Date.now(), params.requestId);
+
+    // The request id is unique per send and a retried prompt returned above, so this lands once.
+    // Emitting before the turn starts keeps the prompt ahead of `turn.started` in seq order.
+    this.emit(
+      state,
+      "message.delta",
+      { messageId: params.requestId, role: "user", block: { type: "text", text: content.map((block) => block.text).join("\n") } },
+      turnId,
+    );
+    this.emit(state, "message.completed", { messageId: params.requestId, status: "done" }, turnId);
 
     const turn: QueuedTurn = { turnId, idx, content };
     if (!immediate) {
@@ -559,6 +593,11 @@ export class EngineManager {
     try {
       const resolved = resolveModelFor(state.sessionId, this.registryDeps);
       const { baseUrl, apiKey, ...model } = resolved;
+      // The enabled set materialization just wrote; the engine names these in its prompt.
+      const listed = await this.deps.skills.list(state.workspaceId, state.workspaceRoot);
+      const skills = listed.skills
+        .filter((skill) => skill.enabled)
+        .map((skill) => ({ name: skill.name, scope: skill.scope, description: skill.description }));
       // `selector` is deliberately left unset: `start()` does not apply `EngineStartOptions.model`
       // for ACP, so the first turn's model branch applies it through `setModel`.
       state.engineSession = await engine.start({
@@ -567,8 +606,12 @@ export class EngineManager {
         model,
         baseUrl,
         apiKey,
-        history: [],
-        skills: [],
+        // ACP reconstructs nothing from the log; only the native engine replays the conversation.
+        history:
+          state.engineKind === "native"
+            ? reconstructHistory(this.deps.events.list(state.sessionId, 0), model)
+            : [],
+        skills,
         turnTimeoutMs: this.turnTimeoutMs,
       });
     } catch (error) {
@@ -620,7 +663,7 @@ export class EngineManager {
       const result = await engineSession.prompt(turn.content, {
         onUpdate: (update) => this.handleUpdate(state, context, update),
         onPermission: (request) => this.handlePermission(state, context, request),
-        onSkillRead: () => undefined,
+        onSkillRead: (name) => this.attributeSkill(state, context, name),
       });
       this.finishTurn(state, context, result);
     } catch (error) {
@@ -725,6 +768,18 @@ export class EngineManager {
     });
   }
 
+  /**
+   * One `skill.loaded` per skill per turn, and only for a skill the manifest still lists: a
+   * disabled or unreadable skill is never attributed.
+   */
+  private attributeSkill(state: SessionState, turn: TurnContext, name: string): void {
+    if (state.closing) return;
+    const meta = state.skillIndex.get(name);
+    if (meta === undefined || turn.loadedSkills.has(name)) return;
+    turn.loadedSkills.add(name);
+    this.emit(state, "skill.loaded", { name, scope: meta.scope, hash: meta.hash }, turn.turnId);
+  }
+
   private handleUpdate(state: SessionState, turn: TurnContext, update: EngineUpdate): void {
     if (state.closing) return;
     switch (update.kind) {
@@ -744,13 +799,20 @@ export class EngineManager {
         return;
       }
       case "tool.started": {
-        this.emit(state, "tool.started", { toolCallId: update.toolCallId, title: update.title }, turn.turnId);
+        this.emit(
+          state,
+          "tool.started",
+          {
+            toolCallId: update.toolCallId,
+            title: update.title,
+            ...(update.toolKind === undefined ? {} : { kind: officeToolKind(update.toolKind) }),
+          },
+          turn.turnId,
+        );
+        // ACP reads skills through a `skill://` path; an engine that reads by name reports it via
+        // `onSkillRead`. Both land in the same per-turn dedupe set.
         const skillName = skillNameFromRawInput(update.rawInput);
-        const meta = skillName === undefined ? undefined : state.skillIndex.get(skillName);
-        if (skillName !== undefined && meta !== undefined && !turn.loadedSkills.has(skillName)) {
-          turn.loadedSkills.add(skillName);
-          this.emit(state, "skill.loaded", { name: skillName, scope: meta.scope, hash: meta.hash }, turn.turnId);
-        }
+        if (skillName !== undefined) this.attributeSkill(state, turn, skillName);
         // Native names this kind `shell`; ACP names it `execute`. Both are the command projection.
         if (update.toolKind === "execute" || update.toolKind === "shell") {
           turn.commands.add(update.toolCallId);
