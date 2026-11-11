@@ -141,6 +141,9 @@ importers:
       '@noir/engine-core':
         specifier: workspace:*
         version: link:../engines/core
+      '@noir/engine-native':
+        specifier: workspace:*
+        version: link:../engines/native
       '@noir/omp-profile':
         specifier: workspace:*
         version: link:../adapters/omp-profile

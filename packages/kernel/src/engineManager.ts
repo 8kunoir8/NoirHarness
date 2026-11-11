@@ -3,13 +3,15 @@ import type Database from "better-sqlite3";
 import { v7 as uuidv7 } from "uuid";
 import {
   ADAPTER_VERSION,
-  createAcpClient,
-  type AcpClient,
-  type AcpSession,
+  createAcpEngine,
+  type CreateAcpClientOptions,
 } from "@noir/engine-acp";
+import { ADAPTER_VERSION as NATIVE_ADAPTER_VERSION, createNativeEngine } from "@noir/engine-native";
 import type {
+  Engine,
   EnginePermissionRequest,
   EnginePromptResult,
+  EngineSession,
   EngineUpdate,
   PermissionDecision,
 } from "@noir/engine-core";
@@ -17,12 +19,15 @@ import {
   ErrorCodes,
   PayloadSchemas,
   RpcFault,
+  type EngineKind,
+  type AgentEvent,
   type PermissionOption,
   type SessionPromptParams,
   type SessionPromptResult,
   type SessionStatus,
 } from "@noir/protocol";
 import type { EventStore } from "./eventStore.js";
+import { resolveModelFor, type EngineRegistryDeps } from "./engineRegistry.js";
 import type { ModelService } from "./models.js";
 import { profileAgentDir, syncProfile } from "./profile.js";
 import type { ProviderService } from "./providers.js";
@@ -30,11 +35,35 @@ import type { SessionService } from "./sessions.js";
 import type { SkillScope, SkillService } from "./skills.js";
 
 const DEFAULT_TURN_TIMEOUT_MS = 120_000;
-const PROVENANCE = { engine: "acp", engineName: "omp", adapterVersion: ADAPTER_VERSION } as const;
+
+const ENGINE_PROVENANCE: Record<EngineKind, { engineName: string; adapterVersion: string }> = {
+  acp: { engineName: "omp", adapterVersion: ADAPTER_VERSION },
+  native: { engineName: "native", adapterVersion: NATIVE_ADAPTER_VERSION },
+};
+
+/** What the session's engine stamps on the events the kernel appends for it. */
+function provenanceFor(engine: EngineKind): { engine: EngineKind; engineName: string; adapterVersion: string } {
+  switch (engine) {
+    case "native":
+      return { engine, ...ENGINE_PROVENANCE.native };
+    default:
+      return { engine: "acp", ...ENGINE_PROVENANCE.acp };
+  }
+}
+
+const ENGINE_FACTORIES: Record<string, (options: CreateAcpClientOptions) => Engine> = {
+  acp: (options) => createAcpEngine(options),
+  native: () => createNativeEngine(),
+};
+
+/** Unknown values are possible: `sessions.engine` is persisted text, not a closed set at the DB layer. */
+function engineFactory(engine: string): ((options: CreateAcpClientOptions) => Engine) | undefined {
+  return ENGINE_FACTORIES[engine];
+}
 
 const sessionQuery = `
   SELECT s.id AS id, s.agent_id AS agent_id, s.status AS status, s.model_id AS model_id,
-         s.workspace_id AS workspace_id, w.path AS workspace_path
+         s.engine AS engine, s.workspace_id AS workspace_id, w.path AS workspace_path
   FROM sessions s
   JOIN workspaces w ON w.id = s.workspace_id
   WHERE s.id = ?`;
@@ -52,6 +81,7 @@ interface SessionRow {
   agent_id: string;
   status: SessionStatus;
   model_id: string | null;
+  engine: EngineKind;
   workspace_id: string;
   workspace_path: string;
 }
@@ -81,12 +111,14 @@ interface PendingApproval {
 interface SessionState {
   sessionId: string;
   agentId: string;
+  /** The engine fixed at session creation; every event this manager appends for it is stamped with it. */
+  engineKind: EngineKind;
   workspaceId: string;
   workspaceRoot: string;
   /** What `materialize` wrote for this workspace; empty when materialization failed. */
   skillIndex: Map<string, { scope: SkillScope; hash: string }>;
-  engine: AcpClient | undefined;
-  engineSession: AcpSession | undefined;
+  engine: Engine | undefined;
+  engineSession: EngineSession | undefined;
   selector: string | undefined;
   turn: TurnContext | undefined;
   queue: QueuedTurn[];
@@ -221,7 +253,7 @@ export class EngineManager {
 
   /** Child pid for a session, when an engine is live. Used by tests and diagnostics. */
   enginePid(sessionId: string): number | undefined {
-    return this.states.get(sessionId)?.engine?.pid;
+    return this.states.get(sessionId)?.engineSession?.pid;
   }
 
   async prompt(params: SessionPromptParams): Promise<SessionPromptResult> {
@@ -270,7 +302,7 @@ export class EngineManager {
       turn.cancelRequested = true;
       for (const approval of [...state.approvals.values()]) this.settleApproval(approval, "reject");
       try {
-        await state.engineSession?.cancel();
+        await state.engineSession?.interrupt();
       } catch {
         // The engine may already be gone; the turn settles as failed in that case.
       }
@@ -329,22 +361,17 @@ export class EngineManager {
         for (const approval of [...state.approvals.values()]) this.settleApproval(approval, "reject");
         if (state.engineSession !== undefined) {
           try {
-            await state.engineSession.cancel();
+            await state.engineSession.interrupt();
           } catch {
             // The engine may already be gone.
           }
           try {
-            await state.engineSession.close();
+            await state.engineSession.dispose();
           } catch {
-            // dispose() below still reaps the child.
+            // Teardown is best effort; the process is reaped by its own exit handler.
           }
-        }
-        if (state.engine !== undefined) {
-          try {
-            await state.engine.dispose();
-          } catch {
-            // The transport may already be gone.
-          }
+          state.engineSession = undefined;
+          state.engine = undefined;
         }
       }
 
@@ -381,25 +408,25 @@ export class EngineManager {
   /** Fail turns/approvals a crashed kernel left behind; safe to call before replaying a session. */
   reconcileSession(sessionId: string): void {
     if (this.states.has(sessionId) || this.closing.has(sessionId)) return;
-    const row = this.deps.db.prepare("SELECT id, agent_id, status FROM sessions WHERE id = ?").get(sessionId) as
-      | { id: string; agent_id: string; status: SessionStatus }
+    const row = this.deps.db.prepare("SELECT id, agent_id, status, engine FROM sessions WHERE id = ?").get(sessionId) as
+      | { id: string; agent_id: string; status: SessionStatus; engine: EngineKind }
       | undefined;
     if (row === undefined || row.status === "closed") return;
-    this.reconcile({ sessionId: row.id, agentId: row.agent_id });
+    this.reconcile({ sessionId: row.id, agentId: row.agent_id, engineKind: row.engine });
   }
 
   /** Fails sessions a previous kernel left active; the next prompt resumes them from `error`. */
   reconcileAll(): void {
     const rows = this.deps.db
       .prepare(
-        `SELECT s.id, s.agent_id FROM sessions s
+        `SELECT s.id, s.agent_id, s.engine FROM sessions s
          WHERE s.status IN ('starting','running','waiting')
            AND (s.status <> 'starting' OR EXISTS (SELECT 1 FROM turns t WHERE t.session_id = s.id))
          ORDER BY s.created_at ASC`,
       )
-      .all() as Array<{ id: string; agent_id: string }>;
+      .all() as Array<{ id: string; agent_id: string; engine: EngineKind }>;
     for (const row of rows) {
-      this.reconcile({ sessionId: row.id, agentId: row.agent_id });
+      this.reconcile({ sessionId: row.id, agentId: row.agent_id, engineKind: row.engine });
       // A crashed mid-turn session stays `starting` until it accepted a turn; only then is the
       // stale `starting` a lie worth resolving. A session with no turn was never live.
       this.setStatus(row.id, "error", "kernel_restart");
@@ -410,7 +437,7 @@ export class EngineManager {
    * First touch after a kernel restart: turns persisted as queued/running have no live engine
    * behind them, so fail them, resolve orphaned approvals, and release a stale status.
    */
-  private reconcile(target: { sessionId: string; agentId: string }): void {
+  private reconcile(target: { sessionId: string; agentId: string; engineKind: EngineKind }): void {
     const approvals = this.deps.db
       .prepare("SELECT id FROM approvals WHERE session_id = ? AND decision IS NULL")
       .all(target.sessionId) as Array<{ id: string }>;
@@ -442,6 +469,7 @@ export class EngineManager {
     const state: SessionState = {
       sessionId: row.id,
       agentId: row.agent_id,
+      engineKind: row.engine,
       workspaceId: row.workspace_id,
       workspaceRoot: row.workspace_path,
       skillIndex: new Map(),
@@ -475,7 +503,11 @@ export class EngineManager {
     return `${fallback.providerName}/${fallback.modelId}`;
   }
 
-  private async ensureEngine(state: SessionState): Promise<AcpSession> {
+  private get registryDeps(): EngineRegistryDeps {
+    return { db: this.deps.db, providers: this.deps.providers, models: this.deps.models };
+  }
+
+  private async ensureEngine(state: SessionState): Promise<EngineSession> {
     if (state.engineSession !== undefined) return state.engineSession;
     const selector = this.selectorFor(state.sessionId);
     await syncProfile({
@@ -502,7 +534,9 @@ export class EngineManager {
       selector,
       "acp",
     ];
-    const engine = await createAcpClient({
+    const factory = engineFactory(state.engineKind);
+    if (factory === undefined) throw new RpcFault(ErrorCodes.conflict, `Unknown engine: ${state.engineKind}`);
+    const engine = factory({
       command: this.command,
       args,
       cwd: state.workspaceRoot,
@@ -512,13 +546,24 @@ export class EngineManager {
     });
     state.engine = engine;
     try {
-      state.engineSession = await engine.newSession(state.workspaceRoot);
+      const resolved = resolveModelFor(state.sessionId, this.registryDeps);
+      const { baseUrl, apiKey, ...model } = resolved;
+      // `selector` is deliberately left unset: `start()` does not apply `EngineStartOptions.model`
+      // for ACP, so the first turn's model branch applies it through `setModel`.
+      state.engineSession = await engine.start({
+        sessionId: state.sessionId,
+        cwd: state.workspaceRoot,
+        model,
+        baseUrl,
+        apiKey,
+        history: [],
+        skills: [],
+        turnTimeoutMs: this.turnTimeoutMs,
+      });
     } catch (error) {
       state.engine = undefined;
-      await engine.dispose().catch(() => undefined);
       throw error;
     }
-    state.selector = selector;
     return state.engineSession;
   }
 
@@ -550,7 +595,8 @@ export class EngineManager {
       }
       const selector = this.selectorFor(state.sessionId);
       if (state.selector !== selector) {
-        await engineSession.setConfigOption("model", selector);
+        const { providerName, modelId, contextWindow, maxTokens } = resolveModelFor(state.sessionId, this.registryDeps);
+        await engineSession.setModel?.({ providerName, modelId, contextWindow, maxTokens });
         state.selector = selector;
       }
       // Materialization only writes at spawn, but the index must follow toggles and sibling
@@ -562,6 +608,7 @@ export class EngineManager {
       const result = await engineSession.prompt(turn.content, {
         onUpdate: (update) => this.handleUpdate(state, context, update),
         onPermission: (request) => this.handlePermission(state, context, request),
+        onSkillRead: () => undefined,
       });
       this.finishTurn(state, context, result);
     } catch (error) {
@@ -629,13 +676,13 @@ export class EngineManager {
   }
 
   private async disposeEngine(state: SessionState): Promise<void> {
-    const engine = state.engine;
+    const session = state.engineSession;
     state.engine = undefined;
     state.engineSession = undefined;
     state.selector = undefined;
-    if (engine === undefined) return;
+    if (session === undefined) return;
     try {
-      await engine.dispose();
+      await session.dispose();
     } catch {
       // Already gone.
     }
@@ -651,18 +698,18 @@ export class EngineManager {
   }
 
   private emit(
-    target: { sessionId: string; agentId: string },
+    target: { sessionId: string; agentId: string; engineKind: EngineKind },
     type: Parameters<EventStore["append"]>[0]["type"],
     payload: unknown,
     turnId?: string,
-  ): void {
-    this.deps.events.append({
+  ): AgentEvent {
+    return this.deps.events.append({
       sessionId: target.sessionId,
       agentId: target.agentId,
       type,
       payload,
       turnId: turnId ?? null,
-      provenance: PROVENANCE,
+      provenance: provenanceFor(target.engineKind),
     });
   }
 
@@ -736,7 +783,12 @@ export class EngineManager {
         return;
       }
       case "raw": {
-        this.emit(state, "engine.raw", { engine: "omp", payload: update.update }, turn.turnId);
+        this.emit(
+          state,
+          "engine.raw",
+          { engine: provenanceFor(state.engineKind).engineName, payload: update.update },
+          turn.turnId,
+        );
         return;
       }
     }
@@ -766,14 +818,7 @@ export class EngineManager {
       title: request.toolCall.title !== "" ? request.toolCall.title : "Permission required",
       options: effectiveOptions,
     };
-    const event = this.deps.events.append({
-      sessionId: state.sessionId,
-      agentId: state.agentId,
-      type: "permission.requested",
-      payload,
-      turnId: turn.turnId,
-      provenance: PROVENANCE,
-    });
+    const event = this.emit(state, "permission.requested", payload, turn.turnId);
     // The store validated and redacted the payload; project what it persisted so the approvals
     // row cannot keep a secret the event stream dropped.
     const persisted = PayloadSchemas["permission.requested"].parse(event.payload);
@@ -813,8 +858,8 @@ export class EngineManager {
     this.deps.db
       .prepare("UPDATE approvals SET decision = ?, decided_at = ? WHERE id = ?")
       .run(decision, Date.now(), pending.approvalId);
-    const session = this.deps.db.prepare("SELECT agent_id FROM sessions WHERE id = ?").get(pending.sessionId) as
-      | { agent_id: string }
+    const session = this.deps.db.prepare("SELECT agent_id, engine FROM sessions WHERE id = ?").get(pending.sessionId) as
+      | { agent_id: string; engine: EngineKind }
       | undefined;
     if (session !== undefined) {
       this.deps.events.append({
@@ -822,7 +867,7 @@ export class EngineManager {
         agentId: session.agent_id,
         type: "permission.resolved",
         payload: { approvalId: pending.approvalId, decision },
-        provenance: PROVENANCE,
+        provenance: provenanceFor(session.engine),
       });
     }
     if (state !== undefined && state.turn !== undefined) this.setStatus(state.sessionId, "running");

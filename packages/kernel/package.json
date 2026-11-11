@@ -15,6 +15,7 @@
     "@napi-rs/keyring": "^2.1.2",
     "@noir/engine-acp": "workspace:*",
     "@noir/engine-core": "workspace:*",
+    "@noir/engine-native": "workspace:*",
     "@noir/omp-profile": "workspace:*",
     "@noir/protocol": "workspace:*",
     "better-sqlite3": "^12.11.1",

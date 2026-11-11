@@ -13,6 +13,7 @@ import {
   PayloadSchemas,
   reduceSession,
   SessionPromptResult,
+  type EngineKind,
   type EventType,
   type SessionState,
 } from "@noir/protocol";
@@ -28,6 +29,7 @@ import { ProviderService, type Secrets } from "../src/providers.js";
 import { SessionService } from "../src/sessions.js";
 import { SkillService } from "../src/skills.js";
 import { WorkspaceService } from "../src/workspaces.js";
+import { startFakeOpenAiServer } from "../../engines/native/test/fakeOpenAiServer.js";
 
 const FAKE_SERVER = fileURLToPath(new URL("../../engines/acp/test/fakeAcpServer.ts", import.meta.url));
 const SECRET = "sk-noir-secret-4e1f";
@@ -77,7 +79,15 @@ async function waitForEvent(
 }
 
 function setup(
-  opts: { turnTimeoutMs?: number; acpArgs?: string[]; acpSkill?: string; acpPermissionTitle?: string; redactor?: Redactor } = {},
+  opts: {
+    turnTimeoutMs?: number;
+    acpArgs?: string[];
+    acpSkill?: string;
+    acpPermissionTitle?: string;
+    redactor?: Redactor;
+    baseUrl?: string;
+    engine?: EngineKind;
+  } = {},
 ) {
   const root = tempDir();
   const dataDir = tempDir();
@@ -94,12 +104,18 @@ function setup(
   const workspace = workspaces.createLocal(project.id);
   const provider = providers.create({
     name: "Fake",
-    baseUrl: "http://127.0.0.1:9/v1",
+    baseUrl: opts.baseUrl ?? "http://127.0.0.1:9/v1",
     apiKind: "openai-completions",
     apiKey: SECRET,
     enabled: true,
   });
-  const model = models.create({ providerId: provider.id, modelId: "fake-1", contextWindow: 200_000, enabled: true, engine: "acp" });
+  const model = models.create({
+    providerId: provider.id,
+    modelId: "fake-1",
+    contextWindow: 200_000,
+    enabled: true,
+    engine: opts.engine ?? "acp",
+  });
   const session = sessions.create(workspace.id, model.id);
   const skills = new SkillService(db, dataDir);
 
@@ -899,6 +915,61 @@ describe("EngineManager over the fake ACP server", () => {
       expect(events.list(session.id).slice(before).map((event) => event.type)).toEqual(["turn.failed"]);
       expect(events.list(session.id).some((event) => event.type === "turn.started")).toBe(false);
       expect(manager.enginePid(session.id)).toBeUndefined();
+    },
+    TEST_TIMEOUT_MS,
+  );
+});
+
+describe("EngineManager with the native engine", () => {
+  it(
+    "runs a tool call end to end and stamps native provenance",
+    async () => {
+      const server = await startFakeOpenAiServer([
+        { toolCall: { id: "call_1", name: "fs.read", args: JSON.stringify({ path: "note.txt" }) } },
+        { text: "done" },
+      ]);
+      try {
+        const { events, manager, session, root } = setup({ baseUrl: server.baseUrl, engine: "native" });
+        writeFileSync(join(root, "note.txt"), "native file body");
+
+        const result = await manager.prompt({
+          sessionId: session.id,
+          requestId: "native-1",
+          content: [{ type: "text", text: "read it" }],
+        });
+        expect(result.queued).toBe(false);
+
+        const completed = await waitForEvent(events, session.id, (event) => event.type === "turn.completed");
+        expect(eventPayload(completed, "turn.completed")).toMatchObject({ status: "completed", stopReason: "stop" });
+
+        const stream = events.list(session.id);
+        const turnStart = stream.findIndex((event) => event.type === "turn.started");
+        expect(turnStart).toBeGreaterThanOrEqual(0);
+        expect(stream.slice(turnStart).every((event) => event.provenance.engine === "native")).toBe(true);
+        // Status rows are written by `SessionService` (engineName "none"); everything the manager
+        // appends for the native session names the native engine.
+        expect(
+          stream
+            .slice(turnStart)
+            .filter((event) => event.type !== "session.status")
+            .every((event) => event.provenance.engineName === "native"),
+        ).toBe(true);
+
+        const started = stream.filter((event) => event.type === "tool.started");
+        expect(started).toHaveLength(1);
+        expect(eventPayload(started[0]!, "tool.started")).toMatchObject({ toolCallId: "call_1", title: "Read note.txt" });
+        const output = stream.find((event) => event.type === "tool.output");
+        expect(eventPayload(output!, "tool.output").chunk).toContain("native file body");
+        const completedTool = stream.find((event) => event.type === "tool.completed");
+        expect(eventPayload(completedTool!, "tool.completed")).toMatchObject({ toolCallId: "call_1", status: "completed" });
+
+        // The in-process engine has no child, so there is no pid to report.
+        expect(manager.enginePid(session.id)).toBeUndefined();
+        expect(server.requests).toHaveLength(2);
+        await manager.closeSession(session.id);
+      } finally {
+        await server.close();
+      }
     },
     TEST_TIMEOUT_MS,
   );
