@@ -986,6 +986,9 @@ export class EngineManager {
     const configured = stored === "allow" || stored === "reject" ? stored : "ask";
     // A write the kernel cannot prove inside the workspace always asks, even if it is allowed.
     const forcedAsk = category === "write-outside-workspace" && !(await isInsideWorkspace(state.workspaceRoot, request.toolCall.rawInput));
+    // Containment awaits the filesystem, so the session may have closed while it ran; the sync
+    // check above is stale now and a late event or approval row would outlive the close.
+    if (state.closing) return "reject";
     const effective = forcedAsk ? "ask" : configured;
     const title = request.toolCall.title !== "" ? request.toolCall.title : "Permission required";
     if (effective !== "ask") {

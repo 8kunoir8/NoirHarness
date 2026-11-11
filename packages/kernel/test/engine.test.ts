@@ -1,11 +1,12 @@
 import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { symlink } from "node:fs/promises";
+import type * as FsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type Database from "better-sqlite3";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { z } from "zod";
 import {
@@ -37,6 +38,26 @@ import { startFakeOpenAiServer } from "../../engines/native/test/fakeOpenAiServe
 const FAKE_SERVER = fileURLToPath(new URL("../../engines/acp/test/fakeAcpServer.ts", import.meta.url));
 const SECRET = "sk-noir-secret-4e1f";
 const TEST_TIMEOUT_MS = 30_000;
+
+// Lets one test suspend the kernel's containment check exactly where it awaits the filesystem.
+const realpathGate = vi.hoisted(() => ({
+  block: undefined as Promise<void> | undefined,
+  reached: undefined as (() => void) | undefined,
+}));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof FsPromises>();
+  return {
+    ...actual,
+    realpath: async (...args: Parameters<typeof actual.realpath>) => {
+      if (realpathGate.block !== undefined) {
+        realpathGate.reached?.();
+        await realpathGate.block;
+      }
+      return actual.realpath(...args);
+    },
+  };
+});
 
 const dirs: string[] = [];
 const dbs: Database.Database[] = [];
@@ -735,6 +756,47 @@ describe("EngineManager over the fake ACP server", () => {
 
       await manager.respond(eventPayload(requested, "permission.requested").approvalId, "allow_once");
       await waitForEvent(events, session.id, (event) => event.type === "turn.completed");
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "rejects a write whose containment is still resolving when the session closes",
+    async () => {
+      const { db, events, manager, session } = setup({
+        agentPermissionPolicy: { "write-outside-workspace": "allow" },
+        acpPermissionKind: "edit",
+        acpPermissionRawInput: { path: "notes.txt" },
+      });
+
+      const reached = Promise.withResolvers<void>();
+      const blocked = Promise.withResolvers<void>();
+      realpathGate.block = blocked.promise;
+      realpathGate.reached = reached.resolve;
+      try {
+        await manager.prompt({ sessionId: session.id, requestId: "close-mid-containment", content: [{ type: "text", text: "permission" }] });
+        await reached.promise;
+        const closing = manager.closeSession(session.id);
+        // The close set `closing` synchronously before its first await; let containment continue.
+        blocked.resolve();
+        await closing;
+      } finally {
+        blocked.resolve();
+        realpathGate.block = undefined;
+        realpathGate.reached = undefined;
+      }
+
+      const completed = await waitForEvent(events, session.id, (event) => event.type === "turn.completed");
+      await waitForEvent(events, session.id, (event) => event.type === "session.closed");
+      await tick(250);
+
+      const stream = events.list(session.id);
+      expect(stream.filter((event) => event.seq > completed.seq && event.type.startsWith("permission."))).toEqual([]);
+      expect(stream.filter((event) => event.type === "permission.requested" || event.type === "permission.auto")).toEqual([]);
+      expect(approvalRows(db, session.id)).toBe(0);
+      expect((db.prepare("SELECT status FROM sessions WHERE id = ?").get(session.id) as { status: string }).status).toBe(
+        "closed",
+      );
     },
     TEST_TIMEOUT_MS,
   );
