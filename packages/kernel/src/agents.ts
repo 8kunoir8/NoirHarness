@@ -20,6 +20,20 @@ const STATUS_URGENCY: Record<AgentRosterEntry["status"], number> = {
   idle: 3,
 };
 
+type ActiveSessionState = {
+  kind: AgentRosterEntry["activeToolKind"];
+  usage: AgentRosterEntry["usage"];
+};
+
+/** Malformed JSON is no worse than a missing event: both read as `null`. */
+function parsePayloadJson(payloadJson: string): unknown {
+  try {
+    return JSON.parse(payloadJson) as unknown;
+  } catch {
+    return null;
+  }
+}
+
 const AGENT_COLUMNS = "id, name, role, engine_id, model_ref, permission_policy, default_workspace_id, archived_at, created_at";
 
 function toView(row: Record<string, unknown>): AgentView {
@@ -162,9 +176,15 @@ export class AgentService {
    */
   roster(): AgentRosterEntry[] {
     const sessions = this.sessions.list();
+    // One batched lookup for every open session: the cost stays flat as the roster grows.
+    const state = this.openSessionState();
     const entries = this.list().map((agent): AgentRosterEntry => {
       const mine = sessions.filter((session) => session.agentId === agent.id);
-      const active = mine.find((session) => session.status !== "closed");
+      // `created_at` is millisecond-granular, so a tie needs the id to stay deterministic.
+      const active = mine
+        .filter((session) => session.status !== "closed")
+        .sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id))[0];
+      const activeState = active === undefined ? undefined : state.get(active.id);
       return {
         agentId: agent.id,
         name: agent.name,
@@ -178,10 +198,10 @@ export class AgentService {
               : "idle",
         activeSessionId: active?.id ?? null,
         activeSessionStatus: active?.status ?? null,
-        activeToolKind: active === undefined ? null : this.toolKindOf(active.id),
+        activeToolKind: activeState?.kind ?? null,
         sessionCount: mine.length,
         lastActivityAt: mine.reduce((latest, session) => Math.max(latest, session.lastEventAt), agent.createdAt),
-        usage: active === undefined ? null : this.usageOf(active.id),
+        usage: activeState?.usage ?? null,
       };
     });
     return entries.sort((a, b) => {
@@ -192,29 +212,35 @@ export class AgentService {
     });
   }
 
-  /** The newest started tool's kind, or `null` when that payload names no known kind. */
-  toolKindOf(sessionId: string): AgentRosterEntry["activeToolKind"] {
-    const started = PayloadSchemas["tool.started"].safeParse(this.latestPayload(sessionId, "tool.started"));
-    return started.success ? (started.data.kind ?? null) : null;
-  }
-
-  /** The newest usage reading for a session, or `null` when the payload cannot be trusted. */
-  usageOf(sessionId: string): AgentRosterEntry["usage"] {
-    const usage = PayloadSchemas["usage.updated"].safeParse(this.latestPayload(sessionId, "usage.updated"));
-    return usage.success ? { used: usage.data.contextUsed, size: usage.data.contextWindow } : null;
-  }
-
-  /** Malformed JSON is no worse than a missing event: both read as `null`. */
-  private latestPayload(sessionId: string, type: "tool.started" | "usage.updated"): unknown {
-    const row = this.db
-      .prepare("SELECT payload_json FROM events WHERE session_id = ? AND type = ? ORDER BY seq DESC, rowid DESC LIMIT 1")
-      .get(sessionId, type) as { payload_json: string } | undefined;
-    if (row === undefined) return null;
-    try {
-      return JSON.parse(row.payload_json) as unknown;
-    } catch {
-      return null;
+  /**
+   * The newest `tool.started` kind and the newest `usage.updated` reading per open session, in one
+   * query. Closed sessions can never be active, so they are excluded before ranking.
+   */
+  private openSessionState(): Map<string, ActiveSessionState> {
+    const rows = this.db
+      .prepare(
+        `SELECT session_id, type, payload_json FROM (
+           SELECT session_id, type, payload_json,
+                  ROW_NUMBER() OVER (PARTITION BY session_id, type ORDER BY seq DESC, rowid DESC) AS rn
+           FROM events
+           WHERE type IN ('tool.started', 'usage.updated')
+             AND session_id IN (SELECT id FROM sessions WHERE status <> 'closed')
+         ) WHERE rn = 1`,
+      )
+      .all() as Array<{ session_id: string; type: string; payload_json: string }>;
+    const state = new Map<string, ActiveSessionState>();
+    for (const row of rows) {
+      const current = state.get(row.session_id) ?? { kind: null, usage: null };
+      if (row.type === "tool.started") {
+        const started = PayloadSchemas["tool.started"].safeParse(parsePayloadJson(row.payload_json));
+        current.kind = started.success ? (started.data.kind ?? null) : null;
+      } else {
+        const usage = PayloadSchemas["usage.updated"].safeParse(parsePayloadJson(row.payload_json));
+        current.usage = usage.success ? { used: usage.data.contextUsed, size: usage.data.contextWindow } : null;
+      }
+      state.set(row.session_id, current);
     }
+    return state;
   }
 
   private assertNameAvailable(name: string, exceptId?: string): void {

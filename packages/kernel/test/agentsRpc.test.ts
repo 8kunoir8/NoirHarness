@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import WebSocket from "ws";
-import { AgentArchiveResult, AgentListResult, AgentView, ErrorCodes } from "@noir/protocol";
+import { AgentArchiveResult, AgentListResult, AgentRosterResult, AgentView, ErrorCodes } from "@noir/protocol";
 import { startKernel } from "../src/index.js";
 
 const dirs: string[] = [];
@@ -89,6 +89,20 @@ it("rejects an unknown policy key and a non-string id with invalidParams", async
     // The rejected update never touched the row.
     const listed = AgentListResult.parse((await call(kernel.port, kernel.token, "agent.list", {})).result);
     expect(listed.agents.find((a) => a.id === agent.id)?.role).toBe("Coder");
+  } finally {
+    await kernel.close();
+  }
+});
+
+it("serves a roster snapshot and rejects unknown params", async () => {
+  const kernel = await startKernel({ dataDir: tempDir("noir agents rpc ") });
+  try {
+    const roster = AgentRosterResult.parse((await call(kernel.port, kernel.token, "agent.roster", {})).result);
+    expect(roster.agents).toEqual([]);
+    expect(roster.generatedAt).toEqual(expect.any(Number));
+
+    const typed = await call(kernel.port, kernel.token, "agent.roster", { includeArchived: true });
+    expect(typed.error.code).toBe(ErrorCodes.invalidParams);
   } finally {
     await kernel.close();
   }

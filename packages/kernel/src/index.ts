@@ -87,6 +87,9 @@ const ProbeFrame = z.object({
   result: z.object({ status: z.literal("ok"), pid: z.number().int() }).optional(),
 });
 
+/** `agent.roster` takes no fields; strict so a typo is `invalidParams` rather than silently ignored. */
+const AgentRosterParams = z.object({}).strict();
+
 const PROBE_REQUEST_ID = 1;
 const PROBE_TIMEOUT_MS = 750;
 const STARTUP_GRACE_MS = 30_000;
@@ -316,7 +319,10 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
           agents.archive(id, archived);
           return { ok: true };
         },
-        [Methods.agentRoster]: async () => ({ agents: agents.roster(), generatedAt: Date.now() }),
+        [Methods.agentRoster]: async (params) => {
+          AgentRosterParams.parse(params ?? {});
+          return { agents: agents.roster(), generatedAt: Date.now() };
+        },
         [Methods.sessionPrompt]: async (params) => engineManager.prompt(SessionPromptParams.parse(params)),
         [Methods.sessionInterrupt]: async (params) => engineManager.interrupt(SessionInterruptParams.parse(params).sessionId),
         [Methods.sessionCancelQueued]: async (params) =>

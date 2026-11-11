@@ -436,6 +436,60 @@ describe("AgentService.roster", () => {
     });
   });
 
+  it("breaks a same-millisecond created_at tie by id", () => {
+    const services = setup();
+    const workspaceId = workspaceFor(services);
+    const agent = services.agents.create(agentInput({ name: "Tied" }));
+    const first = services.sessions.create(workspaceId, { agentId: agent.id });
+    const second = services.sessions.create(workspaceId, { agentId: agent.id });
+    services.db.prepare("UPDATE sessions SET created_at = 7 WHERE id IN (?, ?)").run(first.id, second.id);
+
+    const expected = first.id > second.id ? first : second;
+    services.events.append({
+      sessionId: expected.id,
+      agentId: agent.id,
+      type: "tool.started",
+      payload: { toolCallId: "t1", title: "Tied tool", kind: "search" },
+      provenance,
+    });
+
+    expect(entryFor(services, agent.id)).toMatchObject({
+      activeSessionId: expected.id,
+      activeToolKind: "search",
+    });
+  });
+
+  it("counts the same number of statements however many open sessions the roster has", () => {
+    const services = setup();
+    const workspaceId = workspaceFor(services);
+    const first = services.agents.create(agentInput({ name: "One" }));
+    const second = services.agents.create(agentInput({ name: "Two" }));
+    services.sessions.create(workspaceId, { agentId: first.id });
+    services.sessions.create(workspaceId, { agentId: second.id });
+
+    const originalPrepare = services.db.prepare;
+    let calls = 0;
+    services.db.prepare = ((sql: string) => {
+      calls += 1;
+      return originalPrepare.call(services.db, sql);
+    }) as typeof services.db.prepare;
+    try {
+      services.agents.roster();
+      const baseline = calls;
+      expect(baseline).toBe(5); // session list (3) + agent list (1) + one batched event query
+
+      for (let index = 0; index < 8; index += 1) {
+        const extra = services.agents.create(agentInput({ name: `Extra ${index}` }));
+        services.sessions.create(workspaceId, { agentId: extra.id });
+      }
+      calls = 0;
+      services.agents.roster();
+      expect(calls).toBe(baseline);
+    } finally {
+      services.db.prepare = originalPrepare;
+    }
+  });
+
   it("takes activeToolKind from the newest tool.started kind and rejects unknown or malformed payloads", () => {
     const services = setup();
     const workspaceId = workspaceFor(services);
