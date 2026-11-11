@@ -20,6 +20,14 @@ describe("parseCsv", () => {
     expect(parseCsv("a\tb\n1\t2\n").delimiter).toBe("\t");
     expect(parseCsv("a|b\n1|2\n").delimiter).toBe("|");
     expect(parseCsv("single\n").delimiter).toBe(",");
+    expect(parseCsv("a;b\tc\n1;2\t3\n").delimiter).toBe(",");
+  });
+
+  it("infers the delimiter from the first physical line when a quoted cell spans a newline", () => {
+    const table = parseCsv('name,"multi\nline",tail\nann,"y\nz",end\n');
+    expect(table.delimiter).toBe(",");
+    expect(table.headers).toEqual(["name", "multi\nline", "tail"]);
+    expect(table.rows).toEqual([["ann", "y\nz", "end"]]);
   });
 
   it("uses the first row as headers when every cell is non-empty and some is not numeric", () => {

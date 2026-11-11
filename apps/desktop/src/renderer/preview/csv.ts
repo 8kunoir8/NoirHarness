@@ -6,6 +6,10 @@
  * bounded: at most `MAX_ROWS` data rows, `MAX_COLUMNS` columns and
  * `MAX_CELL_CHARS` characters per cell; everything past a bound is dropped and
  * reported through `truncated`.
+ *
+ * Rows are ragged: they are neither padded to the header width nor trimmed to
+ * it, so a row may carry fewer or more cells than `headers`. Renderers must
+ * tolerate both shapes.
  */
 
 export const MAX_ROWS = 5_000;
@@ -37,7 +41,7 @@ export function parseCsv(text: string, opts: ParseCsvOptions = {}): CsvTable {
   return finalize(rawRows, truncated, delimiter);
 }
 
-/** Picks the delimiter with the highest count on the first line, ignoring quotes; ties (and no match) go to `,`. */
+/** Picks the delimiter with the highest count on the first physical line, ignoring quotes; ties (and no match) go to `,`. */
 function inferDelimiter(source: string): string {
   const counts = DELIMITERS.map(() => 0);
   let inQuotes = false;
@@ -45,6 +49,9 @@ function inferDelimiter(source: string): string {
 
   for (let index = 0; index < source.length; index += 1) {
     const char = source.charAt(index);
+    // A quoted cell may span a newline, but inference never looks past the first
+    // physical line; otherwise delimiters in later lines would skew the count.
+    if (char === "\n" || char === "\r") break;
     if (inQuotes) {
       if (char === '"') {
         if (source.charAt(index + 1) === '"') index += 1;
@@ -57,7 +64,6 @@ function inferDelimiter(source: string): string {
       fieldStart = false;
       continue;
     }
-    if (char === "\n" || char === "\r") break;
     const delimiterIndex = (DELIMITERS as readonly string[]).indexOf(char);
     if (delimiterIndex >= 0) {
       counts[delimiterIndex] = (counts[delimiterIndex] ?? 0) + 1;
@@ -67,11 +73,10 @@ function inferDelimiter(source: string): string {
     }
   }
 
-  let best = 0;
-  for (let index = 1; index < counts.length; index += 1) {
-    if ((counts[index] ?? 0) > (counts[best] ?? 0)) best = index;
-  }
-  return DELIMITERS[best] ?? ",";
+  const max = Math.max(...counts);
+  if (max === 0) return ",";
+  const top = counts.filter((count) => count === max);
+  return top.length === 1 ? (DELIMITERS[counts.indexOf(max)] ?? ",") : ",";
 }
 
 function scanRows(source: string, delimiter: string): { rawRows: string[][]; truncated: boolean } {
