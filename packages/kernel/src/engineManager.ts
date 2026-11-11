@@ -98,6 +98,8 @@ interface TurnContext extends QueuedTurn {
   cancelRequested: boolean;
   /** Skills already attributed this turn, so a repeated read does not duplicate the event. */
   loadedSkills: Set<string>;
+  /** Tool-call ids whose `tool.started` was a command, so the command projection can settle them. */
+  commands: Set<string>;
 }
 
 interface PendingApproval {
@@ -196,6 +198,13 @@ function planStatus(status: string): "pending" | "active" | "done" {
     default:
       return "pending";
   }
+}
+
+/** Native's shell result reports the real exit code; ACP's content does not, so a finished call is 0. */
+function exitCodeFrom(text: string | undefined): number {
+  const match = /(?:^|\n)exit code: (-?\d+)/.exec(text ?? "");
+  const parsed = match?.[1] === undefined ? 0 : Number(match[1]);
+  return Number.isSafeInteger(parsed) ? parsed : 0;
 }
 
 /** Filesystem failures a workspace normally produces when it cannot be written to. */
@@ -574,6 +583,7 @@ export class EngineManager {
       nextMessageSeq: 0,
       cancelRequested: false,
       loadedSkills: new Set(),
+      commands: new Set(),
     };
     state.turn = context;
     state.usage = undefined;
@@ -739,7 +749,9 @@ export class EngineManager {
           turn.loadedSkills.add(skillName);
           this.emit(state, "skill.loaded", { name: skillName, scope: meta.scope, hash: meta.hash }, turn.turnId);
         }
-        if (update.toolKind === "execute") {
+        // Native names this kind `shell`; ACP names it `execute`. Both are the command projection.
+        if (update.toolKind === "execute" || update.toolKind === "shell") {
+          turn.commands.add(update.toolCallId);
           const raw = update.rawInput;
           const command =
             typeof raw === "object" && raw !== null && typeof (raw as Record<string, unknown>).command === "string"
@@ -754,8 +766,19 @@ export class EngineManager {
           // The final tool_call_update carries the whole content snapshot; the UI appends it to the card.
           if (update.text !== undefined && update.text !== "") {
             this.emit(state, "tool.output", { toolCallId: update.toolCallId, chunk: update.text }, turn.turnId);
+            if (turn.commands.has(update.toolCallId)) {
+              this.emit(state, "command.output", { commandId: update.toolCallId, chunk: update.text }, turn.turnId);
+            }
           }
           this.emit(state, "tool.completed", { toolCallId: update.toolCallId, status: update.status }, turn.turnId);
+          if (turn.commands.has(update.toolCallId)) {
+            this.emit(
+              state,
+              "command.completed",
+              { commandId: update.toolCallId, exitCode: exitCodeFrom(update.text) },
+              turn.turnId,
+            );
+          }
         } else if (update.status === "failed") {
           this.emit(state, "tool.failed", { toolCallId: update.toolCallId, message: update.text ?? update.status }, turn.turnId);
         }

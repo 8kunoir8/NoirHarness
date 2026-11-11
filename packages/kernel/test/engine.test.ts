@@ -17,6 +17,7 @@ import {
   type EventType,
   type SessionState,
 } from "@noir/protocol";
+import { AgentService } from "../src/agents.js";
 import { openDb } from "../src/db.js";
 import { EngineManager } from "../src/engineManager.js";
 import { EventStore } from "../src/eventStore.js";
@@ -130,6 +131,7 @@ function setup(
     db,
     events,
     sessions,
+    agents: new AgentService(db, models),
     models,
     providers,
     skills,
@@ -864,7 +866,17 @@ describe("EngineManager over the fake ACP server", () => {
     db.prepare("INSERT INTO turns (id, session_id, idx, status, started_at) VALUES ('t2','start',2,'running',4)").run();
 
     const events = new EventStore(db);
-    const manager = new EngineManager({ db, events, sessions: new SessionService(db, events), models: new ModelService(db), providers: new ProviderService(db, memorySecrets()), skills: new SkillService(db, tempDir()), dataDir: tempDir() });
+    const models = new ModelService(db);
+    const manager = new EngineManager({
+      db,
+      events,
+      sessions: new SessionService(db, events),
+      agents: new AgentService(db, models),
+      models,
+      providers: new ProviderService(db, memorySecrets()),
+      skills: new SkillService(db, tempDir()),
+      dataDir: tempDir(),
+    });
     managers.push(manager);
     manager.reconcileAll();
     const statuses = db.prepare("SELECT id, status FROM sessions ORDER BY id").all();
@@ -926,6 +938,7 @@ describe("EngineManager with the native engine", () => {
     async () => {
       const server = await startFakeOpenAiServer([
         { toolCall: { id: "call_1", name: "fs.read", args: JSON.stringify({ path: "note.txt" }) } },
+        { toolCall: { id: "call_2", name: "shell.exec", args: JSON.stringify({ command: "echo hi" }) } },
         { text: "done" },
       ]);
       try {
@@ -938,6 +951,10 @@ describe("EngineManager with the native engine", () => {
           content: [{ type: "text", text: "read it" }],
         });
         expect(result.queued).toBe(false);
+
+        const requested = await waitForEvent(events, session.id, (event) => event.type === "permission.requested");
+        expect(eventPayload(requested, "permission.requested")).toMatchObject({ category: "shell", title: "echo hi" });
+        await manager.respond(eventPayload(requested, "permission.requested").approvalId, "allow_once");
 
         const completed = await waitForEvent(events, session.id, (event) => event.type === "turn.completed");
         expect(eventPayload(completed, "turn.completed")).toMatchObject({ status: "completed", stopReason: "stop" });
@@ -956,16 +973,29 @@ describe("EngineManager with the native engine", () => {
         ).toBe(true);
 
         const started = stream.filter((event) => event.type === "tool.started");
-        expect(started).toHaveLength(1);
+        expect(started).toHaveLength(2);
         expect(eventPayload(started[0]!, "tool.started")).toMatchObject({ toolCallId: "call_1", title: "Read note.txt" });
-        const output = stream.find((event) => event.type === "tool.output");
+        const output = stream.find(
+          (event) => event.type === "tool.output" && eventPayload(event, "tool.output").toolCallId === "call_1",
+        );
         expect(eventPayload(output!, "tool.output").chunk).toContain("native file body");
-        const completedTool = stream.find((event) => event.type === "tool.completed");
-        expect(eventPayload(completedTool!, "tool.completed")).toMatchObject({ toolCallId: "call_1", status: "completed" });
+
+        // `shell` is native's spelling of ACP's `execute`; both drive the command projection.
+        const commandStarted = stream.find((event) => event.type === "command.started");
+        expect(eventPayload(commandStarted!, "command.started")).toEqual({ commandId: "call_2", command: "echo hi" });
+        const commandOutput = stream.find((event) => event.type === "command.output");
+        expect(eventPayload(commandOutput!, "command.output").chunk).toContain("hi");
+        const commandCompleted = stream.find((event) => event.type === "command.completed");
+        expect(eventPayload(commandCompleted!, "command.completed")).toMatchObject({ commandId: "call_2", exitCode: 0 });
+
+        const completedTools = stream
+          .filter((event) => event.type === "tool.completed")
+          .map((event) => eventPayload(event, "tool.completed"));
+        expect(completedTools.map((payload) => payload.toolCallId)).toEqual(["call_1", "call_2"]);
 
         // The in-process engine has no child, so there is no pid to report.
         expect(manager.enginePid(session.id)).toBeUndefined();
-        expect(server.requests).toHaveLength(2);
+        expect(server.requests).toHaveLength(3);
         await manager.closeSession(session.id);
       } finally {
         await server.close();

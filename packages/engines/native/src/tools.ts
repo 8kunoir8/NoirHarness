@@ -439,10 +439,12 @@ const TOOL_SPECS: Record<string, ToolSpec> = {
     async run(raw, ctx) {
       const args = ReplaceSchema.parse(raw);
       const target = await resolveTarget(ctx.workspaceRoot, args.path);
+      // Ask first: an outside target must not be read (or probed for `find`) before approval.
+      if (!(await approve(ctx, `Edit ${target.relative}`, "edit", args))) return PERMISSION_DENIED;
       const existing = await readFile(target.absolute, "utf8");
       if (existing.split(args.find).length - 1 !== 1) throw new Error("find must match exactly once");
-      if (!(await approve(ctx, `Edit ${target.relative}`, "edit", args))) return PERMISSION_DENIED;
-      await writeFile(target.absolute, existing.replace(args.find, args.newText), "utf8");
+      // A function replacement keeps `$&`/`$$`/`$'` in newText literal instead of expanding them.
+      await writeFile(target.absolute, existing.replace(args.find, () => args.newText), "utf8");
       return JSON.stringify({ replacements: 1 });
     },
   },

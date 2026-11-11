@@ -96,6 +96,30 @@ describe("fs.replace", () => {
     expect(onPermission).toHaveBeenCalledTimes(1);
     expect(onPermission.mock.calls[0]?.[0].toolCall.kind).toBe("edit");
   });
+
+  it("writes replacement patterns in newText literally", async () => {
+    const root = tempDir();
+    writeFileSync(join(root, "script.sh"), "echo X\n");
+    await runTool(
+      "fs.replace",
+      { path: "script.sh", find: "X", newText: "cost $& $' $$ $1" },
+      context(root),
+    );
+    expect(readFileSync(join(root, "script.sh"), "utf8")).toBe("echo cost $& $' $$ $1\n");
+  });
+
+  it("asks before reading a target outside the workspace", async () => {
+    const root = tempDir();
+    const outside = tempDir();
+    const target = join(outside, "outside.txt");
+    writeFileSync(target, "a b");
+    const denied = permissionMock("reject");
+    await expect(
+      runTool("fs.replace", { path: target, find: "a", newText: "c" }, context(root, { onPermission: denied })),
+    ).resolves.toBe(PERMISSION_DENIED);
+    expect(denied).toHaveBeenCalledTimes(1);
+    expect(readFileSync(target, "utf8")).toBe("a b");
+  });
 });
 
 describe("fs.write", () => {
