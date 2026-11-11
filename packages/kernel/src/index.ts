@@ -5,6 +5,10 @@ import type Database from "better-sqlite3";
 import WebSocket from "ws";
 import { z } from "zod";
 import {
+  AgentArchiveParams,
+  AgentCreateParams,
+  AgentListParams,
+  AgentUpdateParams,
   AnnotationAddParams,
   AnnotationDeleteParams,
   AnnotationListParams,
@@ -40,6 +44,7 @@ import {
   type AgentEvent,
 } from "@noir/protocol";
 import { dataDir as defaultDataDir } from "./appdata.js";
+import { AgentService } from "./agents.js";
 import { addAnnotation, deleteAnnotation, listAnnotations } from "./annotations.js";
 import { openDb } from "./db.js";
 import { EngineManager } from "./engineManager.js";
@@ -212,12 +217,14 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
       const providers = new ProviderService(db, new KeyringSecrets());
       for (const key of providers.secretValues()) redactor.addSecret(key);
       const models = new ModelService(db);
+      const agents = new AgentService(db, models);
       // Task 5 shares this instance with EngineManager so enabled flags match what is materialized.
       const skills = new SkillService(database, dir);
       const engineManager = new EngineManager({
         db,
         events,
         sessions,
+        agents,
         models,
         providers,
         skills,
@@ -299,6 +306,16 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
           return sessions.view(row.id);
         },
         [Methods.sessionList]: async () => ({ sessions: sessions.list() }),
+        [Methods.agentList]: async (params) => ({
+          agents: agents.list(AgentListParams.parse(params ?? {}).includeArchived ?? false),
+        }),
+        [Methods.agentCreate]: async (params) => agents.create(AgentCreateParams.parse(params)),
+        [Methods.agentUpdate]: async (params) => agents.update(AgentUpdateParams.parse(params)),
+        [Methods.agentArchive]: async (params) => {
+          const { id, archived } = AgentArchiveParams.parse(params);
+          agents.archive(id, archived);
+          return { ok: true };
+        },
         [Methods.sessionPrompt]: async (params) => engineManager.prompt(SessionPromptParams.parse(params)),
         [Methods.sessionInterrupt]: async (params) => engineManager.interrupt(SessionInterruptParams.parse(params).sessionId),
         [Methods.sessionCancelQueued]: async (params) =>

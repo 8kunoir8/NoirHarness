@@ -26,6 +26,7 @@ import {
   type SessionPromptResult,
   type SessionStatus,
 } from "@noir/protocol";
+import type { AgentService } from "./agents.js";
 import type { EventStore } from "./eventStore.js";
 import { resolveModelFor, type EngineRegistryDeps } from "./engineRegistry.js";
 import type { ModelService } from "./models.js";
@@ -246,6 +247,7 @@ export class EngineManager {
       db: Database.Database;
       events: EventStore;
       sessions: SessionService;
+      agents: AgentService;
       models: ModelService;
       providers: ProviderService;
       skills: SkillService;

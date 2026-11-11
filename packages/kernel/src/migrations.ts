@@ -109,6 +109,15 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
       CREATE INDEX idx_models_engine ON models(engine);
     `,
   },
+  {
+    id: 6,
+    sql: `
+      ALTER TABLE agents ADD COLUMN default_workspace_id TEXT REFERENCES workspaces(id) ON DELETE SET NULL;
+      ALTER TABLE agents ADD COLUMN archived_at INTEGER;
+      ALTER TABLE agents ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0;
+      CREATE INDEX idx_agents_archived ON agents(archived_at);
+    `,
+  },
 ];
 
 export function migrate(db: Database.Database): void {

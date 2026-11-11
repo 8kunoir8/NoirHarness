@@ -47,7 +47,7 @@ describe("openDb", () => {
 
     const db = openDb(file);
     const applied = db.prepare("SELECT id FROM schema_migrations ORDER BY id").pluck().all() as number[];
-    expect(applied).toEqual([1, 2, 3, 4, 5]);
+    expect(applied).toEqual([1, 2, 3, 4, 5, 6]);
     expect(db.prepare("SELECT status FROM sessions WHERE id = 's1'").pluck().get()).toBe("idle");
     expect(db.prepare("SELECT name FROM providers WHERE id = 'pr1'").pluck().get()).toBe("Local");
 
@@ -58,6 +58,9 @@ describe("openDb", () => {
     expect(columns("approvals")).toContain("options_json");
     expect(columns("models")).toContain("created_at");
     expect(columns("models")).toContain("engine");
+    expect(columns("agents")).toContain("default_workspace_id");
+    expect(columns("agents")).toContain("archived_at");
+    expect(columns("agents")).toContain("created_at");
     db.close();
   });
 });

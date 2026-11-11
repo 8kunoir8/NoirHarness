@@ -9,6 +9,10 @@ export const Methods = {
   workspaceList: "workspace.list",
   sessionCreate: "session.create",
   sessionList: "session.list",
+  agentList: "agent.list",
+  agentCreate: "agent.create",
+  agentUpdate: "agent.update",
+  agentArchive: "agent.archive",
   sessionSubscribe: "session.subscribe",
   modelCreate: "model.create",
   modelList: "model.list",
@@ -109,6 +113,54 @@ export const SessionSetModelParams = z.object({ sessionId: z.string().min(1), mo
 export type SessionSetModelParams = z.infer<typeof SessionSetModelParams>;
 export const ApprovalRespondParams = z.object({ approvalId: z.string().min(1), decision: PermissionDecision });
 export type ApprovalRespondParams = z.infer<typeof ApprovalRespondParams>;
+
+export const PermissionCategory = z.enum(["shell", "delete", "rename", "write-outside-workspace", "network"]);
+export type PermissionCategory = z.infer<typeof PermissionCategory>;
+/** Missing key means `ask`. Unknown keys are rejected, not silently ignored. */
+export const PermissionPolicySchema = z
+  .object({
+    shell: z.enum(["ask", "allow", "reject"]),
+    delete: z.enum(["ask", "allow", "reject"]),
+    rename: z.enum(["ask", "allow", "reject"]),
+    "write-outside-workspace": z.enum(["ask", "allow", "reject"]),
+    network: z.enum(["ask", "allow", "reject"]),
+  })
+  .partial()
+  .strict();
+export type PermissionPolicy = z.infer<typeof PermissionPolicySchema>;
+
+export const AgentView = z.object({
+  id: z.string(),
+  name: z.string(),
+  role: z.string(),
+  engineId: z.enum(["acp", "native"]),
+  modelRef: z.string().nullable(),
+  permissionPolicy: PermissionPolicySchema,
+  defaultWorkspaceId: z.string().nullable(),
+  archivedAt: z.number().int().nullable(),
+  createdAt: z.number().int(),
+});
+export type AgentView = z.infer<typeof AgentView>;
+
+export const AgentCreateParams = z.object({
+  name: z.string().trim().min(1).max(60),
+  role: z.string().trim().min(1).max(40).default("Coder"),
+  engineId: z.enum(["acp", "native"]).default("acp"),
+  modelRef: z.string().min(1).nullable().default(null),
+  permissionPolicy: PermissionPolicySchema.default({}),
+  defaultWorkspaceId: z.string().min(1).nullable().default(null),
+});
+export type AgentCreateParams = z.infer<typeof AgentCreateParams>;
+export const AgentUpdateParams = AgentCreateParams.partial().extend({ id: z.string().min(1) });
+export type AgentUpdateParams = z.infer<typeof AgentUpdateParams>;
+export const AgentArchiveParams = z.object({ id: z.string().min(1), archived: z.boolean() });
+export type AgentArchiveParams = z.infer<typeof AgentArchiveParams>;
+export const AgentArchiveResult = z.object({ ok: z.literal(true) });
+export type AgentArchiveResult = z.infer<typeof AgentArchiveResult>;
+export const AgentListParams = z.object({ includeArchived: z.boolean().optional() });
+export type AgentListParams = z.infer<typeof AgentListParams>;
+export const AgentListResult = z.object({ agents: z.array(AgentView) });
+export type AgentListResult = z.infer<typeof AgentListResult>;
 
 export const FsEntry = z.object({
   name: z.string(),
