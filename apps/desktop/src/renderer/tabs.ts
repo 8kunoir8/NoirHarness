@@ -1,7 +1,8 @@
 export type Tab =
   | { id: string; kind: "chat"; sessionId: string }
   | { id: string; kind: "editor"; path: string }
-  | { id: string; kind: "diff"; path: string };
+  | { id: string; kind: "diff"; path: string }
+  | { id: string; kind: "preview"; path: string };
 
 export interface TabsState {
   tabs: Tab[];
@@ -10,7 +11,7 @@ export interface TabsState {
   workspaceId: string;
 }
 
-export const TABS_KEY = "noir.tabs.v2";
+export const TABS_KEY = "noir.tabs.v3";
 
 export function chatTab(sessionId: string): Tab {
   return { id: `chat:${sessionId}`, kind: "chat", sessionId };
@@ -20,6 +21,9 @@ export function editorTab(path: string): Tab {
 }
 export function diffTab(path: string): Tab {
   return { id: `diff:${path}`, kind: "diff", path };
+}
+export function previewTab(path: string): Tab {
+  return { id: `preview:${path}`, kind: "preview", path };
 }
 
 export function openTab(state: TabsState, tab: Tab): TabsState {
@@ -47,7 +51,7 @@ function isTab(value: unknown): value is Tab {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as Record<string, unknown>;
   if (candidate.kind === "chat") return typeof candidate.sessionId === "string" && candidate.sessionId !== "";
-  if (candidate.kind === "editor" || candidate.kind === "diff") {
+  if (candidate.kind === "editor" || candidate.kind === "diff" || candidate.kind === "preview") {
     return typeof candidate.path === "string" && candidate.path !== "";
   }
   return false;
@@ -55,7 +59,8 @@ function isTab(value: unknown): value is Tab {
 
 function normalize(tab: Tab): Tab {
   if (tab.kind === "chat") return chatTab(tab.sessionId);
-  return tab.kind === "editor" ? editorTab(tab.path) : diffTab(tab.path);
+  if (tab.kind === "editor") return editorTab(tab.path);
+  return tab.kind === "diff" ? diffTab(tab.path) : previewTab(tab.path);
 }
 
 /** Accepts the v2 shape and migrates the v1 chat-id list only when `tabs` is not an array; anything unrecognized becomes empty. */
@@ -83,7 +88,7 @@ export function loadTabs(raw: unknown): TabsState {
 }
 
 /**
- * Pins the stored tab set to the workspace it was saved in. Editor/diff paths are
+ * Pins the stored tab set to the workspace it was saved in. Editor/diff/preview paths are
  * workspace-relative, so a tab restored under another workspace would silently read (and later save)
  * a same-named file from the wrong tree: those tabs are dropped, while chat tabs stay usable.
  *
@@ -98,7 +103,7 @@ export function scopeTabs(state: TabsState, workspaceId: string): TabsState {
   return { tabs, active, workspaceId };
 }
 
-/** Drops chat tabs whose session no longer exists; editor and diff tabs are workspace state and stay. */
+/** Drops chat tabs whose session no longer exists; editor, diff, and preview tabs are workspace state and stay. */
 export function pruneChatTabs(state: TabsState, sessionIds: ReadonlySet<string>): TabsState {
   const tabs = state.tabs.filter((tab) => tab.kind !== "chat" || sessionIds.has(tab.sessionId));
   if (tabs.length === state.tabs.length) return state;

@@ -15,7 +15,11 @@
     "test:e2e": "pnpm build && playwright test",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {},
+  "dependencies": {
+    "react-markdown": "^10.1.0",
+    "rehype-sanitize": "^6.0.0",
+    "remark-gfm": "^4.0.1"
+  },
   "devDependencies": {
     "@noir/protocol": "workspace:*",
     "@playwright/test": "^1.50.0",

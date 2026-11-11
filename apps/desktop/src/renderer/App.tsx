@@ -17,6 +17,7 @@ import { useSessionEvents, type ChatFile } from "./events.js";
 import { FileTree } from "./FileTree.js";
 import { Inspector } from "./Inspector.js";
 import { MonacoEditor } from "./MonacoEditor.js";
+import { ArtifactPreview } from "./preview/ArtifactPreview.js";
 import { QuickOpen } from "./QuickOpen.js";
 import { SessionList, type ReadState, type SessionFilter } from "./SessionList.js";
 import { Setup } from "./Setup.js";
@@ -98,7 +99,7 @@ export function App() {
   const [workspaceId, setWorkspaceId] = useState("");
   const [newChatModelId, setNewChatModelId] = useState("");
   const [tabState, setTabState] = useState<TabsState>(() =>
-    loadTabs(loadJson<unknown>(TABS_KEY, loadJson<unknown>("noir.tabs", null))),
+    loadTabs(loadJson<unknown>(TABS_KEY, loadJson<unknown>("noir.tabs.v2", loadJson<unknown>("noir.tabs", null)))),
   );
   const [documents, setDocuments] = useState<Record<string, DocumentState>>({});
   const [gitStatus, setGitStatus] = useState<{ workspaceId: string; status: GitStatusResult } | undefined>(
@@ -165,8 +166,8 @@ export function App() {
     storeJson(TABS_KEY, tabState);
   }, [tabState]);
 
-  // Editor/diff tabs are paths inside one workspace. Once the workspace is known, pin them to it:
-  // adopt it when the stored set predates the field, drop editor/diff tabs when the stored set was
+  // Editor/diff/preview tabs are paths inside one workspace. Once the workspace is known, pin them to it:
+  // adopt it when the stored set predates the field, drop editor/diff/preview tabs when the stored set was
   // saved under a different one (chat tabs survive a workspace switch).
   useEffect(() => {
     if (workspaceId === "") return;
@@ -893,8 +894,10 @@ export function App() {
                     />
                   )}
                 </section>
-              ) : (
+              ) : activeTab.kind === "diff" ? (
                 <DiffView request={request} workspaceId={workspaceId} path={activeTab.path} />
+              ) : (
+                <ArtifactPreview workspaceId={workspaceId} path={activeTab.path} request={request} />
               )}
               {quickOpen ? (
                 <QuickOpen
