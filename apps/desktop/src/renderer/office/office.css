@@ -1,0 +1,25 @@
+/* --- office pane: the lazily loaded Phaser canvas beside the roster list --- */
+
+.office-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.office-canvas {
+  width: 100%;
+  max-width: 768px;
+  aspect-ratio: 3 / 2;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #16161c;
+}
+
+.office-canvas canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+  image-rendering: pixelated;
+}

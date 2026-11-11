@@ -16,6 +16,14 @@ const appApi = vi.hoisted(() => ({
 }));
 vi.mock("../src/renderer/api.js", () => appApi);
 
+// The canvas itself is covered by `office.test.tsx`; a double keeps Phaser out of jsdom here and
+// lets these tests assert the List view toggle.
+vi.mock("../src/renderer/office/AgentOffice.js", () => ({
+  AgentOffice: ({ states }: { states: readonly unknown[] }) => (
+    <div data-testid="agent-office" data-count={states.length} />
+  ),
+}));
+
 import { Agents } from "../src/renderer/Agents.js";
 import { App } from "../src/renderer/App.js";
 
@@ -163,6 +171,22 @@ describe("Agents", () => {
     await waitFor(() =>
       expect(within(inspector).getByRole("alert").textContent).toContain("Agent name already exists: Scout"),
     );
+  });
+
+  it("toggles the office canvas against the roster list view", async () => {
+    const request = makeRequest({
+      "agent.list": () => ({ agents: [AGENT] }),
+      "agent.roster": () => ({ agents: [ROSTER], generatedAt: 1 }),
+    });
+    renderAgents(request);
+
+    expect(await screen.findByTestId("agent-office")).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "List view" }));
+    expect(screen.queryByTestId("agent-office")).toBeNull();
+    expect(within(roster()).getByRole("button", { name: "Select Scout" })).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: "Office view" }));
+    expect(await screen.findByTestId("agent-office")).toBeTruthy();
   });
 
   it("renders roster status text and starts a session from the row", async () => {

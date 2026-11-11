@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   type AgentListResult,
   type AgentRosterEntry,
@@ -16,6 +16,9 @@ import type { RequestFn } from "./api.js";
 import { errorMessage } from "./events.js";
 import { formatTokens } from "./format.js";
 import type { WorkspaceView } from "./WorkspacePanel.js";
+import { AgentOffice } from "./office/AgentOffice.js";
+import { toOfficeStates } from "./office/mapper.js";
+import officeMap from "./office/map.json";
 import "./agents.css";
 
 type Decision = "ask" | "allow" | "reject";
@@ -75,6 +78,20 @@ function modelLabel(models: readonly ModelView[], modelRef: string | null): stri
   if (modelRef === null) return "Kernel default model";
   const model = models.find((candidate) => candidate.id === modelRef);
   return model === undefined ? modelRef : model.displayName;
+}
+
+/** The office renders seated states instead of walking when the OS asks for reduced motion. */
+function useReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(false);
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
+    setReduced(query.matches);
+    const listener = (event: MediaQueryListEvent): void => setReduced(event.matches);
+    query.addEventListener("change", listener);
+    return () => query.removeEventListener("change", listener);
+  }, []);
+  return reduced;
 }
 
 interface AgentDraft {
@@ -274,8 +291,8 @@ export interface AgentsProps {
 
 /**
  * The Agents rail view: roster on the left, the selected agent's session pane in the middle, and the
- * profile inspector on the right. The middle region is named `Office`; the office canvas joins it in
- * a later task, while this task renders the list view alone.
+ * profile inspector on the right. The middle region is named `Office`: it renders the lazy Phaser
+ * canvas over the roster's list view, which the `List view` toggle keeps reachable.
  */
 export function Agents({ workspaceId, request, onOpenChat }: AgentsProps) {
   const [agents, setAgents] = useState<AgentView[] | undefined>(undefined);
@@ -292,6 +309,9 @@ export function Agents({ workspaceId, request, onOpenChat }: AgentsProps) {
   const [startWorkspaceId, setStartWorkspaceId] = useState(workspaceId);
   const [startModelId, setStartModelId] = useState("");
   const [busy, setBusy] = useState(false);
+  const [showOffice, setShowOffice] = useState(true);
+  const [officeUnavailable, setOfficeUnavailable] = useState(false);
+  const reducedMotion = useReducedMotion();
 
   const load = useCallback(async (): Promise<void> => {
     try {
@@ -330,6 +350,7 @@ export function Agents({ workspaceId, request, onOpenChat }: AgentsProps) {
   const selectedEntry = selectedAgent === undefined
     ? undefined
     : roster.find((entry) => entry.agentId === selectedAgent.id);
+  const officeStates = useMemo(() => toOfficeStates(roster, officeMap.desks), [roster]);
 
   // A profile's default workspace is what the start panel preselects; a workspace switch applies to
   // an agent with no default of its own.
@@ -537,6 +558,23 @@ export function Agents({ workspaceId, request, onOpenChat }: AgentsProps) {
                 Context {formatTokens(selectedEntry.usage.used)} / {formatTokens(selectedEntry.usage.size)}
               </p>
             )}
+            <div className="office-bar">
+              <button type="button" aria-pressed={!showOffice} onClick={() => setShowOffice((shown) => !shown)}>
+                {showOffice ? "List view" : "Office view"}
+              </button>
+              {officeUnavailable ? <span className="agents-hint">Office unavailable</span> : null}
+            </div>
+            {showOffice && !officeUnavailable ? (
+              <AgentOffice
+                states={officeStates}
+                selectedId={selectedAgent.id}
+                reducedMotion={reducedMotion}
+                onSelect={(agentId) => {
+                  if (agents?.some((agent) => agent.id === agentId) === true) select(agentId);
+                }}
+                onUnavailable={() => setOfficeUnavailable(true)}
+              />
+            ) : null}
             <form
               className="agents-start"
               onSubmit={(event) => {
