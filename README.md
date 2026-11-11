@@ -1,12 +1,15 @@
 # NoirHarness
 
-Local-first desktop agent harness. This repository currently contains the M1.3 chat shell and
-editor: kernel, protocol, provider registry, the `omp` ACP engine adapter, the Electron shell, and
-the workspace editor — file tree, Monaco, quick open, and diffs with line notes.
+Local-first desktop agent harness. This repository contains three milestones' worth of app: the
+chat shell and editor, a native engine beside the `omp` ACP adapter, an artifact viewer, and the
+agents dashboard with its pixel office. Kernel, protocol, provider registry, both engine adapters,
+the Electron shell, the workspace editor (file tree, Monaco, quick open, diffs with line notes), and
+the JSON/CSV/PDF preview surfaces all live here.
 
-The app talks to the real `omp` binary over ACP; NoirHarness owns the provider registry, the
-model selection, the workspaces, and the chat surface. Nothing leaves the machine except the
-provider calls `omp` makes.
+The app talks to the real `omp` binary over ACP by default, or to any OpenAI-compatible endpoint
+through its own engine when a model asks for it; NoirHarness owns the provider registry, the model
+selection, the workspaces, the agents, and the chat surface. Nothing leaves the machine except the
+provider calls the engine makes.
 
 ## Requirements
 
@@ -67,6 +70,31 @@ a chat is created, and again before each engine start, so edits take effect on t
 Deleting the last enabled provider or model deletes `models.yml`, so a removed key does not linger
 on disk. The format is omp's own, so a `models.yml` copied from an existing omp profile works
 verbatim.
+
+### The native engine
+
+Each model carries an engine, chosen on **Setup** (`Engine`: `acp` by default, or `native`). `native`
+is only offered when the model's provider has `apiKind` `openai-completions`; the select is disabled
+with `Native requires an OpenAI-compatible provider` otherwise, and the kernel refuses the same
+combination if it arrives over the socket. Model rows read `mock-1 · native` so the engine in use is
+visible without opening the form.
+
+The native engine runs inside the kernel process. It posts to the provider's
+`/chat/completions` and reads the SSE stream itself, reassembling tool-call deltas that arrive split
+across frames. It exposes nine tools — `fs.read`, `fs.list`, `fs.search`, `fs.write`, `fs.replace`,
+`fs.delete`, `shell.exec`, `skill.list`, `skill.read` — and allows at most 24 tool rounds per turn.
+Every tool call is an approval card (`Allow once` / `Reject`) unless the session's permission policy
+allows that category; `shell.exec` is never sandboxed, so the approval is the only gate. Writes,
+deletes, and renames are checked against the workspace with the resolved real path before they run,
+and a write that resolves outside it needs the `write-outside-workspace` approval. Each turn
+publishes `usage.updated` from the provider's token counts, and the kernel falls back to the model's
+context window when the provider reports none. A turn is interruptible through the same
+`session.interrupt` path as ACP, and the watchdog in `NOIR_TURN_TIMEOUT_MS` applies.
+
+History is reconstructed from the event log, not kept in memory: a kernel restart replays the
+session's turns back into the prompt, dropping calls that lost their name or their JSON arguments, so
+the transcript the model sees matches the transcript on screen. A session freezes `agentId`,
+`engine`, `modelId`, and `permissionPolicy` when it is created.
 
 ## The chat shell
 
@@ -158,6 +186,31 @@ truncation for the root only today — a read at 2 MiB (larger files are refused
 at 5 000 000 characters, and quick open at 5 000 files. Files that are not UTF-8 text and symlinks
 are refused or skipped rather than rendered.
 
+## Artifacts
+
+A preview tab opens from a `Preview` button in the file tree, from the inspector's changed files, from
+quick open (restricted to previewable files and labelled `Preview file`), and from a link inside a
+rendered Markdown artifact: a relative `other.md` link opens another preview, `other.md#usage` splits
+the fragment off before resolving, and anything that is not previewable opens in an editor tab. The
+viewer reads through `artifact.read`, so the kernel — not the renderer — decides what may be read:
+text is capped at 2 MiB, PDF at 32 MiB, and the path is resolved inside the workspace first.
+
+- **Markdown** renders GFM tables and highlights code, and drops raw HTML (a `skipHtml` pass plus a
+  sanitizing one), so a hostile `notes.md` shows its text and runs nothing. The static CSP in
+  `index.html` (`default-src 'self'`, no `unsafe-inline`) is the second line of defence.
+- **CSV** is parsed with RFC 4180 quoting — quoted commas, embedded newlines, a UTF-8 BOM, CRLF — and
+  is bounded at 5 000 rows, 100 columns, and 500 characters per cell. Everything past a bound is
+  dropped and the viewer says so rather than rendering a partial table silently.
+- **PDF** renders page by page through pdf.js and reports `n / n`. It uses pdf.js's `legacy` bundle
+  with its legacy worker: the modern build calls `Map.prototype.getOrInsertComputed`, which this
+  Electron's Chromium does not implement, and the failure mode is a blank canvas rather than an error.
+
+Preview tabs persist with the other tabs (`noir.tabs.v3`) and are restored only for the workspace
+they were opened in. Reloading a deleted file reports `File not found: <path>`; an oversized PDF
+reports the kernel's own `Artifact is larger than 32 MB`. External links never load inside the app:
+the renderer hands them to `shell:openExternal`, and the main process validates the protocol before
+calling the OS browser.
+
 ## Skills
 
 Each workspace gets a skill set from two directories: `<data dir>/skills` (Windows default
@@ -186,6 +239,35 @@ Scanning skips anything it cannot trust rather than failing: a skill with more t
 a warning and skipped; a symlinked `SKILL.md` is reported as a warning; symlinked skill directories
 and links inside a skill are skipped silently and do not enter the hash.
 
+## Agents and the office
+
+The **Agents** view is three regions: the `Agents` roster, the `Office` main pane, and the
+`Agent config` inspector.
+
+An agent carries a name, a role, an engine, an optional model, an optional default workspace, and a
+decision for each of the five permission categories (`shell`, `delete`, `rename`,
+`write-outside-workspace`, `network`) with `allow` / `ask` / `reject`. The roster reads
+`agent.roster` and shows each agent's status, the tool it is running, its session count, and its
+context usage; status precedence is `needs you` over `working` over `error` over `idle`. `Start`
+creates a session from the agent, freezing its engine, model, and policy, and opens the new chat.
+Saving the form sends only the fields that changed, so an agent that still references a deleted model
+can be edited without first clearing that model.
+
+The roster refreshes for live events (`session.status`, `turn.*`, `tool.*`, `permission.*`,
+`usage.updated`) with a trailing 250 ms debounce, and applies snapshots in request order, so a slow
+answer cannot overwrite a newer one. An approval that needs you shows as a `Needs you` row carrying
+the approval title, and as a speech bubble over the agent's character.
+
+The **Office** pane renders a Phaser pixel office from the same roster data: each agent gets a stable
+desk derived from its id, wanders to the lounge after an idle spell, and shows its state on the
+character. The canvas is `aria-hidden` and publishes `data-office-ready`, `data-office-count`,
+`data-office-desks`, and `data-office-selected` for tests; the roster and the inspector carry the
+same information in text, so nothing is canvas-only. The `List` toggle hides the canvas and keeps the
+roster. Phaser and the scene load through dynamic imports, so the startup bundle never contains them,
+and the office art is a CC0 Kenney pack committed under
+`apps/desktop/src/renderer/office/assets/` with its licence and a frame manifest beside it — nothing
+is fetched at runtime.
+
 ## Configuration
 
 | variable | default | meaning |
@@ -206,17 +288,26 @@ pnpm --filter @noir/desktop test
 pnpm --filter @noir/desktop test:e2e
 ```
 
-`test:e2e` builds the app and drives Electron with Playwright against a local mock provider. Eight
-specs cover: `smoke` (2) — boot, process spawn, health, and a provider surviving an app restart;
-`chat` (2) — a streamed reply and a permission-approved tool call; `shell` (1) — a tool turn that
-survives the restart, a prompt queued behind a slow turn, an interrupt, the queued turn draining
+`test:e2e` builds the app and drives Electron with Playwright against a local mock provider. Nine
+specs, twelve tests: `smoke` (2) — boot, process spawn, health, and a provider surviving an app
+restart; `chat` (2) — a streamed reply and a permission-approved tool call; `shell` (1) — a tool turn
+that survives the restart, a prompt queued behind a slow turn, an interrupt, the queued turn draining
 after it, and a restart that replays the transcript; `editor` (2) — open a file, edit it, save
 through the kernel, assert the file on disk, check the diff stats and `Show diff` from the
 inspector, and refuse a file larger than the read cap; `skills` (1) — list a project skill, view its
 body, materialize it through a turn, then disable it and assert the manifest entry and materialized
-directory drop it.
+directory drop it; `recovery` (1) — a crashed kernel is reported and its session recovered; `native`
+(1) — the native engine's SSE stream, a real `Allow once`, and a restart that reconstructs the wire
+history; `artifacts` (1) — Markdown, CSV, and PDF previews, hostile Markdown staying inert, a
+restored tab, and a deleted file; `office` (1) — two agents painted from the roster, an approval
+bubble that clears, desks that survive a cold start, and `Enter` opening a chat from a focused row.
 Each spec gets its own temporary data directory and its own Electron profile
 (`--user-data-dir` inside that directory), so engine state and restored tabs stay inside it.
+
+The packaged app is checked separately: `_electron.launch({ executablePath })` against
+`release/win-unpacked/NoirHarness.exe` asserts a rendered PDF page and the office's `data-office-*`
+hooks, which is the only way to prove the pdf.js worker, the Phaser chunk, and the PNG atlases
+resolve from `app.asar` under `file://`.
 
 ## Installer
 
@@ -237,9 +328,12 @@ can run it.
 - `packages/protocol` — wire types and the session reducer
 - `packages/kernel` — SQLite, event store, services, RPC, engine manager
 - `packages/engines/acp` — ACP client over stdio (JSON-RPC framing, terminals, turn watchdog)
+- `packages/engines/native` — in-process chat-completions engine: SSE parser, tool registry, turn
+  loop, history reconstruction
 - `packages/adapters/omp-profile` — `models.yml`/`config.yml` renderer
 - `apps/kernel` — daemon entry
 - `apps/desktop` — Electron shell and React renderer
+- `apps/desktop/src/renderer/preview` — the artifact renderers; `…/office` — the pixel office
 
 The `omp acp` wire behaviour this is built against is documented in
 `docs/superpowers/notes/2026-11-10-acp-spike.md`.
