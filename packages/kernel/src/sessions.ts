@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { v7 as uuidv7 } from "uuid";
-import { ErrorCodes, RpcFault, type EngineKind, type SessionStatus, type SessionView } from "@noir/protocol";
+import { ErrorCodes, RpcFault, type EngineKind, type PermissionPolicy, type SessionStatus, type SessionView } from "@noir/protocol";
 import type { EventStore } from "./eventStore.js";
 
 const TRANSITIONS: Record<SessionStatus, SessionStatus[]> = {
@@ -17,6 +17,28 @@ export function assertTransition(from: SessionStatus, to: SessionStatus): void {
 }
 
 export interface SessionRow { id: string; workspaceId: string; agentId: string; engine: EngineKind; title: string; status: SessionStatus; modelId: string | null; createdAt: number; }
+
+export interface SessionCreateOptions { modelId?: string | undefined; agentId?: string | undefined }
+
+/** What a session froze from its agent profile at creation; later profile edits never reach it. */
+export interface SessionSnapshot {
+  agentId?: string;
+  engine?: EngineKind;
+  modelId?: string | null;
+  permissionPolicy?: PermissionPolicy;
+}
+
+interface AgentStartRow { engine_id: EngineKind; model_ref: string | null; permission_policy: string; archived_at: number | null }
+
+/** Missing keys mean `ask`; a hand-edited or older row is read as the defaults rather than breaking session start. */
+function parsePolicy(text: string): PermissionPolicy {
+  try {
+    const value: unknown = JSON.parse(text);
+    return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as PermissionPolicy) : {};
+  } catch {
+    return {};
+  }
+}
 
 interface SessionMeta { lastSeq: number; lastTs: number; pendingApproval: boolean }
 
@@ -69,19 +91,56 @@ function metaFor(
 export class SessionService {
   constructor(private readonly db: Database.Database, private readonly events: EventStore) {}
 
-  create(workspaceId: string, modelId?: string): SessionRow {
+  /**
+   * Starts a session. Without an `agentId` this keeps the M1 behaviour: a fresh `"Agent"` profile row
+   * (role `"default"`, engine `"acp"`) and no model, so the kernel default applies at start.
+   *
+   * With an agent, the profile's engine and model are read once and frozen into `config_snapshot_json`;
+   * an explicit `modelId` wins and decides the engine, matching the spec's model resolution order.
+   * A null model still means "the kernel default at start", which `engineRegistry` resolves per turn.
+   */
+  create(workspaceId: string, opts: SessionCreateOptions = {}): SessionRow {
     const ws = this.db.prepare("SELECT id FROM workspaces WHERE id = ?").get(workspaceId);
     if (!ws) throw new RpcFault(ErrorCodes.notFound, "Workspace not found");
-    const engine: EngineKind = modelId === undefined ? "acp" : this.requireEnabledModel(modelId).engine;
-    const agentId = uuidv7();
-    this.db.prepare("INSERT INTO agents (id, name, role, engine_id) VALUES (?,?,?,?)").run(agentId, "Agent", "default", "acp");
+
+    let agentId = opts.agentId;
+    let modelId = opts.modelId;
+    let engine: EngineKind;
+    let permissionPolicy: PermissionPolicy = {};
+
+    if (agentId === undefined) {
+      engine = modelId === undefined ? "acp" : this.requireEnabledModel(modelId).engine;
+      agentId = uuidv7();
+      this.db.prepare("INSERT INTO agents (id, name, role, engine_id) VALUES (?,?,?,?)").run(agentId, "Agent", "default", "acp");
+    } else {
+      const agent = this.agentForStart(agentId);
+      modelId = modelId ?? agent.model_ref ?? undefined;
+      engine = modelId === undefined ? agent.engine_id : this.requireEnabledModel(modelId).engine;
+      permissionPolicy = parsePolicy(agent.permission_policy);
+    }
+
+    const snapshot = JSON.stringify({ agentId, engine, modelId: modelId ?? null, permissionPolicy });
     const row: SessionRow = { id: uuidv7(), workspaceId, agentId, engine, title: "", status: "starting", modelId: modelId ?? null, createdAt: Date.now() };
-    this.db.prepare("INSERT INTO sessions (id, workspace_id, agent_id, engine, status, created_at, model_id) VALUES (?,?,?,?,?,?,?)").run(
-      row.id, row.workspaceId, row.agentId, row.engine, row.status, row.createdAt, row.modelId,
+    this.db.prepare("INSERT INTO sessions (id, workspace_id, agent_id, engine, status, created_at, model_id, config_snapshot_json) VALUES (?,?,?,?,?,?,?,?)").run(
+      row.id, row.workspaceId, row.agentId, row.engine, row.status, row.createdAt, row.modelId, snapshot,
     );
     this.events.append({ sessionId: row.id, agentId, type: "session.created", payload: { title: "" }, provenance: { engine: row.engine, engineName: "none", adapterVersion: "0" } });
     this.events.append({ sessionId: row.id, agentId, type: "session.status", payload: { status: "starting" }, provenance: { engine: row.engine, engineName: "none", adapterVersion: "0" } });
     return row;
+  }
+
+  /** The config frozen into `config_snapshot_json`; unreadable or foreign JSON reads as empty. */
+  snapshot(sessionId: string): SessionSnapshot {
+    const row = this.db.prepare("SELECT config_snapshot_json FROM sessions WHERE id = ?").get(sessionId) as
+      | { config_snapshot_json: string }
+      | undefined;
+    if (row === undefined) throw new RpcFault(ErrorCodes.notFound, "Session not found");
+    try {
+      const value: unknown = JSON.parse(row.config_snapshot_json);
+      return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as SessionSnapshot) : {};
+    } catch {
+      return {};
+    }
   }
 
   setStatus(sessionId: string, to: SessionStatus, opts?: { from?: SessionStatus; reason?: string }): void {
@@ -126,13 +185,26 @@ export class SessionService {
     return rows.map((row) => toView(row, metaFor(row.created_at as number, stats, pending, row.id as string)));
   }
 
+  /** Reads the profile directly: `SessionService` must not depend on `AgentService`, which depends on it. */
+  private agentForStart(agentId: string): AgentStartRow {
+    const row = this.db.prepare("SELECT engine_id, model_ref, permission_policy, archived_at FROM agents WHERE id = ?").get(agentId) as
+      | AgentStartRow
+      | undefined;
+    if (row === undefined) throw new RpcFault(ErrorCodes.notFound, "Agent not found");
+    if (row.archived_at !== null) throw new RpcFault(ErrorCodes.conflict, "Agent is archived");
+    return row;
+  }
+
   private requireEnabledModel(modelId: string): { engine: EngineKind } {
     const model = this.db.prepare(
-      "SELECT m.enabled AS model_enabled, m.engine AS engine, p.enabled AS provider_enabled FROM models m JOIN providers p ON p.id = m.provider_id WHERE m.id = ?",
-    ).get(modelId) as { model_enabled: number; engine: EngineKind; provider_enabled: number } | undefined;
+      "SELECT m.enabled AS model_enabled, m.engine AS engine, p.enabled AS provider_enabled, p.api_kind AS api_kind FROM models m JOIN providers p ON p.id = m.provider_id WHERE m.id = ?",
+    ).get(modelId) as { model_enabled: number; engine: EngineKind; provider_enabled: number; api_kind: string } | undefined;
     if (!model) throw new RpcFault(ErrorCodes.notFound, "Model not found");
     if (model.model_enabled !== 1) throw new RpcFault(ErrorCodes.conflict, "Model is disabled");
     if (model.provider_enabled !== 1) throw new RpcFault(ErrorCodes.conflict, "Model provider is disabled");
+    if (model.engine === "native" && model.api_kind !== "openai-completions") {
+      throw new RpcFault(ErrorCodes.conflict, "Native engine supports openai-completions providers only");
+    }
     return model;
   }
 

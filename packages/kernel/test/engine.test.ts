@@ -117,7 +117,7 @@ function setup(
     enabled: true,
     engine: opts.engine ?? "acp",
   });
-  const session = sessions.create(workspace.id, model.id);
+  const session = sessions.create(workspace.id, { modelId: model.id });
   const skills = new SkillService(db, dataDir);
 
   // The manager parses its launch argv at construction time.

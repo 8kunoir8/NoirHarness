@@ -181,7 +181,7 @@ describe("SessionService model selection", () => {
     const model = models.create(modelParams(provider.id));
     const workspaceId = workspace(projects, workspaces);
 
-    const created = sessions.create(workspaceId, model.id);
+    const created = sessions.create(workspaceId, { modelId: model.id });
     expect(created.modelId).toBe(model.id);
     expect(created.workspaceId).toBe(workspaceId);
 
@@ -203,7 +203,7 @@ describe("SessionService model selection", () => {
     const provider = addProvider(providers);
     const model = models.create(modelParams(provider.id, { enabled: false }));
     const workspaceId = workspace(projects, workspaces);
-    expectFault(() => sessions.create(workspaceId, model.id), ErrorCodes.conflict, /Model is disabled/);
+    expectFault(() => sessions.create(workspaceId, { modelId: model.id }), ErrorCodes.conflict, /Model is disabled/);
   });
 
   it("rejects a model whose provider is disabled", () => {
@@ -211,13 +211,13 @@ describe("SessionService model selection", () => {
     const provider = addProvider(providers, { enabled: false });
     const model = models.create(modelParams(provider.id));
     const workspaceId = workspace(projects, workspaces);
-    expectFault(() => sessions.create(workspaceId, model.id), ErrorCodes.conflict, /provider is disabled/i);
+    expectFault(() => sessions.create(workspaceId, { modelId: model.id }), ErrorCodes.conflict, /provider is disabled/i);
   });
 
   it("rejects an unknown model", () => {
     const { projects, workspaces, sessions } = setup();
     const workspaceId = workspace(projects, workspaces);
-    expectFault(() => sessions.create(workspaceId, "missing"), ErrorCodes.notFound, /Model not found/);
+    expectFault(() => sessions.create(workspaceId, { modelId: "missing" }), ErrorCodes.notFound, /Model not found/);
   });
 
   it("reports a missing session from view", () => {

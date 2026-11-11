@@ -2,7 +2,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ErrorCodes, RpcFault, reduceSession, type SessionState } from "@noir/protocol";
+import { AgentCreateParams, ErrorCodes, RpcFault, reduceSession, type SessionState } from "@noir/protocol";
+import { AgentService } from "../src/agents.js";
 import { openDb } from "../src/db.js";
 import { EventStore } from "../src/eventStore.js";
 import { ModelService } from "../src/models.js";
@@ -25,6 +26,18 @@ function memorySecrets(): Secrets {
   };
 }
 
+function expectFault(fn: () => unknown, code: number, message: RegExp): void {
+  try {
+    fn();
+  } catch (error) {
+    expect(error).toBeInstanceOf(RpcFault);
+    expect((error as RpcFault).code).toBe(code);
+    expect((error as Error).message).toMatch(message);
+    return;
+  }
+  expect.unreachable("expected RpcFault");
+}
+
 function setup() {
   const db = openDb(":memory:");
   const events = new EventStore(db);
@@ -33,7 +46,8 @@ function setup() {
   const sessions = new SessionService(db, events);
   const providers = new ProviderService(db, memorySecrets());
   const models = new ModelService(db);
-  return { db, events, projects, workspaces, sessions, providers, models };
+  const agents = new AgentService(db, models);
+  return { db, events, projects, workspaces, sessions, providers, models, agents };
 }
 
 describe("ProjectService", () => {
@@ -145,7 +159,7 @@ describe("SessionService", () => {
     const provider = providers.create({ name: "P", baseUrl: "http://localhost:1/v1", apiKind: "openai-completions", apiKey: "k", enabled: true });
     const m1 = models.create({ providerId: provider.id, modelId: "m1", contextWindow: 1000, enabled: true, engine: "acp" });
     const m2 = models.create({ providerId: provider.id, modelId: "m2", contextWindow: 1000, enabled: true, engine: "acp" });
-    const s = sessions.create(workspaces.createLocal(projects.add(tempDir()).id).id, m1.id);
+    const s = sessions.create(workspaces.createLocal(projects.add(tempDir()).id).id, { modelId: m1.id });
 
     expect(sessions.setModel(s.id, m2.id).modelId).toBe(m2.id);
     expect(sessions.view(s.id).modelId).toBe(m2.id);
@@ -164,7 +178,7 @@ describe("SessionService", () => {
     const anthropic = providers.create({ name: "Anthropic", baseUrl: "http://localhost:1", apiKind: "anthropic-messages", apiKey: "k", enabled: true });
     const native = models.create({ providerId: openai.id, modelId: "native-1", contextWindow: 1000, enabled: true, engine: "native" });
     const acp = models.create({ providerId: anthropic.id, modelId: "acp-1", contextWindow: 1000, enabled: true, engine: "acp" });
-    const session = sessions.create(workspaces.createLocal(projects.add(tempDir()).id).id, native.id);
+    const session = sessions.create(workspaces.createLocal(projects.add(tempDir()).id).id, { modelId: native.id });
 
     expect(session.engine).toBe("native");
     expect(sessions.view(session.id).engine).toBe("native");
@@ -174,5 +188,90 @@ describe("SessionService", () => {
     sessions.setStatus(session.id, "idle");
     sessions.setStatus(session.id, "closed");
     expect(events.list(session.id).every((event) => event.provenance.engine === "native")).toBe(true);
+  });
+});
+
+describe("SessionService agent start", () => {
+  function fixture() {
+    const services = setup();
+    const provider = services.providers.create({
+      name: "OpenAI",
+      baseUrl: "http://localhost:1/v1",
+      apiKind: "openai-completions",
+      apiKey: "k",
+      enabled: true,
+    });
+    const model = services.models.create({ providerId: provider.id, modelId: "m1", contextWindow: 1000, enabled: true, engine: "acp" });
+    const other = services.models.create({ providerId: provider.id, modelId: "m2", contextWindow: 1000, enabled: true, engine: "acp" });
+    const native = services.models.create({ providerId: provider.id, modelId: "native-1", contextWindow: 1000, enabled: true, engine: "native" });
+    const ws = services.workspaces.createLocal(services.projects.add(tempDir()).id);
+    // The RPC handler parses params first; the schema supplies role/engine/policy defaults.
+    const newAgent = (params: Parameters<typeof AgentCreateParams.parse>[0]) => services.agents.create(AgentCreateParams.parse(params));
+    return { ...services, model, other, native, ws, newAgent };
+  }
+
+  it("snapshots the agent and keeps it after the profile changes", () => {
+    const { sessions, agents, newAgent, model, other, ws } = fixture();
+    const agent = newAgent({ name: "Snap", role: "Coder", engineId: "acp", modelRef: model.id, permissionPolicy: { shell: "allow" } });
+    const session = sessions.create(ws.id, { agentId: agent.id });
+    agents.update({ id: agent.id, modelRef: other.id, permissionPolicy: { shell: "reject" } });
+    expect(sessions.view(session.id).agentId).toBe(agent.id);
+    expect(sessions.snapshot(session.id)).toMatchObject({ agentId: agent.id, modelId: model.id, permissionPolicy: { shell: "allow" } });
+  });
+
+  it("keeps the legacy profile row for a session created without an agent", () => {
+    const { db, sessions, ws } = fixture();
+    const session = sessions.create(ws.id);
+    expect(db.prepare("SELECT name, role, engine_id FROM agents WHERE id = ?").get(session.agentId)).toEqual({
+      name: "Agent",
+      role: "default",
+      engine_id: "acp",
+    });
+    expect(session.modelId).toBeNull();
+  });
+
+  it("rejects an archived agent", () => {
+    const { sessions, agents, newAgent, ws } = fixture();
+    const agent = newAgent({ name: "Old" });
+    agents.archive(agent.id, true);
+    expectFault(() => sessions.create(ws.id, { agentId: agent.id }), ErrorCodes.conflict, /archived/);
+    expectFault(() => sessions.create(ws.id, { agentId: "missing" }), ErrorCodes.notFound, /Agent not found/);
+  });
+
+  it("prefers an explicit model over the agent's model", () => {
+    const { sessions, newAgent, model, other, ws } = fixture();
+    const agent = newAgent({ name: "Pick", modelRef: model.id });
+    const session = sessions.create(ws.id, { agentId: agent.id, modelId: other.id });
+    expect(session.modelId).toBe(other.id);
+    expect(sessions.snapshot(session.id)).toMatchObject({ modelId: other.id });
+  });
+
+  it("takes the engine from the chosen model and rejects native on a non-openai-completions provider", () => {
+    const { db, providers, models, sessions, newAgent, native, ws } = fixture();
+    const agent = newAgent({ name: "Native", engineId: "native", modelRef: native.id });
+    expect(sessions.create(ws.id, { agentId: agent.id }).engine).toBe("native");
+
+    const acpAgent = newAgent({ name: "Acp" });
+    expect(sessions.create(ws.id, { agentId: acpAgent.id, modelId: native.id }).engine).toBe("native");
+
+    const anthropic = providers.create({
+      name: "Anthropic",
+      baseUrl: "http://localhost:1",
+      apiKind: "anthropic-messages",
+      apiKey: "k",
+      enabled: true,
+    });
+    const stale = models.create({ providerId: anthropic.id, modelId: "stale", contextWindow: 1000, enabled: true, engine: "acp" });
+    // Simulates a row that reached native before the provider rule existed; the session guard still catches it.
+    db.prepare("UPDATE models SET engine = 'native' WHERE id = ?").run(stale.id);
+    expectFault(() => sessions.create(ws.id, { agentId: acpAgent.id, modelId: stale.id }), ErrorCodes.conflict, /openai-completions/);
+  });
+
+  it("returns an empty snapshot for unreadable json", () => {
+    const { db, sessions, ws } = fixture();
+    const session = sessions.create(ws.id);
+    db.prepare("UPDATE sessions SET config_snapshot_json = 'not json' WHERE id = ?").run(session.id);
+    expect(sessions.snapshot(session.id)).toEqual({});
+    expectFault(() => sessions.snapshot("missing"), ErrorCodes.notFound, /Session not found/);
   });
 });

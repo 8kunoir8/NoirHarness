@@ -300,9 +300,9 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
           return { ok: true };
         },
         [Methods.sessionCreate]: async (params) => {
-          const { workspaceId, modelId } = SessionCreateParams.parse(params);
+          const { workspaceId, modelId, agentId } = SessionCreateParams.parse(params);
           await sync();
-          const row = sessions.create(workspaceId, modelId);
+          const row = sessions.create(workspaceId, { modelId, agentId });
           return sessions.view(row.id);
         },
         [Methods.sessionList]: async () => ({ sessions: sessions.list() }),

@@ -52,7 +52,11 @@ export type SystemHealthResult = z.infer<typeof SystemHealthResult>;
 
 export const ProjectAddParams = z.object({ path: z.string().min(1) });
 export const WorkspaceCreateParams = z.object({ projectId: z.string().min(1) });
-export const SessionCreateParams = z.object({ workspaceId: z.string().min(1), modelId: z.string().optional() });
+export const SessionCreateParams = z.object({
+  workspaceId: z.string().min(1),
+  modelId: z.string().optional(),
+  agentId: z.string().min(1).optional(),
+});
 export const SessionSubscribeParams = z.object({ sessionId: z.string().min(1), sinceSeq: z.number().int().nonnegative().default(0) });
 
 export const ModelCreateParams = z.object({
