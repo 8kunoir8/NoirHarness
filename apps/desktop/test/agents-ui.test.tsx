@@ -165,12 +165,15 @@ describe("Agents", () => {
 
     await userEvent.click(await within(roster()).findByRole("button", { name: "Create agent" }));
     const inspector = config();
-    await userEvent.type(within(inspector).getByLabelText("Name"), "Scout");
+    const nameInput = within(inspector).getByLabelText("Name");
+    await userEvent.type(nameInput, "Scout Copy");
     await userEvent.click(within(inspector).getByRole("button", { name: "Save" }));
 
     await waitFor(() =>
       expect(within(inspector).getByRole("alert").textContent).toContain("Agent name already exists: Scout"),
     );
+    // A failed save must not discard what the user typed.
+    expect((nameInput as HTMLInputElement).value).toBe("Scout Copy");
   });
 
   it("toggles the office canvas against the roster list view", async () => {
@@ -287,6 +290,102 @@ describe("Agents", () => {
         modelId: "m-1",
       }),
     );
+  });
+
+  it("saves a role-only edit when the stored model was deleted", async () => {
+    // The kernel only validates a model when `engineId`/`modelRef` is present; re-sending the whole
+    // profile would fail here and lose the role edit.
+    const orphaned: AgentView = { ...AGENT, modelRef: "m-deleted" };
+    const request = makeRequest({
+      "agent.list": () => ({ agents: [orphaned] }),
+      "agent.update": (params) => ({ ...orphaned, ...(params as Partial<AgentView>) }),
+    });
+    renderAgents(request);
+
+    await userEvent.click(await within(roster()).findByRole("button", { name: "Select Scout" }));
+    const inspector = config();
+    const roleInput = within(inspector).getByLabelText("Role");
+    await userEvent.clear(roleInput);
+    await userEvent.type(roleInput, "Reviewer");
+    await userEvent.click(within(inspector).getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith("agent.update", { id: "a-1", role: "Reviewer" }),
+    );
+    expect(within(inspector).queryByRole("alert")).toBeNull();
+  });
+
+  it("sends modelRef null when the default model is cleared", async () => {
+    const withModel: AgentView = { ...AGENT, modelRef: MODEL.id };
+    const request = makeRequest({
+      "agent.list": () => ({ agents: [withModel] }),
+      "model.list": () => ({ models: [MODEL] }),
+      "agent.update": (params) => ({ ...withModel, ...(params as Partial<AgentView>) }),
+    });
+    renderAgents(request);
+
+    await userEvent.click(await within(roster()).findByRole("button", { name: "Select Scout" }));
+    const inspector = config();
+    await userEvent.selectOptions(within(inspector).getByLabelText("Default model"), "");
+    await userEvent.click(within(inspector).getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith("agent.update", { id: "a-1", modelRef: null }),
+    );
+  });
+
+  it("shows a not-found update error inline", async () => {
+    const request = makeRequest({
+      "agent.list": () => ({ agents: [AGENT] }),
+      "model.list": () => ({ models: [MODEL] }),
+      "agent.update": () => {
+        throw new Error("Model not found: m-1");
+      },
+    });
+    renderAgents(request);
+
+    await userEvent.click(await within(roster()).findByRole("button", { name: "Select Scout" }));
+    const inspector = config();
+    await userEvent.selectOptions(within(inspector).getByLabelText("Default model"), MODEL.id);
+    await userEvent.click(within(inspector).getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(within(inspector).getByRole("alert").textContent).toContain("Model not found: m-1"),
+    );
+  });
+
+  it("distinguishes needs-you rows from error rows", async () => {
+    const second: AgentView = { ...AGENT, id: "a-2", name: "Builder" };
+    const request = makeRequest({
+      "agent.list": () => ({ agents: [AGENT, second] }),
+      "agent.roster": () => ({
+        agents: [
+          { ...ROSTER, status: "needs_you", activeToolKind: null, usage: null },
+          { ...ROSTER, agentId: "a-2", name: "Builder", status: "error", activeToolKind: null, usage: null },
+        ],
+        generatedAt: 1,
+      }),
+    });
+    renderAgents(request);
+
+    const needsYou = await within(roster()).findByText("Needs you");
+    const failed = within(roster()).getByText("Error");
+    expect(needsYou).not.toBe(failed);
+    expect(needsYou.getAttribute("data-status")).toBe("needs_you");
+    expect(failed.getAttribute("data-status")).toBe("error");
+  });
+
+  it("shows the active tool and context share on a working row", async () => {
+    const working: AgentRosterEntry = { ...ROSTER, usage: { used: 62_000, size: 100_000 } };
+    const request = makeRequest({
+      "agent.list": () => ({ agents: [AGENT] }),
+      "agent.roster": () => ({ agents: [working], generatedAt: 1 }),
+    });
+    renderAgents(request);
+
+    const meta = await within(roster()).findByText(/context/);
+    expect(meta.textContent).toContain("Tool: read");
+    expect(meta.textContent).toContain("62% context");
   });
 });
 

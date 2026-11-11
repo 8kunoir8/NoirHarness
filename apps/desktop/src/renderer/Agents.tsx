@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   type AgentListResult,
   type AgentRosterEntry,
@@ -313,7 +313,10 @@ export function Agents({ workspaceId, request, onOpenChat }: AgentsProps) {
   const [officeUnavailable, setOfficeUnavailable] = useState(false);
   const reducedMotion = useReducedMotion();
 
+  // The RPC server answers concurrently, so a slower earlier batch must not overwrite a newer one.
+  const loadSeq = useRef(0);
   const load = useCallback(async (): Promise<void> => {
+    const run = ++loadSeq.current;
     try {
       const [agentResult, rosterResult, modelResult, workspaceResult, skillResult] = await Promise.all([
         request<AgentListResult>("agent.list", { includeArchived }),
@@ -322,6 +325,7 @@ export function Agents({ workspaceId, request, onOpenChat }: AgentsProps) {
         request<{ workspaces: WorkspaceView[] }>("workspace.list"),
         request<SkillListResult>("skill.list", workspaceId === "" ? {} : { workspaceId }),
       ]);
+      if (run !== loadSeq.current) return;
       setAgents(agentResult.agents);
       setRoster(rosterResult.agents);
       setModels(modelResult.models);
@@ -329,6 +333,7 @@ export function Agents({ workspaceId, request, onOpenChat }: AgentsProps) {
       setSkills(skillResult.skills);
       setListError(undefined);
     } catch (loadError) {
+      if (run !== loadSeq.current) return;
       setListError(errorMessage(loadError));
       setAgents([]);
     }
@@ -388,15 +393,33 @@ export function Agents({ workspaceId, request, onOpenChat }: AgentsProps) {
         setCreating(false);
         setSelectedId(created.id);
       } else {
-        await request<AgentView>("agent.update", {
-          id: selectedAgent.id,
-          name: draft.name,
-          role: draft.role,
-          engineId: draft.engineId,
-          modelRef: draft.modelRef === "" ? null : draft.modelRef,
-          permissionPolicy: draft.permissionPolicy,
-          defaultWorkspaceId: draft.defaultWorkspaceId === "" ? null : draft.defaultWorkspaceId,
-        });
+        // Send only what changed: the kernel validates a model whenever `engineId` or `modelRef` is
+        // present, so re-sending the loaded profile would fail once its model was deleted.
+        const modelRef = draft.modelRef === "" ? null : draft.modelRef;
+        const defaultWorkspaceId = draft.defaultWorkspaceId === "" ? null : draft.defaultWorkspaceId;
+        const update: {
+          id: string;
+          name?: string;
+          role?: string;
+          engineId?: AgentView["engineId"];
+          modelRef?: string | null;
+          permissionPolicy?: PermissionDraft;
+          defaultWorkspaceId?: string | null;
+        } = { id: selectedAgent.id };
+        if (draft.name !== selectedAgent.name) update.name = draft.name;
+        if (draft.role !== selectedAgent.role) update.role = draft.role;
+        if (draft.engineId !== selectedAgent.engineId) update.engineId = draft.engineId;
+        if (modelRef !== selectedAgent.modelRef) update.modelRef = modelRef;
+        if (defaultWorkspaceId !== selectedAgent.defaultWorkspaceId) {
+          update.defaultWorkspaceId = defaultWorkspaceId;
+        }
+        const loadedPolicy = toDraft(selectedAgent.permissionPolicy);
+        if (POLICY_CATEGORIES.some((category) => draft.permissionPolicy[category] !== loadedPolicy[category])) {
+          update.permissionPolicy = draft.permissionPolicy;
+        }
+        if (Object.keys(update).length > 1) {
+          await request<AgentView>("agent.update", update);
+        }
         await load();
       }
     } catch (saveError) {
@@ -490,6 +513,10 @@ export function Agents({ workspaceId, request, onOpenChat }: AgentsProps) {
                 (workspace) => workspace.id === agent.defaultWorkspaceId,
               );
               const rowWorkspace = agent.defaultWorkspaceId ?? workspaceId;
+              const activeTool = entry?.status === "working" ? entry.activeToolKind : null;
+              const usagePercent = entry?.usage != null && entry.usage.size > 0
+                ? Math.round((entry.usage.used / entry.usage.size) * 100)
+                : null;
               return (
                 <li
                   key={agent.id}
@@ -512,7 +539,11 @@ export function Agents({ workspaceId, request, onOpenChat }: AgentsProps) {
                     <button
                       type="button"
                       disabled={busy || agent.archivedAt !== null || rowWorkspace === ""}
-                      onClick={() => void start(agent)}
+                      onClick={() => {
+                        // Report the failure under this row's agent, not whichever was selected.
+                        select(agent.id);
+                        void start(agent);
+                      }}
                     >
                       Start
                     </button>
@@ -524,6 +555,8 @@ export function Agents({ workspaceId, request, onOpenChat }: AgentsProps) {
                       : workspaceLabel(defaultWorkspace)}{" "}
                     · {entry?.activeSessionId == null ? "No active session" : "1 active session"} ·{" "}
                     {entry?.sessionCount ?? 0} session{entry?.sessionCount === 1 ? "" : "s"} ·{" "}
+                    {activeTool === null ? null : <>Tool: {activeTool} · </>}
+                    {usagePercent === null ? null : <>{usagePercent}% context · </>}
                     {new Date(entry?.lastActivityAt ?? agent.createdAt).toLocaleString()}
                   </p>
                 </li>
