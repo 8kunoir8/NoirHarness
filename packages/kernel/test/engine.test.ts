@@ -1525,6 +1525,50 @@ describe("EngineManager with the native engine", () => {
   );
 
   it(
+    "replays a prompt whose turn failed before the engine started",
+    async () => {
+      const server = await startFakeOpenAiServer([{ text: "fine" }]);
+      try {
+        const { db, events, manager, session } = setup({ baseUrl: server.baseUrl, engine: "native" });
+        if (session.modelId === null) throw new Error("fixture session has no model");
+        db.prepare("UPDATE models SET enabled = 0 WHERE id = ?").run(session.modelId);
+
+        await manager.prompt({
+          sessionId: session.id,
+          requestId: "spawn-fail-1",
+          content: [{ type: "text", text: "lost prompt" }],
+        });
+        const failed = await waitForEvent(events, session.id, (event) => event.type === "turn.failed");
+        expect(eventPayload(failed, "turn.failed").message).toBe("The session model is disabled or missing");
+        // The prompt is persisted and the turn is terminal, even though `turn.started` never landed.
+        expect(events.list(session.id).some((event) => event.type === "turn.started")).toBe(false);
+
+        db.prepare("UPDATE models SET enabled = 1 WHERE id = ?").run(session.modelId);
+        const second = await manager.prompt({
+          sessionId: session.id,
+          requestId: "spawn-fail-2",
+          content: [{ type: "text", text: "second" }],
+        });
+        await waitForEvent(
+          events,
+          session.id,
+          (event) => event.type === "turn.completed" && eventPayload(event, "turn.completed").turnId === second.turnId,
+        );
+
+        const messages = server.requests[0]?.body.messages as Array<{ role: string; content: string }>;
+        expect(messages.filter((message) => message.role === "user").map((message) => message.content)).toEqual([
+          "lost prompt",
+          "second",
+        ]);
+        await manager.closeSession(session.id);
+      } finally {
+        await server.close();
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
     "logs the trimmed replay of a native history at engine start",
     async () => {
       const long = "x".repeat(4_000);

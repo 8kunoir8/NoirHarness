@@ -98,6 +98,26 @@ describe("reconstructHistory", () => {
     ]);
   });
 
+  it("drops a tool call whose stored arguments are not JSON", () => {
+    const events: HistoryEvent[] = [
+      user("go", "u1", "t1"),
+      assistant("running", "m1", "t1"),
+      // `parseArguments` tolerates a partial provider fragment, so the log can hold this verbatim.
+      event(
+        "tool.started",
+        { toolCallId: "call_1", title: "Read", toolName: "fs.read", argumentsJson: '{"path":' },
+        "t1",
+      ),
+      event("tool.output", { toolCallId: "call_1", chunk: "x" }, "t1"),
+      assistant("finished", "m1", "t1"),
+    ];
+
+    expect(rebuild(events)).toEqual([
+      { role: "user", text: "go" },
+      { role: "assistant", text: "runningfinished" },
+    ]);
+  });
+
   it("starts a new assistant message for each settled tool round", () => {
     const events: HistoryEvent[] = [
       user("go", "u1", "t1"),

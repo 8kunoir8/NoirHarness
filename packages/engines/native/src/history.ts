@@ -110,10 +110,21 @@ function applyEvent(turn: TurnDraft, event: HistoryEvent): void {
         turn.drafts.push(draft);
       }
       const argumentsJson = parsed.data.argumentsJson;
+      let callArguments = "{}";
+      if (argumentsJson !== undefined && argumentsJson !== "") {
+        // `parseArguments` tolerates a malformed provider fragment, so the log can hold a string
+        // that is not JSON; replaying it would hand the provider an invalid call. Drop the call.
+        try {
+          JSON.parse(argumentsJson);
+        } catch {
+          return;
+        }
+        callArguments = argumentsJson;
+      }
       draft.toolCalls.push({
         id: parsed.data.toolCallId,
         name,
-        arguments: argumentsJson === undefined || argumentsJson === "" ? "{}" : argumentsJson,
+        arguments: callArguments,
       });
       return;
     }

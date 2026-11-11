@@ -649,15 +649,21 @@ export class EngineManager {
       const skills = listed.skills
         .filter((skill) => skill.enabled)
         .map((skill) => ({ name: skill.name, scope: skill.scope, description: skill.description }));
-      // Replay only turns that actually started: the prompt of the in-flight turn (persisted
-      // before this spawn) and of queued turns is not history, and `prompt()` sends its own copy.
+      // Replay only turns with a lifecycle: the prompt of the in-flight turn (persisted before
+      // this spawn) and of queued turns is not history. A turn that reached a terminal event
+      // still is, even when its spawn failed before `turn.started` — the UI shows its prompt.
       let history: EngineHistoryMessage[] = [];
       if (state.engineKind === "native") {
         const log = this.deps.events.list(state.sessionId, 0);
-        const startedTurns = new Set<string>();
+        const replayedTurns = new Set<string>();
         for (const event of log) {
-          if (event.type === "turn.started" && event.turnId !== null && event.turnId !== undefined) {
-            startedTurns.add(event.turnId);
+          if (event.turnId === null || event.turnId === undefined) continue;
+          if (
+            event.type === "turn.started" ||
+            event.type === "turn.completed" ||
+            event.type === "turn.failed"
+          ) {
+            replayedTurns.add(event.turnId);
           }
         }
         const { messages, trimmedTurns } = reconstructHistory(
@@ -666,7 +672,7 @@ export class EngineManager {
               event.turnId !== null &&
               event.turnId !== undefined &&
               event.turnId !== currentTurnId &&
-              startedTurns.has(event.turnId),
+              replayedTurns.has(event.turnId),
           ),
           model,
         );
@@ -755,14 +761,24 @@ export class EngineManager {
       this.emit(state, "message.completed", { messageId, status: messageStatus }, turn.turnId);
     }
     if (result.usage !== undefined || state.usage !== undefined) {
+      // An engine that reports usage only on its result still gets a real meter: prefer its
+      // prompt count and the model's window instead of publishing a zero-sized context.
+      let contextWindow = state.usage?.size ?? 0;
+      if (contextWindow === 0) {
+        try {
+          contextWindow = resolveModelFor(state.sessionId, this.registryDeps).contextWindow;
+        } catch {
+          // The model may have been disabled mid-turn; the tokens the engine reported still stand.
+        }
+      }
       this.emit(
         state,
         "usage.updated",
         {
           inputTokens: result.usage?.inputTokens ?? 0,
           outputTokens: result.usage?.outputTokens ?? 0,
-          contextUsed: state.usage?.used ?? 0,
-          contextWindow: state.usage?.size ?? 0,
+          contextUsed: state.usage?.used ?? result.usage?.inputTokens ?? 0,
+          contextWindow,
           costUsd: state.usage?.costAmount ?? 0,
         },
         turn.turnId,
