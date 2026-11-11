@@ -66,7 +66,14 @@ export const PayloadSchemas = {
   "turn.failed": z.object({ turnId: z.string(), message: z.string() }),
   "message.delta": z.object({ messageId: z.string(), role: z.enum(["user", "assistant"]), block: ContentBlock }),
   "message.completed": z.object({ messageId: z.string(), status: z.enum(["done", "interrupted", "failed"]) }),
-  "tool.started": z.object({ toolCallId: z.string(), title: z.string(), kind: ToolKind.optional() }),
+  "tool.started": z.object({
+    toolCallId: z.string(),
+    title: z.string(),
+    kind: ToolKind.optional(),
+    /** The provider's function name and raw arguments, so replay can rebuild the call. */
+    toolName: z.string().optional(),
+    argumentsJson: z.string().optional(),
+  }),
   "tool.output": z.object({ toolCallId: z.string(), chunk: z.string() }),
   "tool.completed": z.object({ toolCallId: z.string(), status: z.string() }),
   "tool.failed": z.object({ toolCallId: z.string(), message: z.string() }),

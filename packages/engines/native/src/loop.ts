@@ -35,6 +35,8 @@ interface RequestResult {
   toolCalls: ToolCall[];
   finish: string | undefined;
   usage: Usage | undefined;
+  /** `ceil(request chars / 4)`, used for the context meter and the no-usage fallback. */
+  estimatedInputTokens: number;
 }
 
 type PromptHandlers = Parameters<EngineSession["prompt"]>[1];
@@ -191,12 +193,17 @@ class NativeSession implements EngineSession {
         : undefined;
     const messageId = `native-${randomUUID()}`;
     let usage: Usage | undefined;
+    let estimatedInputTokens = 0;
+    let outputChars = 0;
 
     try {
       for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
-        if (controller.signal.aborted) return { stopReason: "cancelled", timedOut };
-        const response = await this.#request();
+        // A timeout fires the same abort as an interrupt; the flag tells the two apart.
+        if (controller.signal.aborted) return { stopReason: timedOut ? "timeout" : "cancelled", timedOut };
+        const response = await this.#request(handlers);
         if (response.usage !== undefined) usage = response.usage;
+        estimatedInputTokens = response.estimatedInputTokens;
+        outputChars += response.text.length;
         if (response.text !== "") {
           handlers.onUpdate({ kind: "message", messageId, text: response.text, reasoning: false });
         }
@@ -204,7 +211,8 @@ class NativeSession implements EngineSession {
           return {
             stopReason: response.finish ?? "stop",
             timedOut: false,
-            ...(usage === undefined ? {} : { usage }),
+            // Spec §8: without provider usage, estimate both sides from the character count.
+            usage: usage ?? { inputTokens: estimatedInputTokens, outputTokens: Math.ceil(outputChars / 4) },
           };
         }
         this.#history.push({ role: "assistant", text: response.text, toolCalls: response.toolCalls });
@@ -214,7 +222,7 @@ class NativeSession implements EngineSession {
     } catch (error) {
       // An interrupt aborts the fetch (and any running shell), which is a settled turn, not a fault.
       if (controller.signal.aborted || isAbortError(error)) {
-        return { stopReason: "cancelled", timedOut };
+        return { stopReason: timedOut ? "timeout" : "cancelled", timedOut };
       }
       throw error;
     } finally {
@@ -237,7 +245,7 @@ class NativeSession implements EngineSession {
     this.#controller.abort();
   }
 
-  async #request(): Promise<RequestResult> {
+  async #request(handlers: PromptHandlers): Promise<RequestResult> {
     const body = {
       model: this.#model.modelId,
       stream: true,
@@ -247,6 +255,10 @@ class NativeSession implements EngineSession {
       tool_choice: "auto",
       ...(this.#model.maxTokens === null ? {} : { max_tokens: this.#model.maxTokens }),
     };
+    // The context meter counts what this request sends; without provider usage it is also the estimate.
+    const estimatedInputTokens = Math.ceil(
+      body.messages.reduce((total, message) => total + message.content.length, 0) / 4,
+    );
 
     const fragments: Array<{ id: string | undefined; name: string | undefined; arguments: string }> = [];
     let text = "";
@@ -306,10 +318,19 @@ class NativeSession implements EngineSession {
       throw error;
     }
 
+    // The kernel owns the projection; the engine reports the request it just measured. Provider
+    // usage wins, and the character estimate stands in when the provider sends none.
+    handlers.onUpdate({
+      kind: "usage",
+      size: this.#model.contextWindow,
+      used: usage?.inputTokens ?? estimatedInputTokens,
+    });
+
     return {
       text,
       finish,
       usage,
+      estimatedInputTokens,
       toolCalls: fragments.map((fragment, index) => ({
         id: fragment.id ?? `call_${index}`,
         name: fragment.name ?? "",
@@ -326,6 +347,9 @@ class NativeSession implements EngineSession {
       title: toolTitle(call.name, args),
       toolKind: toolKind(call.name),
       rawInput: args,
+      // The kernel persists these so replay can rebuild the exact call after a restart.
+      toolName: call.name,
+      argumentsJson: call.arguments,
     });
 
     let text: string;

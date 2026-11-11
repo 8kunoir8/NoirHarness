@@ -9,6 +9,7 @@ import {
 import { ADAPTER_VERSION as NATIVE_ADAPTER_VERSION, createNativeEngine, reconstructHistory } from "@noir/engine-native";
 import type {
   Engine,
+  EngineHistoryMessage,
   EnginePermissionRequest,
   EnginePromptResult,
   EngineSession,
@@ -568,7 +569,7 @@ export class EngineManager {
     return { db: this.deps.db, providers: this.deps.providers, models: this.deps.models };
   }
 
-  private async ensureEngine(state: SessionState): Promise<EngineSession> {
+  private async ensureEngine(state: SessionState, currentTurnId: string): Promise<EngineSession> {
     if (state.engineSession !== undefined) return state.engineSession;
     const selector = this.selectorFor(state.sessionId);
     await syncProfile({
@@ -614,6 +615,31 @@ export class EngineManager {
       const skills = listed.skills
         .filter((skill) => skill.enabled)
         .map((skill) => ({ name: skill.name, scope: skill.scope, description: skill.description }));
+      // Replay only turns that actually started: the prompt of the in-flight turn (persisted
+      // before this spawn) and of queued turns is not history, and `prompt()` sends its own copy.
+      let history: EngineHistoryMessage[] = [];
+      if (state.engineKind === "native") {
+        const log = this.deps.events.list(state.sessionId, 0);
+        const startedTurns = new Set<string>();
+        for (const event of log) {
+          if (event.type === "turn.started" && event.turnId !== null && event.turnId !== undefined) {
+            startedTurns.add(event.turnId);
+          }
+        }
+        const { messages, trimmedTurns } = reconstructHistory(
+          log.filter(
+            (event) =>
+              event.turnId !== null &&
+              event.turnId !== undefined &&
+              event.turnId !== currentTurnId &&
+              startedTurns.has(event.turnId),
+          ),
+          model,
+        );
+        history = messages;
+        // Spec §8: a trimmed replay is visible in the log, never in the UI.
+        if (trimmedTurns > 0) this.emit(state, "engine.raw", { engine: "native", payload: { trimmedTurns } });
+      }
       // `selector` is deliberately left unset: `start()` does not apply `EngineStartOptions.model`
       // for ACP, so the first turn's model branch applies it through `setModel`.
       state.engineSession = await engine.start({
@@ -623,10 +649,7 @@ export class EngineManager {
         baseUrl,
         apiKey,
         // ACP reconstructs nothing from the log; only the native engine replays the conversation.
-        history:
-          state.engineKind === "native"
-            ? reconstructHistory(this.deps.events.list(state.sessionId, 0), model)
-            : [],
+        history,
         skills,
         turnTimeoutMs: this.turnTimeoutMs,
       });
@@ -649,7 +672,7 @@ export class EngineManager {
     state.turn = context;
     state.usage = undefined;
     try {
-      const engineSession = await this.ensureEngine(state);
+      const engineSession = await this.ensureEngine(state, context.turnId);
       if (state.closing) {
         // The session closed while the engine was spawning: reap it and stay silent.
         state.turn = undefined;
@@ -822,6 +845,8 @@ export class EngineManager {
             toolCallId: update.toolCallId,
             title: update.title,
             ...(update.toolKind === undefined ? {} : { kind: officeToolKind(update.toolKind) }),
+            ...(update.toolName === undefined ? {} : { toolName: update.toolName }),
+            ...(update.argumentsJson === undefined ? {} : { argumentsJson: update.argumentsJson }),
           },
           turn.turnId,
         );

@@ -101,10 +101,23 @@ describe("native turn loop", () => {
     expect(messages.map((update) => update.text)).toEqual(["done"]);
 
     const started = updates.find((update) => update.kind === "tool.started");
-    expect(started).toMatchObject({ toolCallId: "call_1", title: "Read note.txt", toolKind: "read" });
+    expect(started).toMatchObject({
+      toolCallId: "call_1",
+      title: "Read note.txt",
+      toolKind: "read",
+      toolName: "fs.read",
+      argumentsJson: JSON.stringify({ path: "note.txt" }),
+    });
     const completed = updates.find(isToolUpdate);
     expect(completed).toMatchObject({ toolCallId: "call_1", status: "completed" });
     expect(completed?.text).toContain("file body");
+
+    // The provider reported 12 prompt tokens; the kernel's context meter takes that count.
+    expect(updates.filter((update) => update.kind === "usage").at(-1)).toEqual({
+      kind: "usage",
+      size: 100_000,
+      used: 12,
+    });
 
     const second = server.requests[1]?.body.messages as Array<{ role: string; tool_call_id?: string }>;
     expect(second).toContainEqual(expect.objectContaining({ role: "tool", tool_call_id: "call_1" }));
@@ -190,9 +203,32 @@ describe("native turn loop", () => {
     });
     await session.dispose();
 
-    expect(result).toMatchObject({ timedOut: true });
+    expect(result).toMatchObject({ stopReason: "timeout", timedOut: true });
     // The turn was cut short, so nothing the provider had not sent yet was replayed as content.
     expect(updates.filter(isMessage)).toEqual([]);
+  });
+
+  it("estimates usage when the provider omits it", async () => {
+    const root = tempDir();
+    const server = await startServer([{ text: "abcde", omitUsage: true }]);
+    const session = await createNativeEngine().start(startOptions(server, root));
+
+    const updates: EngineUpdate[] = [];
+    const result = await session.prompt([{ type: "text", text: "hi" }], {
+      onUpdate: (update) => updates.push(update),
+      onPermission: async () => "allow_once",
+      onSkillRead: () => undefined,
+    });
+    await session.dispose();
+
+    // ceil(5 / 4) characters of generated text; the request estimate is what the meter shows.
+    expect(result.usage?.outputTokens).toBe(2);
+    expect(result.usage?.inputTokens).toBeGreaterThan(0);
+    expect(updates.filter((update) => update.kind === "usage").at(-1)).toEqual({
+      kind: "usage",
+      size: 100_000,
+      used: result.usage?.inputTokens,
+    });
   });
 
   it("reports a skill read once and labels the tool call as a skill", async () => {

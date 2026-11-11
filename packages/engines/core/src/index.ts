@@ -17,7 +17,16 @@ export interface EnginePromptResult {
 
 export type EngineUpdate =
   | { kind: "message"; messageId: string; text: string; reasoning: boolean }
-  | { kind: "tool.started"; toolCallId: string; title: string; toolKind: string; rawInput: unknown }
+  | {
+      kind: "tool.started";
+      toolCallId: string;
+      title: string;
+      toolKind: string;
+      rawInput: unknown;
+      /** The provider's own function name and raw arguments, when the engine knows them. */
+      toolName?: string;
+      argumentsJson?: string;
+    }
   | {
       kind: "tool.updated";
       toolCallId: string;

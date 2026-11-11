@@ -21,6 +21,24 @@ describe("PayloadSchemas", () => {
     expect(PayloadSchemas["tool.started"].safeParse({ toolCallId: "c1", title: "x", kind: "execute" }).success).toBe(false);
   });
 
+  it("accepts the provider's own call so history replay can rebuild it", () => {
+    expect(
+      PayloadSchemas["tool.started"].parse({
+        toolCallId: "c1",
+        title: "Read note.txt",
+        kind: "read",
+        toolName: "fs.read",
+        argumentsJson: '{"path":"note.txt"}',
+      }),
+    ).toEqual({
+      toolCallId: "c1",
+      title: "Read note.txt",
+      kind: "read",
+      toolName: "fs.read",
+      argumentsJson: '{"path":"note.txt"}',
+    });
+  });
+
   it("accepts an auto permission decision and rejects anything outside the policy vocabulary", () => {
     expect(PayloadSchemas["permission.auto"].parse({ category: "shell", title: "echo hi", decision: "allow_once" })).toEqual({
       category: "shell",

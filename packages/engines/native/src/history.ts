@@ -30,8 +30,15 @@ const DeltaSchema = z.object({
   role: z.enum(["user", "assistant"]),
   block: z.object({ type: z.string(), text: z.string().optional() }),
 });
-const ToolStartedSchema = z.object({ toolCallId: z.string(), title: z.string() });
+const ToolStartedSchema = z.object({
+  toolCallId: z.string(),
+  title: z.string(),
+  /** Absent on events written before the kernel persisted the provider's call. */
+  toolName: z.string().optional(),
+  argumentsJson: z.string().optional(),
+});
 const ToolOutputSchema = z.object({ toolCallId: z.string(), chunk: z.string() });
+const ToolCompletedSchema = z.object({ toolCallId: z.string() });
 const ToolFailedSchema = z.object({ toolCallId: z.string(), message: z.string() });
 
 type HistoryToolCall = NonNullable<Extract<EngineHistoryMessage, { role: "assistant" }>["toolCalls"]>[number];
@@ -85,22 +92,42 @@ function applyEvent(turn: TurnDraft, event: HistoryEvent): void {
     case "tool.started": {
       const parsed = ToolStartedSchema.safeParse(event.payload);
       if (!parsed.success) return;
+      const name = parsed.data.toolName;
+      // Without the provider's own name there is no valid call to replay. Keep the text and drop
+      // the call rather than inventing a function name the provider never saw.
+      if (name === undefined || name === "") return;
       let draft = turn.drafts.at(-1);
+      // A new round of tool calls after every earlier call settled is a new assistant message.
+      if (
+        draft !== undefined &&
+        draft.toolCalls.length > 0 &&
+        draft.toolCalls.every((call) => turn.results.has(call.id))
+      ) {
+        draft = undefined;
+      }
       if (draft === undefined) {
         draft = { text: "", toolCalls: [] };
         turn.drafts.push(draft);
       }
-      // The log carries no tool name or arguments, so the human title stands in for both.
+      const argumentsJson = parsed.data.argumentsJson;
       draft.toolCalls.push({
         id: parsed.data.toolCallId,
-        name: parsed.data.title === "" ? "tool" : parsed.data.title,
-        arguments: "{}",
+        name,
+        arguments: argumentsJson === undefined || argumentsJson === "" ? "{}" : argumentsJson,
       });
       return;
     }
     case "tool.output": {
       const parsed = ToolOutputSchema.safeParse(event.payload);
       if (parsed.success) appendResult(turn, parsed.data.toolCallId, parsed.data.chunk);
+      return;
+    }
+    case "tool.completed": {
+      // A finished call with no output is still settled; that settles its round for the draft split.
+      const parsed = ToolCompletedSchema.safeParse(event.payload);
+      if (parsed.success && !turn.results.has(parsed.data.toolCallId)) {
+        turn.results.set(parsed.data.toolCallId, "");
+      }
       return;
     }
     case "tool.failed": {
@@ -135,14 +162,21 @@ function charsOf(messages: EngineHistoryMessage[]): number {
   return messages.reduce((total, message) => total + message.text.length, 0);
 }
 
+export interface ReconstructedHistory {
+  messages: EngineHistoryMessage[];
+  /** Whole turns dropped, oldest first, to fit the model window. */
+  trimmedTurns: number;
+}
+
 /**
  * Rebuilds the conversation from the persisted event log, newest last.
  *
  * Turns are dropped whole, oldest first, until the estimated request (characters / 4) fits the
  * model's window minus its completion reservation. The newest turn is always kept: sending a
- * partial or empty newest turn would lose the reply the user is waiting for.
+ * partial or empty newest turn would lose the reply the user is waiting for. The caller logs the
+ * dropped count; nothing in the event stream records a trim on its own.
  */
-export function reconstructHistory(events: HistoryEvent[], limits: HistoryLimits): EngineHistoryMessage[] {
+export function reconstructHistory(events: HistoryEvent[], limits: HistoryLimits): ReconstructedHistory {
   const turns = new Map<string, TurnDraft>();
   for (const event of [...events].sort((a, b) => a.seq - b.seq)) {
     // Only a turn's own stream can be attributed; session-level events reconstruct nothing.
@@ -168,5 +202,5 @@ export function reconstructHistory(events: HistoryEvent[], limits: HistoryLimits
     chars -= history[start]!.chars;
     start += 1;
   }
-  return history.slice(start).flatMap((turn) => turn.messages);
+  return { messages: history.slice(start).flatMap((turn) => turn.messages), trimmedTurns: start };
 }

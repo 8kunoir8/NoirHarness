@@ -92,6 +92,7 @@ function setup(
     redactor?: Redactor;
     baseUrl?: string;
     engine?: EngineKind;
+    contextWindow?: number;
   } = {},
 ) {
   const root = tempDir();
@@ -117,7 +118,7 @@ function setup(
   const model = models.create({
     providerId: provider.id,
     modelId: "fake-1",
-    contextWindow: 200_000,
+    contextWindow: opts.contextWindow ?? 200_000,
     enabled: true,
     engine: opts.engine ?? "acp",
   });
@@ -161,7 +162,36 @@ function setup(
     ompCommand: process.execPath,
     ...(opts.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: opts.turnTimeoutMs }),
   });
-  return { db, events, sessions, providers, models, skills, manager, session, workspaceId: workspace.id, dataDir, root };
+  return { db, events, sessions, agents, providers, models, skills, manager, session, workspaceId: workspace.id, dataDir, root };
+}
+
+/**
+ * A second manager over the same database: its first prompt is a kernel restart from the
+ * engine's point of view, so it rebuilds history from the event log alone.
+ */
+function restartedManager(deps: {
+  db: Database.Database;
+  events: EventStore;
+  sessions: SessionService;
+  agents: AgentService;
+  models: ModelService;
+  providers: ProviderService;
+  skills: SkillService;
+  dataDir: string;
+}): EngineManager {
+  const manager = new EngineManager({
+    db: deps.db,
+    events: deps.events,
+    sessions: deps.sessions,
+    agents: deps.agents,
+    models: deps.models,
+    providers: deps.providers,
+    skills: deps.skills,
+    dataDir: deps.dataDir,
+    ompCommand: process.execPath,
+  });
+  managers.push(manager);
+  return manager;
 }
 
 function writeProjectSkill(root: string, name = "demo"): void {
@@ -1183,6 +1213,10 @@ describe("EngineManager with the native engine", () => {
           .map((event) => eventPayload(event, "tool.completed"));
         expect(completedTools.map((payload) => payload.toolCallId)).toEqual(["call_1", "call_2"]);
 
+        // The provider reported 12/4 tokens; the context meter takes the prompt count it measured.
+        const usage = eventPayload(stream.find((event) => event.type === "usage.updated")!, "usage.updated");
+        expect(usage).toEqual({ inputTokens: 12, outputTokens: 4, contextUsed: 12, contextWindow: 200_000, costUsd: 0 });
+
         // The in-process engine has no child, so there is no pid to report.
         expect(manager.enginePid(session.id)).toBeUndefined();
         expect(server.requests).toHaveLength(3);
@@ -1297,6 +1331,194 @@ describe("EngineManager with the native engine", () => {
 
         const started = stream.find((event) => event.type === "tool.started");
         expect(eventPayload(started!, "tool.started")).toMatchObject({ toolCallId: "call_1", kind: "skill" });
+        await manager.closeSession(session.id);
+      } finally {
+        await server.close();
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "sends the cold-start prompt to the provider exactly once",
+    async () => {
+      const server = await startFakeOpenAiServer([{ text: "ok" }]);
+      try {
+        const { events, manager, session } = setup({ baseUrl: server.baseUrl, engine: "native" });
+        await manager.prompt({
+          sessionId: session.id,
+          requestId: "cold-start-1",
+          content: [{ type: "text", text: "hello there" }],
+        });
+        await waitForEvent(events, session.id, (event) => event.type === "turn.completed");
+
+        // Assert the request body: the persisted prompt must not reach the provider twice.
+        const messages = server.requests[0]?.body.messages as Array<{ role: string; content: string }>;
+        expect(messages.filter((message) => message.role === "user")).toEqual([
+          { role: "user", content: "hello there" },
+        ]);
+        // The prompt precedes the assistant reply and nothing else follows the system message.
+        expect(messages.slice(0, 2).map((message) => message.role)).toEqual(["system", "user"]);
+        await manager.closeSession(session.id);
+      } finally {
+        await server.close();
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "estimates usage when the provider omits it",
+    async () => {
+      const server = await startFakeOpenAiServer([{ text: "hello", omitUsage: true }]);
+      try {
+        const { events, manager, session } = setup({ baseUrl: server.baseUrl, engine: "native" });
+        await manager.prompt({
+          sessionId: session.id,
+          requestId: "no-usage-1",
+          content: [{ type: "text", text: "hi" }],
+        });
+        await waitForEvent(events, session.id, (event) => event.type === "turn.completed");
+
+        const usage = eventPayload(
+          events.list(session.id).find((event) => event.type === "usage.updated")!,
+          "usage.updated",
+        );
+        // ceil(5 / 4) generated characters; the request estimate feeds both counters.
+        expect(usage.outputTokens).toBe(2);
+        expect(usage.inputTokens).toBeGreaterThan(0);
+        expect(usage.contextUsed).toBe(usage.inputTokens);
+        expect(usage.contextWindow).toBe(200_000);
+        expect(usage.costUsd).toBe(0);
+        await manager.closeSession(session.id);
+      } finally {
+        await server.close();
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "replays a native tool call with its real name and arguments after a restart",
+    async () => {
+      const server = await startFakeOpenAiServer([
+        { toolCall: { id: "call_1", name: "fs.read", args: JSON.stringify({ path: "note.txt" }) } },
+        { text: "done" },
+        { text: "again" },
+      ]);
+      try {
+        const deps = setup({ baseUrl: server.baseUrl, engine: "native" });
+        const { events, manager, session, root } = deps;
+        writeFileSync(join(root, "note.txt"), "file body");
+        await manager.prompt({
+          sessionId: session.id,
+          requestId: "restart-1",
+          content: [{ type: "text", text: "read it" }],
+        });
+        await waitForEvent(events, session.id, (event) => event.type === "turn.completed");
+
+        const started = events.list(session.id).find((event) => event.type === "tool.started");
+        expect(eventPayload(started!, "tool.started")).toMatchObject({
+          toolName: "fs.read",
+          argumentsJson: JSON.stringify({ path: "note.txt" }),
+        });
+
+        const restarted = restartedManager(deps);
+        const second = await restarted.prompt({
+          sessionId: session.id,
+          requestId: "restart-2",
+          content: [{ type: "text", text: "again" }],
+        });
+        await waitForEvent(
+          events,
+          session.id,
+          (event) => event.type === "turn.completed" && eventPayload(event, "turn.completed").turnId === second.turnId,
+        );
+
+        type WireAssistant = {
+          role: string;
+          content: string;
+          tool_call_id?: string;
+          tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }>;
+        };
+        const messages = server.requests.at(-1)?.body.messages as WireAssistant[];
+        const assistant = messages.find((message) => message.tool_calls !== undefined);
+        expect(assistant?.tool_calls).toEqual([
+          {
+            id: "call_1",
+            type: "function",
+            function: { name: "fs.read", arguments: JSON.stringify({ path: "note.txt" }) },
+          },
+        ]);
+        expect(messages.some((message) => message.role === "tool" && message.tool_call_id === "call_1")).toBe(true);
+        // Each user turn is replayed once: reconstruction must not re-send the current prompt.
+        expect(messages.filter((message) => message.role === "user").map((message) => message.content)).toEqual([
+          "read it",
+          "again",
+        ]);
+        await restarted.closeSession(session.id);
+        await manager.closeSession(session.id);
+      } finally {
+        await server.close();
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "logs the trimmed replay of a native history at engine start",
+    async () => {
+      const long = "x".repeat(4_000);
+      const server = await startFakeOpenAiServer([{ text: "first" }, { text: "second" }, { text: "again" }]);
+      try {
+        const deps = setup({ baseUrl: server.baseUrl, engine: "native", contextWindow: 2_400 });
+        const { events, manager, session } = deps;
+        // Two long turns exceed 2,400 - 2,000 tokens ≈ 1,600 chars, so the oldest one is dropped.
+        const firstTurn = await manager.prompt({
+          sessionId: session.id,
+          requestId: "trim-1",
+          content: [{ type: "text", text: long }],
+        });
+        await waitForEvent(
+          events,
+          session.id,
+          (event) => event.type === "turn.completed" && eventPayload(event, "turn.completed").turnId === firstTurn.turnId,
+        );
+        const secondTurn = await manager.prompt({
+          sessionId: session.id,
+          requestId: "trim-2",
+          content: [{ type: "text", text: long }],
+        });
+        await waitForEvent(
+          events,
+          session.id,
+          (event) => event.type === "turn.completed" && eventPayload(event, "turn.completed").turnId === secondTurn.turnId,
+        );
+
+        const restarted = restartedManager(deps);
+        const third = await restarted.prompt({
+          sessionId: session.id,
+          requestId: "trim-3",
+          content: [{ type: "text", text: "again" }],
+        });
+        await waitForEvent(
+          events,
+          session.id,
+          (event) => event.type === "turn.completed" && eventPayload(event, "turn.completed").turnId === third.turnId,
+        );
+
+        const raw = events.list(session.id).filter((event) => event.type === "engine.raw");
+        expect(raw).toHaveLength(1);
+        expect(eventPayload(raw[0]!, "engine.raw")).toEqual({ engine: "native", payload: { trimmedTurns: 1 } });
+
+        const messages = server.requests.at(-1)?.body.messages as Array<{ role: string; content: string }>;
+        expect(messages.map((message) => message.role)).toEqual(["system", "user", "assistant", "user"]);
+        // The oldest long turn is gone; the newest is kept whole even though it overflows alone.
+        expect(messages.filter((message) => message.role === "user").map((message) => message.content)).toEqual([
+          long,
+          "again",
+        ]);
+        await restarted.closeSession(session.id);
         await manager.closeSession(session.id);
       } finally {
         await server.close();

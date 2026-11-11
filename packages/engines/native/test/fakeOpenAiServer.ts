@@ -9,6 +9,8 @@ export type ScriptStep = {
   finish?: string;
   /** Hold the stream open this long before answering, so a turn can be interrupted or timed out. */
   delayMs?: number;
+  /** Omit the trailing usage chunk, so the engine has to estimate the token counts itself. */
+  omitUsage?: boolean;
 };
 
 export interface FakeOpenAiServer {
@@ -86,7 +88,9 @@ export async function startFakeOpenAiServer(script: ScriptStep[]): Promise<FakeO
         },
       ],
     });
-    send({ choices: [], usage: { prompt_tokens: 12, completion_tokens: 4 } });
+    if (step.omitUsage !== true) {
+      send({ choices: [], usage: { prompt_tokens: 12, completion_tokens: 4 } });
+    }
     res.write("data: [DONE]\n\n");
     res.end();
   });
