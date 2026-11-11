@@ -213,10 +213,10 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
         if (workspace === undefined) throw new RpcFault(ErrorCodes.notFound, "Workspace not found");
         return workspace.path;
       };
-      const sessions = new SessionService(db, events);
+      const models = new ModelService(db);
+      const sessions = new SessionService(db, events, models);
       const providers = new ProviderService(db, new KeyringSecrets());
       for (const key of providers.secretValues()) redactor.addSecret(key);
-      const models = new ModelService(db);
       const agents = new AgentService(db, models);
       // Task 5 shares this instance with EngineManager so enabled flags match what is materialized.
       const skills = new SkillService(database, dir);

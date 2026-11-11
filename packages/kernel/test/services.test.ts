@@ -43,9 +43,9 @@ function setup() {
   const events = new EventStore(db);
   const projects = new ProjectService(db);
   const workspaces = new WorkspaceService(db, projects);
-  const sessions = new SessionService(db, events);
   const providers = new ProviderService(db, memorySecrets());
   const models = new ModelService(db);
+  const sessions = new SessionService(db, events, models);
   const agents = new AgentService(db, models);
   return { db, events, projects, workspaces, sessions, providers, models, agents };
 }
@@ -273,5 +273,62 @@ describe("SessionService agent start", () => {
     db.prepare("UPDATE sessions SET config_snapshot_json = 'not json' WHERE id = ?").run(session.id);
     expect(sessions.snapshot(session.id)).toEqual({});
     expectFault(() => sessions.snapshot("missing"), ErrorCodes.notFound, /Session not found/);
+  });
+
+  it("rejects an agent model that is disabled or gone", () => {
+    const { db, sessions, newAgent, model, ws } = fixture();
+    const gone = newAgent({ name: "Gone", modelRef: model.id });
+    db.prepare("UPDATE agents SET model_ref = 'gone' WHERE id = ?").run(gone.id);
+    const agent = newAgent({ name: "Broken", modelRef: model.id });
+    db.prepare("UPDATE models SET enabled = 0 WHERE id = ?").run(model.id);
+    expectFault(() => sessions.create(ws.id, { agentId: agent.id }), ErrorCodes.conflict, /Model is disabled/);
+    expectFault(() => sessions.create(ws.id, { agentId: gone.id }), ErrorCodes.notFound, /Model not found/);
+  });
+
+  it("rejects an agent model whose provider is disabled", () => {
+    const { db, sessions, newAgent, model, ws } = fixture();
+    const agent = newAgent({ name: "BrokenProvider", modelRef: model.id });
+    db.prepare("UPDATE providers SET enabled = 0 WHERE id = ?").run(model.providerId);
+    expectFault(() => sessions.create(ws.id, { agentId: agent.id }), ErrorCodes.conflict, /provider is disabled/i);
+  });
+
+  it("rejects a native agent when the kernel default cannot run native", () => {
+    const { projects, workspaces, sessions, providers, models, agents } = setup();
+    const ws = workspaces.createLocal(projects.add(tempDir()).id);
+    const agent = agents.create(AgentCreateParams.parse({ name: "Native", engineId: "native" }));
+    const anthropic = providers.create({
+      name: "Anthropic",
+      baseUrl: "http://localhost:1",
+      apiKind: "anthropic-messages",
+      apiKey: "k",
+      enabled: true,
+    });
+    models.create({ providerId: anthropic.id, modelId: "claude", contextWindow: 1000, enabled: true, engine: "acp" });
+    expectFault(() => sessions.create(ws.id, { agentId: agent.id }), ErrorCodes.conflict, /openai-completions/);
+  });
+
+  it("rejects a native agent when no default model exists", () => {
+    const { projects, workspaces, sessions, agents } = setup();
+    const ws = workspaces.createLocal(projects.add(tempDir()).id);
+    const agent = agents.create(AgentCreateParams.parse({ name: "Native", engineId: "native" }));
+    expectFault(() => sessions.create(ws.id, { agentId: agent.id }), ErrorCodes.conflict, /No model is configured/);
+  });
+
+  it("fails closed on an invalid stored policy", () => {
+    const { db, sessions, newAgent, model, ws } = fixture();
+    const agent = newAgent({ name: "BadPolicy", modelRef: model.id });
+    db.prepare("UPDATE agents SET permission_policy = ? WHERE id = ?").run('{"shell":"allow","bogus":1}', agent.id);
+    const session = sessions.create(ws.id, { agentId: agent.id });
+    expect(sessions.snapshot(session.id)).toMatchObject({ permissionPolicy: {} });
+  });
+
+  it("starts a native agent on the kernel default without pinning it", () => {
+    const { db, sessions, newAgent, ws } = fixture();
+    const agent = newAgent({ name: "NativeDefault", engineId: "native" });
+    const session = sessions.create(ws.id, { agentId: agent.id });
+    expect(session.engine).toBe("native");
+    expect(session.modelId).toBeNull();
+    expect(db.prepare("SELECT model_id FROM sessions WHERE id = ?").get(session.id)).toEqual({ model_id: null });
+    expect(sessions.snapshot(session.id)).toMatchObject({ engine: "native", modelId: null });
   });
 });

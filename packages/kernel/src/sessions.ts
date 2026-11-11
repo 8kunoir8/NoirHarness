@@ -2,6 +2,8 @@ import type Database from "better-sqlite3";
 import { v7 as uuidv7 } from "uuid";
 import { ErrorCodes, RpcFault, type EngineKind, type PermissionPolicy, type SessionStatus, type SessionView } from "@noir/protocol";
 import type { EventStore } from "./eventStore.js";
+import type { ModelService } from "./models.js";
+import { parsePermissionPolicy } from "./policy.js";
 
 const TRANSITIONS: Record<SessionStatus, SessionStatus[]> = {
   starting: ["idle", "running", "error", "closed"],
@@ -29,16 +31,6 @@ export interface SessionSnapshot {
 }
 
 interface AgentStartRow { engine_id: EngineKind; model_ref: string | null; permission_policy: string; archived_at: number | null }
-
-/** Missing keys mean `ask`; a hand-edited or older row is read as the defaults rather than breaking session start. */
-function parsePolicy(text: string): PermissionPolicy {
-  try {
-    const value: unknown = JSON.parse(text);
-    return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as PermissionPolicy) : {};
-  } catch {
-    return {};
-  }
-}
 
 interface SessionMeta { lastSeq: number; lastTs: number; pendingApproval: boolean }
 
@@ -89,7 +81,11 @@ function metaFor(
 }
 
 export class SessionService {
-  constructor(private readonly db: Database.Database, private readonly events: EventStore) {}
+  constructor(
+    private readonly db: Database.Database,
+    private readonly events: EventStore,
+    private readonly models: ModelService,
+  ) {}
 
   /**
    * Starts a session. Without an `agentId` this keeps the M1 behaviour: a fresh `"Agent"` profile row
@@ -116,7 +112,10 @@ export class SessionService {
       const agent = this.agentForStart(agentId);
       modelId = modelId ?? agent.model_ref ?? undefined;
       engine = modelId === undefined ? agent.engine_id : this.requireEnabledModel(modelId).engine;
-      permissionPolicy = parsePolicy(agent.permission_policy);
+      // A native session without a model still runs the kernel default per turn, so that default must
+      // speak the native protocol; the session row keeps `model_id` NULL and resolves it at start.
+      if (engine === "native" && modelId === undefined) this.assertNativeDefault();
+      permissionPolicy = parsePermissionPolicy(agent.permission_policy);
     }
 
     const snapshot = JSON.stringify({ agentId, engine, modelId: modelId ?? null, permissionPolicy });
@@ -195,16 +194,21 @@ export class SessionService {
     return row;
   }
 
+  /** The kernel default a native session would fall back to must speak the native protocol. */
+  private assertNativeDefault(): void {
+    const fallback = this.models.defaultModel();
+    if (fallback === undefined) throw new RpcFault(ErrorCodes.conflict, "No model is configured for this session");
+    this.models.assertEngine(fallback.providerId, "native");
+  }
+
   private requireEnabledModel(modelId: string): { engine: EngineKind } {
     const model = this.db.prepare(
-      "SELECT m.enabled AS model_enabled, m.engine AS engine, p.enabled AS provider_enabled, p.api_kind AS api_kind FROM models m JOIN providers p ON p.id = m.provider_id WHERE m.id = ?",
-    ).get(modelId) as { model_enabled: number; engine: EngineKind; provider_enabled: number; api_kind: string } | undefined;
+      "SELECT m.enabled AS model_enabled, m.engine AS engine, p.enabled AS provider_enabled, p.id AS provider_id FROM models m JOIN providers p ON p.id = m.provider_id WHERE m.id = ?",
+    ).get(modelId) as { model_enabled: number; engine: EngineKind; provider_enabled: number; provider_id: string } | undefined;
     if (!model) throw new RpcFault(ErrorCodes.notFound, "Model not found");
     if (model.model_enabled !== 1) throw new RpcFault(ErrorCodes.conflict, "Model is disabled");
     if (model.provider_enabled !== 1) throw new RpcFault(ErrorCodes.conflict, "Model provider is disabled");
-    if (model.engine === "native" && model.api_kind !== "openai-completions") {
-      throw new RpcFault(ErrorCodes.conflict, "Native engine supports openai-completions providers only");
-    }
+    this.models.assertEngine(model.provider_id, model.engine);
     return model;
   }
 

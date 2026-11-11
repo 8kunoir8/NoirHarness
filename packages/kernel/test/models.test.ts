@@ -38,9 +38,9 @@ function setup() {
   const events = new EventStore(db);
   const projects = new ProjectService(db);
   const workspaces = new WorkspaceService(db, projects);
-  const sessions = new SessionService(db, events);
   const providers = new ProviderService(db, memorySecrets());
   const models = new ModelService(db);
+  const sessions = new SessionService(db, events, models);
   return { db, events, projects, workspaces, sessions, providers, models };
 }
 

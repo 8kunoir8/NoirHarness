@@ -101,9 +101,9 @@ function setup(
   const events = new EventStore(db, undefined, opts.redactor);
   const projects = new ProjectService(db);
   const workspaces = new WorkspaceService(db, projects);
-  const sessions = new SessionService(db, events);
-  const providers = new ProviderService(db, memorySecrets());
   const models = new ModelService(db);
+  const sessions = new SessionService(db, events, models);
+  const providers = new ProviderService(db, memorySecrets());
 
   const project = projects.add(root);
   const workspace = workspaces.createLocal(project.id);
@@ -1052,7 +1052,7 @@ describe("EngineManager over the fake ACP server", () => {
     const manager = new EngineManager({
       db,
       events,
-      sessions: new SessionService(db, events),
+      sessions: new SessionService(db, events, models),
       agents: new AgentService(db, models),
       models,
       providers: new ProviderService(db, memorySecrets()),

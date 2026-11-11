@@ -2,26 +2,15 @@ import type Database from "better-sqlite3";
 import { v7 as uuidv7 } from "uuid";
 import {
   ErrorCodes,
-  PermissionPolicySchema,
   RpcFault,
   type AgentCreateParams,
   type AgentUpdateParams,
   type AgentView,
-  type PermissionPolicy,
 } from "@noir/protocol";
 import type { ModelService } from "./models.js";
+import { parsePermissionPolicy } from "./policy.js";
 
 const AGENT_COLUMNS = "id, name, role, engine_id, model_ref, permission_policy, default_workspace_id, archived_at, created_at";
-
-/** Missing keys mean `ask`; a hand-edited or older row is read as the defaults rather than breaking the list. */
-function parsePolicy(text: string): PermissionPolicy {
-  try {
-    const parsed = PermissionPolicySchema.safeParse(JSON.parse(text));
-    return parsed.success ? parsed.data : {};
-  } catch {
-    return {};
-  }
-}
 
 function toView(row: Record<string, unknown>): AgentView {
   return {
@@ -30,7 +19,7 @@ function toView(row: Record<string, unknown>): AgentView {
     role: row.role as string,
     engineId: row.engine_id as AgentView["engineId"],
     modelRef: (row.model_ref as string | null) ?? null,
-    permissionPolicy: parsePolicy(row.permission_policy as string),
+    permissionPolicy: parsePermissionPolicy(row.permission_policy as string),
     defaultWorkspaceId: (row.default_workspace_id as string | null) ?? null,
     archivedAt: (row.archived_at as number | null) ?? null,
     createdAt: row.created_at as number,
