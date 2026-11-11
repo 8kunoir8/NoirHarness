@@ -10,6 +10,7 @@
     "build": "tsc --noEmit"
   },
   "dependencies": {
-    "@noir/engine-core": "workspace:*"
+    "@noir/engine-core": "workspace:*",
+    "zod": "^3.24.0"
   }
 }
