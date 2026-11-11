@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import type Database from "better-sqlite3";
 import { v7 as uuidv7 } from "uuid";
 import {
@@ -173,6 +173,22 @@ function permissionCategory(kind: string | undefined): "shell" | "delete" | "ren
       return "network";
     default:
       return "write-outside-workspace";
+  }
+}
+
+/**
+ * Whether a write target is provably inside the workspace. Everything else fails closed: no
+ * path, a relative escape, an absolute path elsewhere, or the workspace root itself.
+ */
+function isInsideWorkspace(root: string, rawInput: unknown): boolean {
+  if (typeof rawInput !== "object" || rawInput === null) return false;
+  const path = "path" in rawInput ? rawInput.path : undefined;
+  if (typeof path !== "string" || path === "") return false;
+  try {
+    const inside = relative(root, resolve(root, path));
+    return inside !== "" && !inside.startsWith("..") && !isAbsolute(inside);
+  } catch {
+    return false;
   }
 }
 
@@ -888,6 +904,19 @@ export class EngineManager {
   ): Promise<PermissionDecision> {
     if (state.closing) return Promise.resolve("reject");
 
+    const category = permissionCategory(request.toolCall.kind);
+    // The policy lives in the session snapshot, so editing an agent profile cannot change a
+    // running session. A write the kernel cannot prove inside the workspace always asks.
+    const configured = this.deps.sessions.snapshot(state.sessionId).permissionPolicy?.[category] ?? "ask";
+    const forcedAsk = category === "write-outside-workspace" && !isInsideWorkspace(state.workspaceRoot, request.toolCall.rawInput);
+    const effective = forcedAsk ? "ask" : configured;
+    const title = request.toolCall.title !== "" ? request.toolCall.title : "Permission required";
+    if (effective !== "ask") {
+      const decision: PermissionDecision = effective === "allow" ? "allow_once" : "reject";
+      this.emit(state, "permission.auto", { category, title, decision }, turn.turnId);
+      return Promise.resolve(decision);
+    }
+
     const approvalId = uuidv7();
     const options: PermissionOption[] = request.options
       .filter((option) => option.optionId !== "")
@@ -901,8 +930,8 @@ export class EngineManager {
 
     const payload = {
       approvalId,
-      category: permissionCategory(request.toolCall.kind),
-      title: request.toolCall.title !== "" ? request.toolCall.title : "Permission required",
+      category,
+      title,
       options: effectiveOptions,
     };
     const event = this.emit(state, "permission.requested", payload, turn.turnId);

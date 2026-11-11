@@ -29,6 +29,10 @@ export type ContentBlock = z.infer<typeof ContentBlock>;
 export const PermissionDecision = z.enum(["allow_once", "allow_always", "reject", "reject_always"]);
 export type PermissionDecision = z.infer<typeof PermissionDecision>;
 
+/** The policy categories a session can be configured for; also the `permission.*` event vocabulary. */
+export const PermissionCategory = z.enum(["shell", "delete", "rename", "write-outside-workspace", "network"]);
+export type PermissionCategory = z.infer<typeof PermissionCategory>;
+
 export const PermissionOption = z.object({
   optionId: z.string().min(1),
   name: z.string().min(1),
@@ -41,7 +45,7 @@ export const EventType = z.enum([
   "turn.started", "turn.completed", "turn.failed",
   "message.delta", "message.completed",
   "tool.started", "tool.output", "tool.completed", "tool.failed",
-  "permission.requested", "permission.resolved",
+  "permission.requested", "permission.resolved", "permission.auto",
   "file.changed", "command.started", "command.output", "command.completed",
   "usage.updated", "plan.updated", "todo.updated", "skill.loaded",
   "engine.raw",
@@ -68,11 +72,16 @@ export const PayloadSchemas = {
   "tool.failed": z.object({ toolCallId: z.string(), message: z.string() }),
   "permission.requested": z.object({
     approvalId: z.string(),
-    category: z.enum(["shell", "delete", "rename", "write-outside-workspace", "network"]),
+    category: PermissionCategory,
     title: z.string(),
     options: z.array(PermissionOption).min(1),
   }),
   "permission.resolved": z.object({ approvalId: z.string(), decision: PermissionDecision }),
+  "permission.auto": z.object({
+    category: PermissionCategory,
+    title: z.string(),
+    decision: z.enum(["allow_once", "reject"]),
+  }),
   "file.changed": z.object({ path: z.string(), change: z.enum(["created", "modified", "deleted"]), add: z.number().int().nonnegative(), del: z.number().int().nonnegative() }),
   "command.started": z.object({ commandId: z.string(), command: z.string() }),
   "command.output": z.object({ commandId: z.string(), chunk: z.string() }),

@@ -118,8 +118,6 @@ export type SessionSetModelParams = z.infer<typeof SessionSetModelParams>;
 export const ApprovalRespondParams = z.object({ approvalId: z.string().min(1), decision: PermissionDecision });
 export type ApprovalRespondParams = z.infer<typeof ApprovalRespondParams>;
 
-export const PermissionCategory = z.enum(["shell", "delete", "rename", "write-outside-workspace", "network"]);
-export type PermissionCategory = z.infer<typeof PermissionCategory>;
 /** Missing key means `ask`. Unknown keys are rejected, not silently ignored. */
 export const PermissionPolicySchema = z
   .object({

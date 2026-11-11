@@ -15,6 +15,7 @@ import {
   SessionPromptResult,
   type EngineKind,
   type EventType,
+  type PermissionPolicy,
   type SessionState,
 } from "@noir/protocol";
 import { AgentService } from "../src/agents.js";
@@ -85,6 +86,9 @@ function setup(
     acpArgs?: string[];
     acpSkill?: string;
     acpPermissionTitle?: string;
+    acpPermissionKind?: string;
+    acpPermissionRawInput?: Record<string, unknown>;
+    agentPermissionPolicy?: PermissionPolicy;
     redactor?: Redactor;
     baseUrl?: string;
     engine?: EngineKind;
@@ -117,8 +121,22 @@ function setup(
     enabled: true,
     engine: opts.engine ?? "acp",
   });
-  const session = sessions.create(workspace.id, { modelId: model.id });
   const skills = new SkillService(db, dataDir);
+  const agents = new AgentService(db, models);
+  const session =
+    opts.agentPermissionPolicy === undefined
+      ? sessions.create(workspace.id, { modelId: model.id })
+      : sessions.create(workspace.id, {
+          modelId: model.id,
+          agentId: agents.create({
+            name: "Policy Agent",
+            role: "Coder",
+            engineId: "acp",
+            modelRef: model.id,
+            permissionPolicy: opts.agentPermissionPolicy,
+            defaultWorkspaceId: workspace.id,
+          }).id,
+        });
 
   // The manager parses its launch argv at construction time.
   process.env.NOIR_OMP_ARGS_JSON = JSON.stringify(opts.acpArgs ?? [FAKE_SERVER]);
@@ -127,11 +145,15 @@ function setup(
   else process.env.FAKE_ACP_SKILL = opts.acpSkill;
   if (opts.acpPermissionTitle === undefined) delete process.env.FAKE_ACP_PERMISSION_TITLE;
   else process.env.FAKE_ACP_PERMISSION_TITLE = opts.acpPermissionTitle;
+  if (opts.acpPermissionKind === undefined) delete process.env.FAKE_ACP_PERMISSION_KIND;
+  else process.env.FAKE_ACP_PERMISSION_KIND = opts.acpPermissionKind;
+  if (opts.acpPermissionRawInput === undefined) delete process.env.FAKE_ACP_PERMISSION_RAW_INPUT;
+  else process.env.FAKE_ACP_PERMISSION_RAW_INPUT = JSON.stringify(opts.acpPermissionRawInput);
   const manager = new EngineManager({
     db,
     events,
     sessions,
-    agents: new AgentService(db, models),
+    agents,
     models,
     providers,
     skills,
@@ -165,11 +187,26 @@ function eventPayload<T extends EventType>(event: AgentEvent, type: T): Payload<
   return PayloadSchemas[type].parse(event.payload) as Payload<T>;
 }
 
+function approvalRows(db: Database.Database, sessionId: string): number {
+  const row = db.prepare("SELECT COUNT(*) AS n FROM approvals WHERE session_id = ?").get(sessionId) as
+    | { n: number }
+    | undefined;
+  return row?.n ?? 0;
+}
+
 const IdResult = z.object({ id: z.string() });
 const SubscribeResult = z.object({ events: z.array(AgentEvent), lastSeq: z.number().int() });
 
 beforeAll(() => {
-  for (const key of ["NOIR_OMP_COMMAND", "NOIR_OMP_ARGS_JSON", "NOIR_TURN_TIMEOUT_MS", "FAKE_ACP_SKILL", "FAKE_ACP_PERMISSION_TITLE"]) {
+  for (const key of [
+    "NOIR_OMP_COMMAND",
+    "NOIR_OMP_ARGS_JSON",
+    "NOIR_TURN_TIMEOUT_MS",
+    "FAKE_ACP_SKILL",
+    "FAKE_ACP_PERMISSION_TITLE",
+    "FAKE_ACP_PERMISSION_KIND",
+    "FAKE_ACP_PERMISSION_RAW_INPUT",
+  ]) {
     savedEnv[key] = process.env[key];
   }
   process.env.NOIR_OMP_COMMAND = process.execPath;
@@ -508,6 +545,107 @@ describe("EngineManager over the fake ACP server", () => {
       expect(
         eventPayload(events.list(session.id).find((event) => event.type === "turn.completed")!, "turn.completed").status,
       ).toBe("completed");
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "allows shell without an approval row when the policy says allow",
+    async () => {
+      const { events, sessions, db, manager, session } = setup({
+        agentPermissionPolicy: { shell: "allow" },
+        acpPermissionKind: "execute",
+      });
+      await manager.prompt({ sessionId: session.id, requestId: "auto-allow", content: [{ type: "text", text: "permission" }] });
+      await waitForEvent(events, session.id, (event) => event.type === "turn.completed");
+
+      const stream = events.list(session.id);
+      expect(stream.filter((event) => event.type === "permission.requested")).toHaveLength(0);
+      expect(eventPayload(stream.find((event) => event.type === "permission.auto")!, "permission.auto")).toMatchObject({
+        category: "shell",
+        decision: "allow_once",
+      });
+      expect(approvalRows(db, session.id)).toBe(0);
+      expect(sessions.view(session.id).status).not.toBe("waiting");
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "rejects a delete without an approval row when the policy says reject",
+    async () => {
+      const { events, manager, session, db } = setup({
+        agentPermissionPolicy: { delete: "reject" },
+        acpPermissionKind: "delete",
+        acpPermissionRawInput: { path: "notes.txt" },
+      });
+      await manager.prompt({ sessionId: session.id, requestId: "auto-reject", content: [{ type: "text", text: "permission" }] });
+      const auto = await waitForEvent(events, session.id, (event) => event.type === "permission.auto");
+      expect(eventPayload(auto, "permission.auto")).toMatchObject({ category: "delete", decision: "reject" });
+      expect(approvalRows(db, session.id)).toBe(0);
+      await waitForEvent(events, session.id, (event) => event.type === "turn.completed");
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "asks for a write that escapes the workspace even when the policy allows it",
+    async () => {
+      const { events, db, manager, session } = setup({
+        agentPermissionPolicy: { "write-outside-workspace": "allow" },
+        acpPermissionKind: "edit",
+        acpPermissionRawInput: { path: "../escape.txt" },
+      });
+      await manager.prompt({ sessionId: session.id, requestId: "outside-write", content: [{ type: "text", text: "permission" }] });
+      const requested = await waitForEvent(events, session.id, (event) => event.type === "permission.requested");
+      expect(eventPayload(requested, "permission.requested").category).toBe("write-outside-workspace");
+      expect(events.list(session.id).filter((event) => event.type === "permission.auto")).toHaveLength(0);
+      expect(approvalRows(db, session.id)).toBe(1);
+
+      await manager.respond(eventPayload(requested, "permission.requested").approvalId, "allow_once");
+      await waitForEvent(events, session.id, (event) => event.type === "turn.completed");
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "asks for a write inside the workspace when the policy does not cover it",
+    async () => {
+      const { events, db, manager, session } = setup({
+        agentPermissionPolicy: { shell: "allow" },
+        acpPermissionKind: "edit",
+        acpPermissionRawInput: { path: "notes.txt" },
+      });
+      await manager.prompt({ sessionId: session.id, requestId: "inside-write-ask", content: [{ type: "text", text: "permission" }] });
+      const requested = await waitForEvent(events, session.id, (event) => event.type === "permission.requested");
+      expect(eventPayload(requested, "permission.requested").category).toBe("write-outside-workspace");
+      expect(events.list(session.id).filter((event) => event.type === "permission.auto")).toHaveLength(0);
+      expect(approvalRows(db, session.id)).toBe(1);
+
+      await manager.respond(eventPayload(requested, "permission.requested").approvalId, "allow_once");
+      await waitForEvent(events, session.id, (event) => event.type === "turn.completed");
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "auto-allows an inside write when the write-outside-workspace policy allows it",
+    async () => {
+      const { events, db, manager, session } = setup({
+        agentPermissionPolicy: { "write-outside-workspace": "allow" },
+        acpPermissionKind: "edit",
+        acpPermissionRawInput: { path: "notes.txt" },
+      });
+      await manager.prompt({ sessionId: session.id, requestId: "inside-write-auto", content: [{ type: "text", text: "permission" }] });
+      await waitForEvent(events, session.id, (event) => event.type === "turn.completed");
+
+      const stream = events.list(session.id);
+      expect(stream.filter((event) => event.type === "permission.requested")).toHaveLength(0);
+      expect(eventPayload(stream.find((event) => event.type === "permission.auto")!, "permission.auto")).toMatchObject({
+        category: "write-outside-workspace",
+        decision: "allow_once",
+      });
+      expect(approvalRows(db, session.id)).toBe(0);
     },
     TEST_TIMEOUT_MS,
   );

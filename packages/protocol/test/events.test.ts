@@ -20,4 +20,23 @@ describe("PayloadSchemas", () => {
     // The engine vocabulary stays out of the wire schema.
     expect(PayloadSchemas["tool.started"].safeParse({ toolCallId: "c1", title: "x", kind: "execute" }).success).toBe(false);
   });
+
+  it("accepts an auto permission decision and rejects anything outside the policy vocabulary", () => {
+    expect(PayloadSchemas["permission.auto"].parse({ category: "shell", title: "echo hi", decision: "allow_once" })).toEqual({
+      category: "shell",
+      title: "echo hi",
+      decision: "allow_once",
+    });
+    expect(
+      PayloadSchemas["permission.requested"].safeParse({
+        approvalId: "a1",
+        category: "launch",
+        title: "x",
+        options: [{ optionId: "reject", name: "Reject", kind: "reject" }],
+      }).success,
+    ).toBe(false);
+    expect(PayloadSchemas["permission.auto"].safeParse({ category: "shell", title: "x", decision: "ask" }).success).toBe(
+      false,
+    );
+  });
 });
