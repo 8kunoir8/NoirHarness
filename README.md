@@ -262,9 +262,9 @@ The **Office** pane renders a Phaser pixel office from the same roster data: eac
 desk derived from its id, wanders to the lounge after an idle spell, and shows its state on the
 character. The canvas is `aria-hidden` and publishes `data-office-ready`, `data-office-count`,
 `data-office-desks`, and `data-office-selected` for tests; the roster and the inspector carry the
-same information in text, so nothing is canvas-only. The `List` toggle hides the canvas and keeps the
-roster. Phaser and the scene load through dynamic imports, so the startup bundle never contains them,
-and the office art is a CC0 Kenney pack committed under
+same information in text, so nothing is canvas-only. The `List view` / `Office view` toggle hides the
+canvas and keeps the roster. Phaser and the scene load through dynamic imports, so the startup
+bundle never contains them, and the office art is a CC0 Kenney pack committed under
 `apps/desktop/src/renderer/office/assets/` with its licence and a frame manifest beside it — nothing
 is fetched at runtime.
 
