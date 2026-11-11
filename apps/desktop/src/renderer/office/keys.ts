@@ -13,5 +13,7 @@ export const OFFICE_REDUCED_KEY = "office:reducedMotion";
 
 /** Scene → React: the user clicked a character. */
 export const OFFICE_SELECT_EVENT = "office:select";
+/** Scene → React: the awaited load failed, so the canvas can never show an office. */
+export const OFFICE_UNAVAILABLE_EVENT = "office:unavailable";
 /** React → scene: a new roster snapshot is in the registry. */
 export const OFFICE_STATES_EVENT = "office:states";

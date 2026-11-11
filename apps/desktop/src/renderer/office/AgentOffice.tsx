@@ -8,6 +8,7 @@ import {
   OFFICE_SELECTED_KEY,
   OFFICE_STATES_EVENT,
   OFFICE_STATES_KEY,
+  OFFICE_UNAVAILABLE_EVENT,
   OFFICE_WIDTH,
 } from "./keys.js";
 import "./office.css";
@@ -99,6 +100,15 @@ export function AgentOffice({
         };
         game.events.on(OFFICE_SELECT_EVENT, select);
 
+        // The scene loads assets inside an un-awaited `create`, so its failure cannot be caught by
+        // the `try` above; the scene reports it instead of leaving a silent blank canvas.
+        const unavailable = (): void => {
+          if (cancelled) return;
+          setReady(false);
+          latest.current.onUnavailable?.();
+        };
+        game.events.on(OFFICE_UNAVAILABLE_EVENT, unavailable);
+
         game.registry.set(OFFICE_STATES_KEY, latest.current.states);
         game.registry.set(OFFICE_SELECTED_KEY, latest.current.selectedId);
         game.registry.set(OFFICE_REDUCED_KEY, latest.current.reducedMotion);
@@ -112,6 +122,7 @@ export function AgentOffice({
           },
           destroy: () => {
             game.events.off(OFFICE_SELECT_EVENT, select);
+            game.events.off(OFFICE_UNAVAILABLE_EVENT, unavailable);
             game.destroy(true);
           },
         };

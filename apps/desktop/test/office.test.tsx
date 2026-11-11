@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { act, cleanup, render, waitFor } from "@testing-library/react";
 import type { AgentRosterEntry } from "@noir/protocol";
 import type * as OfficeSceneModule from "../src/renderer/office/scene.js";
 import {
@@ -14,6 +14,7 @@ import {
   type OfficePoint,
 } from "../src/renderer/office/mapper.js";
 import { findPath } from "../src/renderer/office/pathfinding.js";
+import { OFFICE_DESKS } from "../src/renderer/office/desks.js";
 import officeMap from "../src/renderer/office/map.json";
 import manifest from "../src/renderer/office/assets/manifest.json";
 
@@ -39,6 +40,7 @@ const phaserDouble = vi.hoisted(() => {
       emit: (event: string, payload?: unknown) => void;
     };
     emit: (event: string, payload?: unknown) => void;
+    listenerCount: (event: string) => number;
   }
 
   const games: FakeGameInstance[] = [];
@@ -72,6 +74,8 @@ const phaserDouble = vi.hoisted(() => {
     emit(event: string, payload?: unknown): void {
       this.events.emit(event, payload);
     }
+
+    listenerCount = (event: string): number => this.handlers.get(event)?.size ?? 0;
 
     destroy = vi.fn((...args: unknown[]): void => {
       this.destroyCalls.push(args);
@@ -176,7 +180,7 @@ describe("office mapper", () => {
     const roster = Array.from({ length: MAX_OFFICE_AGENTS + 4 }, (_, index) =>
       rosterEntry({ agentId: `agent-${index}` }),
     );
-    expect(toOfficeStates(roster, officeMap.desks)).toHaveLength(MAX_OFFICE_AGENTS);
+    expect(toOfficeStates(roster, OFFICE_DESKS)).toHaveLength(MAX_OFFICE_AGENTS);
   });
 
   it("carries the approval title into the needs_you bubble and nothing else", () => {
@@ -232,6 +236,16 @@ describe("desk assignment", () => {
     const assigned = assignDesks(ids, DESKS);
     expect(assigned.size).toBe(ids.length);
     for (const desk of assigned.values()) expect(DESKS).toContainEqual(desk);
+  });
+
+  // `desks.ts` is the eager copy of the map's desk anchors; this keeps it honest.
+  it("keeps every desk unique and walkable on the committed map", () => {
+    expect(OFFICE_DESKS.length).toBeGreaterThan(0);
+    expect(new Set(OFFICE_DESKS.map((desk) => `${desk.x},${desk.y}`)).size).toBe(OFFICE_DESKS.length);
+    for (const desk of OFFICE_DESKS) {
+      expect(officeMap.floor[desk.y]?.[desk.x]).toBeDefined();
+      expect(officeMap.collision[desk.y]?.[desk.x]).toBe(".");
+    }
   });
 });
 
@@ -309,9 +323,13 @@ describe("AgentOffice", () => {
 
     game?.emit(keys.OFFICE_SELECT_EVENT, "a-1");
     expect(onSelect).toHaveBeenCalledWith("a-1");
+    expect(game?.listenerCount(keys.OFFICE_SELECT_EVENT)).toBe(1);
+    expect(game?.listenerCount(keys.OFFICE_UNAVAILABLE_EVENT)).toBe(1);
 
     view.unmount();
     expect(game?.destroyCalls).toEqual([[true]]);
+    expect(game?.listenerCount(keys.OFFICE_SELECT_EVENT)).toBe(0);
+    expect(game?.listenerCount(keys.OFFICE_UNAVAILABLE_EVENT)).toBe(0);
     expect(phaserDouble.games).toHaveLength(1);
   });
 
@@ -351,6 +369,27 @@ describe("AgentOffice", () => {
     expect(view.container.querySelector("[data-office-ready]")).toBeNull();
     view.unmount();
   });
+
+  it("reports a scene that fails after construction, not just a failed constructor", async () => {
+    const onUnavailable = vi.fn();
+    const view = render(
+      <AgentOffice states={[state]} selectedId={undefined} reducedMotion={false} onUnavailable={onUnavailable} />,
+    );
+    await waitFor(() => expect(phaserDouble.games).toHaveLength(1));
+    const game = phaserDouble.games[0];
+    expect(game?.listenerCount(keys.OFFICE_UNAVAILABLE_EVENT)).toBe(1);
+
+    act(() => {
+      game?.emit(keys.OFFICE_UNAVAILABLE_EVENT);
+    });
+    expect(onUnavailable).toHaveBeenCalledTimes(1);
+    await waitFor(() =>
+      expect(view.container.querySelector("[data-office-ready]")).toBeNull(),
+    );
+
+    view.unmount();
+    expect(game?.listenerCount(keys.OFFICE_UNAVAILABLE_EVENT)).toBe(0);
+  });
 });
 
 describe("office scene", () => {
@@ -383,46 +422,77 @@ describe("office scene", () => {
     destroy: () => void;
   }
 
+  /** Phaser's emitter, reduced to the semantics the scene relies on (`once`, `off` by handler). */
+  class Emitter {
+    readonly log: Array<{ event: string; args: unknown[] }> = [];
+    private readonly handlers = new Map<string, Map<(...args: unknown[]) => void, boolean>>();
+
+    on = (event: string, handler: (...args: unknown[]) => void): void => {
+      const set = this.handlers.get(event) ?? new Map();
+      set.set(handler, false);
+      this.handlers.set(event, set);
+    };
+
+    once = (event: string, handler: (...args: unknown[]) => void): void => {
+      const set = this.handlers.get(event) ?? new Map();
+      set.set(handler, true);
+      this.handlers.set(event, set);
+    };
+
+    off = (event: string, handler: (...args: unknown[]) => void): void => {
+      this.handlers.get(event)?.delete(handler);
+    };
+
+    emit = (event: string, ...args: unknown[]): void => {
+      this.log.push({ event, args });
+      const set = this.handlers.get(event);
+      if (set === undefined) return;
+      for (const [handler, once] of [...set.entries()]) {
+        if (once) set.delete(handler);
+        handler(...args);
+      }
+    };
+
+    count = (event: string): number => this.handlers.get(event)?.size ?? 0;
+  }
+
   interface SceneLike {
     create: () => Promise<void>;
     update: (time: number, delta: number) => void;
+    events: Emitter;
+  }
+
+  interface HarnessOptions {
+    /** Reject the committed map/manifest import. */
+    failAssets?: boolean;
+    /** Make the image loader emit `loaderror` instead of `complete`. */
+    failImages?: boolean;
   }
 
   function harness(): {
     game: {
       registry: Map<string, unknown>;
-      events: {
-        on: (event: string, handler: (payload?: unknown) => void) => void;
-        off: (event: string, handler: (payload?: unknown) => void) => void;
-        emit: (event: string, payload?: unknown) => void;
-      };
+      events: Emitter;
       loop: { sleep: () => void; wake: () => void };
     };
     tweens: unknown[];
+    tweenStops: Array<{ stop: () => void }>;
     sprites: FakeGameObject[];
     texts: FakeGameObject[];
-    createScene: (reducedMotion: boolean, states: AgentOfficeState[]) => Promise<{ scene: SceneLike }>;
+    createScene: (
+      reducedMotion: boolean,
+      states: AgentOfficeState[],
+      options?: HarnessOptions,
+    ) => Promise<{ scene: SceneLike }>;
   } {
     const tweens: unknown[] = [];
+    const tweenStops: Array<{ stop: () => void }> = [];
     const sprites: FakeGameObject[] = [];
     const texts: FakeGameObject[] = [];
     const registry = new Map<string, unknown>();
-    const handlers = new Map<string, Set<(payload?: unknown) => void>>();
     const game = {
       registry,
-      events: {
-        on: (event: string, handler: (payload?: unknown) => void): void => {
-          const set = handlers.get(event) ?? new Set();
-          set.add(handler);
-          handlers.set(event, set);
-        },
-        off: (event: string, handler: (payload?: unknown) => void): void => {
-          handlers.get(event)?.delete(handler);
-        },
-        emit: (event: string, payload?: unknown): void => {
-          for (const handler of handlers.get(event) ?? []) handler(payload);
-        },
-      },
+      events: new Emitter(),
       loop: { sleep: vi.fn(), wake: vi.fn() },
     };
 
@@ -486,13 +556,12 @@ describe("office scene", () => {
     }
 
     let completeHandler: (() => void) | undefined;
+    let errorHandler: (() => void) | undefined;
+    let failImages = false;
 
     class Scene extends (Object as unknown as new () => object) {
       game = game;
-      events = {
-        once: (): void => undefined,
-        on: (): void => undefined,
-      };
+      events = new Emitter();
       add = {
         image: (x: number, y: number, file: string, frame: string): FakeGameObject => {
           const object = new GameObject(x, y, frame);
@@ -510,16 +579,20 @@ describe("office scene", () => {
         image: vi.fn(),
         once: (event: string, handler: () => void): void => {
           if (event === "complete") completeHandler = handler;
+          if (event === "loaderror") errorHandler = handler;
         },
         start: (): void => {
-          completeHandler?.();
+          if (failImages) errorHandler?.();
+          else completeHandler?.();
         },
       };
       textures = { get: () => ({ add: vi.fn() }) };
       tweens = {
         add: (config: unknown): { stop: () => void } => {
           tweens.push(config);
-          return { stop: vi.fn() };
+          const tween = { stop: vi.fn() };
+          tweenStops.push(tween);
+          return tween;
         },
         killTweensOf: vi.fn(),
       };
@@ -529,12 +602,23 @@ describe("office scene", () => {
     return {
       game,
       tweens,
+      tweenStops,
       sprites,
       texts,
-      createScene: async (reducedMotion: boolean, states: AgentOfficeState[]) => {
+      createScene: async (
+        reducedMotion: boolean,
+        states: AgentOfficeState[],
+        options: HarnessOptions = {},
+      ) => {
+        failImages = options.failImages === true;
         const factory = realScene.createOfficeScene(
           { AUTO: 0, Scene, Game: class {} } as never,
-          { loadAssets: async () => ({ map: officeMap as never, manifest: manifest as never }) },
+          {
+            loadAssets: async () => {
+              if (options.failAssets === true) throw new Error("office assets unavailable");
+              return { map: officeMap as never, manifest: manifest as never };
+            },
+          },
         );
         const scene = new (factory as unknown as new () => SceneLike)();
         registry.set(keys.OFFICE_STATES_KEY, states);
@@ -620,5 +704,86 @@ describe("office scene", () => {
     const visible = harnessed.texts.filter((text) => text.visible).map((text) => text.text);
     expect(visible).toContain("Run rm -rf build");
     expect(visible).toContain("×");
+  });
+
+  it("tears down on scene destroy, not only on shutdown", async () => {
+    const added = vi.spyOn(document, "addEventListener");
+    const removed = vi.spyOn(document, "removeEventListener");
+    const harnessed = harness();
+    const { scene } = await harnessed.createScene(false, [
+      officeState({
+        agentId: "a-1",
+        name: "Scout",
+        status: "working",
+        action: "working",
+        desk: { x: 2, y: 4 },
+      }),
+    ]);
+
+    expect(scene.events.count("shutdown")).toBe(1);
+    expect(scene.events.count("destroy")).toBe(1);
+    expect(harnessed.game.events.count(keys.OFFICE_STATES_EVENT)).toBe(1);
+    expect(added).toHaveBeenCalledWith("visibilitychange", expect.any(Function));
+
+    scene.events.emit("destroy");
+    expect(removed).toHaveBeenCalledWith("visibilitychange", expect.any(Function));
+    expect(harnessed.game.events.count(keys.OFFICE_STATES_EVENT)).toBe(0);
+    // Idempotent: a shutdown after the destroy must not throw or remove anything twice.
+    expect(() => scene.events.emit("shutdown")).not.toThrow();
+    added.mockRestore();
+    removed.mockRestore();
+  });
+
+  it("raises the unavailable event when an awaited load fails", async () => {
+    const failedAssets = harness();
+    await failedAssets.createScene(false, [], { failAssets: true });
+    expect(
+      failedAssets.game.events.log.filter((entry) => entry.event === keys.OFFICE_UNAVAILABLE_EVENT),
+    ).toHaveLength(1);
+
+    const failedImages = harness();
+    await failedImages.createScene(false, [], { failImages: true });
+    expect(
+      failedImages.game.events.log.filter((entry) => entry.event === keys.OFFICE_UNAVAILABLE_EVENT),
+    ).toHaveLength(1);
+  });
+
+  it("idles a new agent for the full window instead of wandering on frame one", async () => {
+    const harnessed = harness();
+    const { scene } = await harnessed.createScene(false, [
+      officeState({
+        agentId: "a-1",
+        name: "Scout",
+        status: "idle",
+        action: "idle",
+        desk: { x: 2, y: 4 },
+      }),
+    ]);
+    const sprite = harnessed.sprites[0];
+    // The game clock is already far past the wander window when this snapshot spawns the agent.
+    scene.update(60_000, 16);
+    expect(sprite?.x).toBe(2 * 16 + 8);
+    expect(sprite?.y).toBe(4 * 16 + 8);
+
+    scene.update(68_001, 16);
+    scene.update(68_017, 200);
+    expect(sprite?.x === 2 * 16 + 8 && sprite?.y === 4 * 16 + 8).toBe(false);
+  });
+
+  it("stops a removed agent's action tween before destroying its sprite", async () => {
+    const harnessed = harness();
+    await harnessed.createScene(false, [
+      officeState({
+        agentId: "a-1",
+        name: "Scout",
+        status: "working",
+        action: "working",
+        desk: { x: 2, y: 4 },
+      }),
+    ]);
+    expect(harnessed.tweenStops).toHaveLength(1);
+
+    harnessed.game.events.emit(keys.OFFICE_STATES_EVENT, []);
+    expect(harnessed.tweenStops[0]?.stop).toHaveBeenCalledTimes(1);
   });
 });

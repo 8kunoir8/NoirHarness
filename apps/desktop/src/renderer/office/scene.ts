@@ -10,6 +10,7 @@ import {
   OFFICE_SELECTED_KEY,
   OFFICE_STATES_EVENT,
   OFFICE_STATES_KEY,
+  OFFICE_UNAVAILABLE_EVENT,
   OFFICE_WIDTH,
 } from "./keys.js";
 
@@ -46,7 +47,6 @@ export interface OfficeMap {
   floor: string[];
   collision: string[];
   furniture: FurniturePlacement[];
-  desks: OfficePoint[];
   zones: { shelf: OfficePoint[]; rack: OfficePoint[]; lounge: OfficePoint[] };
 }
 
@@ -122,33 +122,48 @@ export function createOfficeScene(
     private readonly movers = new Map<string, Mover>();
     private selectedId: string | undefined;
     private reducedMotion = false;
+    /** Set by {@link teardown}: every awaited step checks it before touching a destroyed system. */
+    private disposed = false;
 
     constructor() {
       super({ key: "OfficeScene" });
     }
 
     async create(): Promise<void> {
-      const assets = await loadAssets();
-      this.assets = assets;
-      this.grid = assets.map.collision.map((row) => [...row].map((cell) => cell !== "#"));
-      await this.queueImages(assets.manifest);
-      this.characterFrames = Object.keys(assets.manifest.frames)
-        .filter((name) => name.startsWith("char-"))
-        .sort((left, right) => Number(left.slice(5)) - Number(right.slice(5)));
-      this.drawMap(assets);
-
-      const { tile, width, height } = assets.map;
-      const zoom = Math.max(
-        1,
-        Math.floor(Math.min(OFFICE_WIDTH / (width * tile), OFFICE_HEIGHT / (height * tile))),
-      );
-      this.cameras.main.setZoom(zoom);
-      this.cameras.main.setBounds(0, 0, width * tile, height * tile);
-
-      this.game.events.on(OFFICE_STATES_EVENT, this.handleStates);
+      // Registered before the first `await`: `game.destroy(true)` emits only `destroy`, never
+      // `shutdown`, and it can land while the assets are still loading.
       this.events.once("shutdown", this.teardown);
-      document.addEventListener("visibilitychange", this.onVisibility);
-      this.handleStates(this.game.registry.get(OFFICE_STATES_KEY));
+      this.events.once("destroy", this.teardown);
+      try {
+        const assets = await loadAssets();
+        if (this.disposed) return;
+        this.assets = assets;
+        this.grid = assets.map.collision.map((row) => [...row].map((cell) => cell !== "#"));
+        await this.queueImages(assets.manifest);
+        if (this.disposed) return;
+        this.characterFrames = Object.keys(assets.manifest.frames)
+          .filter((name) => name.startsWith("char-"))
+          .sort((left, right) => Number(left.slice(5)) - Number(right.slice(5)));
+        this.drawMap(assets);
+
+        const { tile, width, height } = assets.map;
+        const zoom = Math.max(
+          1,
+          Math.floor(Math.min(OFFICE_WIDTH / (width * tile), OFFICE_HEIGHT / (height * tile))),
+        );
+        this.cameras.main.setZoom(zoom);
+        this.cameras.main.setBounds(0, 0, width * tile, height * tile);
+
+        this.game.events.on(OFFICE_STATES_EVENT, this.handleStates);
+        document.addEventListener("visibilitychange", this.onVisibility);
+        this.handleStates(this.game.registry.get(OFFICE_STATES_KEY));
+      } catch {
+        // The loader rejects inside an `await`, so the host's synchronous `try` around
+        // `new Phaser.Game(...)` can never see it: without this event the pane stays blank forever.
+        const wasDisposed = this.disposed;
+        this.teardown();
+        if (!wasDisposed) this.game.events.emit(OFFICE_UNAVAILABLE_EVENT);
+      }
     }
 
     update(time: number, delta: number): void {
@@ -212,14 +227,19 @@ export function createOfficeScene(
 
     private async queueImages(manifest: AssetManifest): Promise<void> {
       const { promise, resolve, reject } = Promise.withResolvers<void>();
+      // A destroy mid-load never emits `complete`, so the await would otherwise hold the scene forever.
+      const settleOnDestroy = (): void => resolve();
       for (const file of manifest.files) {
         const url = ASSET_URLS[file];
         if (url !== undefined) this.load.image(file, url);
       }
       this.load.once("complete", () => resolve());
       this.load.once("loaderror", () => reject(new Error("office assets failed to load")));
+      this.events.once("destroy", settleOnDestroy);
       this.load.start();
       await promise;
+      this.events.off("destroy", settleOnDestroy);
+      if (this.disposed) return;
       for (const [name, frame] of Object.entries(manifest.frames)) {
         this.textures.get(frame.file).add(name, 0, frame.x, frame.y, frame.w, frame.h);
       }
@@ -227,6 +247,7 @@ export function createOfficeScene(
 
     /** Registered on `game.events`, so the host pushes snapshots without touching the scene. */
     private readonly handleStates = (payload?: unknown): void => {
+      if (this.disposed) return;
       const registry = this.game.registry;
       this.reducedMotion = registry.get(OFFICE_REDUCED_KEY) === true;
       const selected = registry.get(OFFICE_SELECTED_KEY);
@@ -243,6 +264,8 @@ export function createOfficeScene(
       }
       for (const [agentId, mover] of [...this.movers]) {
         if (seen.has(agentId)) continue;
+        // The seated tween targets the sprite and repeats forever; stop it before the sprite dies.
+        this.stopAction(mover);
         mover.sprite.destroy();
         mover.marker.destroy();
         mover.bubble.destroy();
@@ -361,6 +384,9 @@ export function createOfficeScene(
     private maybeWander(mover: Mover, time: number): void {
       const zones = this.assets?.map.zones;
       if (zones === undefined || mover.state.action !== "idle" || zones.lounge.length === 0) return;
+      // `time` is the game clock, not zero-based per spawn: adopt it on the first idle frame so a new
+      // agent idles for the full window instead of wandering the moment it appears.
+      if (mover.arrivedAt === 0) mover.arrivedAt = time;
       if (time - mover.arrivedAt < IDLE_WANDER_MS) return;
       const target = mover.atLounge
         ? mover.state.desk
@@ -427,11 +453,17 @@ export function createOfficeScene(
     }
 
     private readonly onVisibility = (): void => {
+      // A stale document listener must never touch a destroyed TimeStep (`game.loop.wake()` throws
+      // once `raf` is null).
+      if (this.disposed) return;
       if (document.visibilityState === "hidden") this.game.loop.sleep();
       else this.game.loop.wake();
     };
 
+    /** Runs on both `shutdown` and `destroy`; safe to call twice because the flags are one-way. */
     private readonly teardown = (): void => {
+      if (this.disposed) return;
+      this.disposed = true;
       document.removeEventListener("visibilitychange", this.onVisibility);
       this.game.events.off(OFFICE_STATES_EVENT, this.handleStates);
     };

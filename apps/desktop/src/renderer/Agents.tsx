@@ -27,7 +27,7 @@ import { formatTokens } from "./format.js";
 import type { WorkspaceView } from "./WorkspacePanel.js";
 import { AgentOffice } from "./office/AgentOffice.js";
 import { approvalBubbleText, MAX_OFFICE_AGENTS, toOfficeStates } from "./office/mapper.js";
-import officeMap from "./office/map.json";
+import { OFFICE_DESKS } from "./office/desks.js";
 import "./agents.css";
 
 type Decision = "ask" | "allow" | "reject";
@@ -431,7 +431,7 @@ export function Agents({ workspaceId, request, onOpenChat, configRef }: AgentsPr
   const selectedEntry = selectedAgent === undefined
     ? undefined
     : roster.find((entry) => entry.agentId === selectedAgent.id);
-  const officeStates = useMemo(() => toOfficeStates(roster, officeMap.desks), [roster]);
+  const officeStates = useMemo(() => toOfficeStates(roster, OFFICE_DESKS), [roster]);
 
   // A profile's default workspace is what the start panel preselects; a workspace switch applies to
   // an agent with no default of its own.
