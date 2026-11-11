@@ -8,9 +8,19 @@ export interface QuickOpenProps {
   workspaceId: string;
   onPick: (path: string) => void;
   onClose: () => void;
+  /** Restricts the list, e.g. to previewable extensions; identity changes are harmless. */
+  filter?: ((path: string) => boolean) | undefined;
+  /** Dialog and input name; also names the placeholder ("Open file" → "Open a file…"). */
+  label?: string | undefined;
 }
 
 const MAX_ROWS = 20;
+const DEFAULT_LABEL = "Open file";
+
+/** "Open file" → "Open a file…"; an unusual label just gains an ellipsis. */
+function placeholderFor(label: string): string {
+  return `${label.replace(/ file$/u, " a file")}…`;
+}
 
 /** `smt` matches `src/main.ts`: every query character appears in order. */
 export function subsequence(path: string, query: string): boolean {
@@ -25,7 +35,7 @@ export function subsequence(path: string, query: string): boolean {
 }
 
 /** ⌘P overlay: subsequence-filtered file list, ↑/↓ to move, Enter to pick, Esc to close. */
-export function QuickOpen({ request, workspaceId, onPick, onClose }: QuickOpenProps) {
+export function QuickOpen({ request, workspaceId, onPick, onClose, filter, label = DEFAULT_LABEL }: QuickOpenProps) {
   const listId = useId();
   const [files, setFiles] = useState<string[]>([]);
   const [truncated, setTruncated] = useState(false);
@@ -57,9 +67,13 @@ export function QuickOpen({ request, workspaceId, onPick, onClose }: QuickOpenPr
     };
   }, [request, workspaceId]);
 
+  const visible = useMemo(
+    () => (filter === undefined ? files : files.filter((path) => filter(path))),
+    [files, filter],
+  );
   const matches = useMemo(
-    () => files.filter((path) => subsequence(path, query)).slice(0, MAX_ROWS),
-    [files, query],
+    () => visible.filter((path) => subsequence(path, query)).slice(0, MAX_ROWS),
+    [visible, query],
   );
   const activeIndex = Math.min(active, Math.max(matches.length - 1, 0));
   const selected = matches[activeIndex];
@@ -76,7 +90,7 @@ export function QuickOpen({ request, workspaceId, onPick, onClose }: QuickOpenPr
         className="quick-open"
         role="dialog"
         aria-modal="true"
-        aria-label="Open file"
+        aria-label={label}
         onMouseDown={(event) => event.stopPropagation()}
         onKeyDown={(event) => {
           if (event.key === "Escape") {
@@ -102,14 +116,14 @@ export function QuickOpen({ request, workspaceId, onPick, onClose }: QuickOpenPr
       >
         <input
           role="combobox"
-          aria-label="Open file"
+          aria-label={label}
           aria-expanded="true"
           aria-controls={`${listId}-results`}
           aria-autocomplete="list"
           aria-activedescendant={selected === undefined ? undefined : `${listId}-option-${activeIndex}`}
           autoFocus
           value={query}
-          placeholder="Open a file…"
+          placeholder={placeholderFor(label)}
           onChange={(event) => {
             setQuery(event.target.value);
             setActive(0);

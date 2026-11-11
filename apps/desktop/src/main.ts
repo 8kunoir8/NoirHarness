@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, ipcMain, shell } from "electron";
 import { packagedKernelEntry, packagedNodeBinary } from "./packagedPaths.js";
 
 interface KernelInfo {
@@ -100,6 +100,18 @@ app.whenReady().then(async () => {
   ipcMain.handle("kernel:info", () => {
     if (!info) throw new Error("Kernel did not start");
     return info;
+  });
+  // The renderer never touches Electron directly; only these protocols may leave the app.
+  ipcMain.handle("shell:openExternal", async (_event, raw: unknown) => {
+    if (typeof raw !== "string") throw new Error("invalid url");
+    let url: URL;
+    try {
+      url = new URL(raw);
+    } catch {
+      throw new Error("invalid url");
+    }
+    if (!["http:", "https:", "mailto:"].includes(url.protocol)) throw new Error("blocked url");
+    await shell.openExternal(url.toString());
   });
   await createWindow();
   app.on("activate", () => {

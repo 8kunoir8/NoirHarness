@@ -94,6 +94,21 @@ describe("reduceChat", () => {
     expect(unknown.messages).toHaveLength(1);
   });
 
+  it("surfaces a file ref once and ignores a repeated path", () => {
+    let state = reduceChat(emptyChatState(), makeEvent(1, "message.delta", {
+      messageId: "m1", role: "assistant", block: { type: "file_ref", path: "notes.md" },
+    }));
+    state = reduceChat(state, makeEvent(2, "message.delta", {
+      messageId: "m1", role: "assistant", block: { type: "file_ref", path: "notes.md" },
+    }));
+    state = reduceChat(state, makeEvent(3, "message.delta", {
+      messageId: "m1", role: "assistant", block: { type: "diff_ref", path: "notes.md", blobRef: "blob-1" },
+    }));
+
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]?.blocks).toEqual([{ kind: "file", path: "notes.md" }]);
+  });
+
   it("keeps the first skill.loaded per name", () => {
     let state = reduceChat(emptyChatState(), makeEvent(1, "skill.loaded", { name: "demo", scope: "project", hash: "first" }));
     state = reduceChat(state, makeEvent(2, "skill.loaded", { name: "demo", scope: "global", hash: "second" }));
@@ -124,9 +139,9 @@ describe("reduceChat", () => {
 
 
 /** Chat is a pure view over lifted events; tests need the same shape App supplies. */
-function ChatHarness({ request }: { request: RequestFn }) {
+function ChatHarness({ request, onPreview }: { request: RequestFn; onPreview?: (path: string) => void }) {
   const events = useSessionEvents(session.id, request);
-  return <Chat session={session} models={[]} request={request} events={events} />;
+  return <Chat session={session} models={[]} request={request} events={events} onPreview={onPreview} />;
 }
 describe("Chat", () => {
   it("renders streamed text, tool cards and a permission dialog", async () => {
@@ -165,6 +180,31 @@ describe("Chat", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Allow always" }));
     expect(request).toHaveBeenCalledWith("approval.respond", { approvalId: "ap1", decision: "allow_always" });
+  });
+
+  it("offers a preview for a referenced pdf and keeps other files inert", async () => {
+    const onPreview = vi.fn();
+    const request = vi.fn(async (method: string): Promise<unknown> => {
+      if (method === "session.subscribe") {
+        return {
+          events: [
+            makeEvent(1, "message.delta", { messageId: "m1", role: "assistant", block: { type: "file_ref", path: "notes.pdf" } }),
+            makeEvent(2, "message.delta", { messageId: "m1", role: "assistant", block: { type: "diff_ref", path: "notes.txt", blobRef: "b1" } }),
+          ],
+          lastSeq: 2,
+        };
+      }
+      throw new Error(method);
+    });
+
+    render(<ChatHarness request={request as unknown as RequestFn} onPreview={onPreview} />);
+
+    expect(await screen.findByText("notes.pdf")).toBeTruthy();
+    expect(screen.getByText("notes.txt")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Preview notes.txt" })).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "Preview notes.pdf" }));
+    expect(onPreview).toHaveBeenCalledWith("notes.pdf");
   });
 
   it("sends prompts on Enter with a fresh requestId and keeps Shift+Enter for newlines", async () => {

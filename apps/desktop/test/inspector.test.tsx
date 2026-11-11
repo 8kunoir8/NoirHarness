@@ -82,6 +82,29 @@ describe("Inspector", () => {
     expect(screen.getByText(/Open a chat to inspect/)).toBeTruthy();
   });
 
+  it("offers Preview only for previewable changed files", async () => {
+    const onPreview = vi.fn();
+    render(
+      <Inspector
+        session={session}
+        status="idle"
+        files={[
+          { path: "notes.md", change: "modified", add: 2, del: 1 },
+          { path: "src/b.ts", change: "created", add: 5, del: 0 },
+        ]}
+        plan={[]}
+        approvalTitles={[]}
+        onShowDiff={() => undefined}
+        onPreview={onPreview}
+        onClose={() => undefined}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Preview src/b.ts" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Preview notes.md" }));
+    expect(onPreview).toHaveBeenCalledWith("notes.md");
+  });
+
   it("opens the diff for a changed file", async () => {
     const onShowDiff = vi.fn();
     render(

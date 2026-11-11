@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { FsEntry as Entry, FsListResult as Listing } from "@noir/protocol";
 import type { RequestFn } from "./api.js";
+import { previewKind } from "./preview/kind.js";
 
 interface Failure {
   path: string;
@@ -12,6 +13,8 @@ export interface FileTreeProps {
   workspaceId: string;
   activePath?: string | undefined;
   onOpenFile: (path: string) => void;
+  /** Opens a previewable file in the artifact tab; the row's default action is unchanged. */
+  onPreviewFile?: ((path: string) => void) | undefined;
 }
 
 /** Names the failing directory in the alert so a nested failure is identifiable. */
@@ -22,7 +25,7 @@ function describeFailure(path: string, cause: unknown): string {
 }
 
 /** Lazily expanded tree over `fs.list`; expansions and listings are cached for the mount. */
-export function FileTree({ request, workspaceId, activePath, onOpenFile }: FileTreeProps) {
+export function FileTree({ request, workspaceId, activePath, onOpenFile, onPreviewFile }: FileTreeProps) {
   const [listings, setListings] = useState<Record<string, Listing>>({});
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [error, setError] = useState<Failure | undefined>(undefined);
@@ -90,6 +93,19 @@ export function FileTree({ request, workspaceId, activePath, onOpenFile }: FileT
   };
   walk("", 0);
 
+  const open = (entry: Entry): void => {
+    if (entry.kind === "dir") {
+      toggle(entry.path);
+      return;
+    }
+    // Monaco cannot render a PDF, so a PDF row's default action is its preview.
+    if (previewKind(entry.path) === "pdf" && onPreviewFile !== undefined) {
+      onPreviewFile(entry.path);
+      return;
+    }
+    onOpenFile(entry.path);
+  };
+
   return (
     <section aria-label="Files" className="file-tree">
       <h3>Files</h3>
@@ -113,18 +129,32 @@ export function FileTree({ request, workspaceId, activePath, onOpenFile }: FileT
             aria-level={depth + 1}
             tabIndex={0}
             data-depth={Math.min(depth, 6)}
-            onClick={() => (entry.kind === "dir" ? toggle(entry.path) : onOpenFile(entry.path))}
+            onClick={() => open(entry)}
             onKeyDown={(event) => {
+              // The Preview button is a descendant; its own Enter must not also open the row.
+              if (event.target !== event.currentTarget) return;
               if (event.key !== "Enter" && event.key !== " ") return;
               event.preventDefault();
-              if (entry.kind === "dir") toggle(entry.path);
-              else onOpenFile(entry.path);
+              open(entry);
             }}
           >
             <span className="file-kind" aria-hidden="true">
               {entry.kind === "dir" ? (expanded.has(entry.path) ? "▾" : "▸") : "·"}
             </span>
             <span className="file-name">{entry.name}</span>
+            {onPreviewFile !== undefined && entry.kind === "file" && previewKind(entry.path) !== undefined ? (
+              <button
+                type="button"
+                className="link"
+                aria-label={`Preview ${entry.name}`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onPreviewFile(entry.path);
+                }}
+              >
+                Preview
+              </button>
+            ) : null}
           </li>
         ))}
       </ul>

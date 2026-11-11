@@ -2,6 +2,17 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { CommandPalette } from "../src/renderer/CommandPalette.js";
+
+const appApi = vi.hoisted(() => ({
+  connect: vi.fn(async (_listener?: unknown) => undefined),
+  offEvent: vi.fn((_listener?: unknown) => undefined),
+  request: vi.fn<(method: string, params?: unknown) => Promise<unknown>>(async () => {
+    throw new Error("unmocked request");
+  }),
+}));
+vi.mock("../src/renderer/api.js", () => appApi);
+
+import { App } from "../src/renderer/App.js";
 import {
   commandForEvent,
   filterCommands,
@@ -76,6 +87,57 @@ describe("CommandPalette", () => {
 
     await user.keyboard("{Escape}");
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens an artifact preview from the preview command", async () => {
+    const user = userEvent.setup();
+    appApi.request.mockImplementation(async (method: string): Promise<unknown> => {
+      switch (method) {
+        case "system.health":
+          return { status: "ok", pid: 1, engineDir: "engine" };
+        case "project.list":
+          return { projects: [] };
+        case "workspace.list":
+          return { workspaces: [{ id: "w1", projectId: "p1", path: "C:/ws", branch: null, kind: "git", status: "clean" }] };
+        case "model.list":
+          return {
+            models: [
+              {
+                id: "m1",
+                providerId: "pr1",
+                modelId: "mock-1",
+                displayName: "Mock",
+                contextWindow: 200_000,
+                maxTokens: null,
+                enabled: true,
+                createdAt: 1,
+                engine: "acp",
+              },
+            ],
+          };
+        case "session.list":
+          return { sessions: [] };
+        case "fs.files":
+          return { files: ["notes.md", "src/main.ts"], truncated: false };
+        default:
+          throw new Error(method);
+      }
+    });
+
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: "Commands" }));
+    await user.type(await screen.findByLabelText("Command"), "preview");
+    await user.click(screen.getByTestId("palette-preview-file"));
+
+    expect(await screen.findByRole("combobox", { name: "Preview file" })).toBeTruthy();
+    expect(await screen.findByText("notes.md")).toBeTruthy();
+    expect(screen.queryByText("src/main.ts")).toBeNull();
+
+    await user.click(screen.getByText("notes.md"));
+
+    const tab = await screen.findByRole("tab", { name: "notes.md" });
+    expect(tab.closest(".tab")?.getAttribute("data-kind")).toBe("preview");
+    expect(screen.queryByRole("combobox", { name: "Preview file" })).toBeNull();
   });
 
   it("refuses disabled commands", async () => {

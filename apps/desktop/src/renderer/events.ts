@@ -14,10 +14,10 @@ import {
   type SessionSubscription,
 } from "./api.js";
 
-export interface ChatBlock {
-  kind: "text" | "reasoning";
-  text: string;
-}
+export type ChatBlock =
+  | { kind: "text" | "reasoning"; text: string }
+  /** A `file_ref`/`diff_ref` from the event log: a path, never concatenated with text. */
+  | { kind: "file"; path: string };
 
 export interface ChatMessage {
   id: string;
@@ -106,13 +106,23 @@ function without(
   return copy;
 }
 
-function appendBlock(message: ChatMessage, kind: ChatBlock["kind"], text: string): ChatMessage {
-  const blocks = [...message.blocks];
+type TextBlock = Extract<ChatBlock, { text: string }>;
+
+function isTextBlock(block: ChatBlock): block is TextBlock {
+  return block.kind === "text" || block.kind === "reasoning";
+}
+
+function textBlock(kind: "text" | "reasoning", text: string): ChatBlock {
+  return kind === "text" ? { kind: "text", text } : { kind: "reasoning", text };
+}
+
+function appendBlock(message: ChatMessage, kind: "text" | "reasoning", text: string): ChatMessage {
+  const blocks: ChatBlock[] = [...message.blocks];
   const last = blocks.at(-1);
-  if (last !== undefined && last.kind === kind) {
-    blocks[blocks.length - 1] = { kind, text: last.text + text };
+  if (last !== undefined && isTextBlock(last) && last.kind === kind) {
+    blocks[blocks.length - 1] = textBlock(kind, last.text + text);
   } else {
-    blocks.push({ kind, text });
+    blocks.push(textBlock(kind, text));
   }
   return { ...message, blocks };
 }
@@ -189,8 +199,26 @@ export function reduceChat(state: ChatState, event: AgentEvent): ChatState {
       if (block.type === "tool_result") {
         return { ...next, tools: upsertTool(next.tools, block.toolCallId, { status: block.status, output: block.output ?? "" }) };
       }
-      if (block.type !== "text" && block.type !== "reasoning") return next;
-      const kind: ChatBlock["kind"] = block.type === "text" ? "text" : "reasoning";
+      if (block.type !== "text" && block.type !== "reasoning") {
+        if (block.type !== "file_ref" && block.type !== "diff_ref") return next;
+        // A `diff_ref` previews the working-tree file, which is the same `path` field.
+        const path = block.path;
+        const index = next.messages.findIndex((message) => message.id === messageId);
+        if (role === "user" && index !== -1) return next;
+        if (index === -1) {
+          return {
+            ...next,
+            messages: [...next.messages, { id: messageId, role, blocks: [{ kind: "file", path }], status: "streaming" }],
+          };
+        }
+        const message = next.messages[index]!;
+        // A repeated reference in one message is not a second link.
+        if (message.blocks.some((existing) => existing.kind === "file" && existing.path === path)) return next;
+        const messages = [...next.messages];
+        messages[index] = { ...message, blocks: [...message.blocks, { kind: "file", path }] };
+        return { ...next, messages };
+      }
+      const kind: "text" | "reasoning" = block.type === "text" ? "text" : "reasoning";
       const index = next.messages.findIndex((message) => message.id === messageId);
       // The sender renders its own prompt before the kernel's echo arrives; the echo must not
       // append a second bubble for a message the transcript already holds.

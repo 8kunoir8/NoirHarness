@@ -63,7 +63,7 @@ function normalize(tab: Tab): Tab {
   return tab.kind === "diff" ? diffTab(tab.path) : previewTab(tab.path);
 }
 
-/** Accepts the v2 shape and migrates the v1 chat-id list only when `tabs` is not an array; anything unrecognized becomes empty. */
+/** Accepts the v2 and v3 shapes; migrates the v1 chat-id list only when `tabs` is not an array; anything unrecognized becomes empty. */
 export function loadTabs(raw: unknown): TabsState {
   if (typeof raw !== "object" || raw === null) return { tabs: [], active: undefined, workspaceId: "" };
   const record = raw as { tabs?: unknown; open?: unknown; active?: unknown; workspaceId?: unknown };

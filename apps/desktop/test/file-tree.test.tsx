@@ -38,6 +38,49 @@ describe("FileTree", () => {
     expect(onOpenFile).toHaveBeenCalledWith("src/main.ts");
   });
 
+  it("routes a pdf row to the preview instead of the editor", async () => {
+    const onOpenFile = vi.fn();
+    const onPreviewFile = vi.fn();
+    const request = (): Promise<unknown> =>
+      Promise.resolve({ entries: [{ name: "report.pdf", path: "report.pdf", kind: "file", size: 9 }], truncated: false });
+    render(
+      <FileTree
+        request={request as never}
+        workspaceId="w1"
+        onOpenFile={onOpenFile}
+        onPreviewFile={onPreviewFile}
+      />,
+    );
+
+    await userEvent.click(await screen.findByText("report.pdf"));
+    expect(onPreviewFile).toHaveBeenCalledWith("report.pdf");
+    expect(onOpenFile).not.toHaveBeenCalled();
+  });
+
+  it("adds an explicit Preview button to previewable rows only", async () => {
+    const onOpenFile = vi.fn();
+    const onPreviewFile = vi.fn();
+    render(
+      <FileTree
+        request={fakeRequest as never}
+        workspaceId="w1"
+        onOpenFile={onOpenFile}
+        onPreviewFile={onPreviewFile}
+      />,
+    );
+
+    await screen.findByText("README.md");
+    expect(screen.queryByRole("button", { name: "Preview src" })).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "Preview README.md" }));
+    expect(onPreviewFile).toHaveBeenCalledWith("README.md");
+    expect(onOpenFile).not.toHaveBeenCalled();
+
+    // The row itself still opens the editor for a markdown file.
+    await userEvent.click(screen.getByText("README.md"));
+    expect(onOpenFile).toHaveBeenCalledWith("README.md");
+  });
+
   it("marks the open file as selected", async () => {
     render(<FileTree request={fakeRequest as never} workspaceId="w1" activePath="README.md" onOpenFile={() => undefined} />);
     const row = await screen.findByRole("treeitem", { name: /README\.md/ });

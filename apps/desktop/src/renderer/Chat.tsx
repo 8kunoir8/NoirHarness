@@ -4,6 +4,7 @@ import type { RequestFn } from "./api.js";
 import { ChatHeader, type DiffStats } from "./ChatHeader.js";
 import { Composer, type ComposerStatus } from "./Composer.js";
 import { errorMessage, type SessionEvents } from "./events.js";
+import { previewKind } from "./preview/kind.js";
 import { ToolCard } from "./ToolCard.js";
 
 function newId(): string {
@@ -19,6 +20,7 @@ export function Chat({
   events,
   diffStats,
   onSessionChange,
+  onPreview,
 }: {
   session: SessionView;
   models: ModelView[];
@@ -26,6 +28,8 @@ export function Chat({
   events: SessionEvents;
   diffStats?: DiffStats | undefined;
   onSessionChange?: (() => void) | undefined;
+  /** Opens a referenced previewable file in the artifact tab. */
+  onPreview?: ((path: string) => void) | undefined;
 }) {
   const { state, appendUser } = events;
   const [draft, setDraft] = useState("");
@@ -200,6 +204,20 @@ export function Chat({
                   <summary>Reasoning</summary>
                   <p>{block.text}</p>
                 </details>
+              ) : block.kind === "file" ? (
+                <div key={`${message.id}-${index}`} className="file-ref">
+                  <code>{block.path}</code>
+                  {onPreview !== undefined && previewKind(block.path) !== undefined ? (
+                    <button
+                      type="button"
+                      className="link"
+                      aria-label={`Preview ${block.path}`}
+                      onClick={() => onPreview(block.path)}
+                    >
+                      Preview
+                    </button>
+                  ) : null}
+                </div>
               ) : (
                 <div key={`${message.id}-${index}`} className="text">
                   <p>{block.text}</p>

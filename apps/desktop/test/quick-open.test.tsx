@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { QuickOpen, subsequence } from "../src/renderer/QuickOpen.js";
+import { previewKind } from "../src/renderer/preview/kind.js";
 
 const request = vi.fn(async () => ({ files: ["src/main.ts", "src/app.tsx", "README.md"], truncated: false }));
 
@@ -65,6 +66,31 @@ describe("QuickOpen", () => {
 
     await userEvent.keyboard("{Enter}");
     expect(onPick).toHaveBeenCalledWith("src/main.ts");
+  });
+
+  it("filters and labels the list for previews", async () => {
+    const onPick = vi.fn();
+    const files = vi.fn(async () => ({ files: ["notes.md", "src/main.ts", "data.csv"], truncated: false }));
+    render(
+      <QuickOpen
+        request={files as never}
+        workspaceId="w1"
+        filter={(path) => previewKind(path) !== undefined}
+        label="Preview file"
+        onPick={onPick}
+        onClose={() => undefined}
+      />,
+    );
+
+    const input = await screen.findByRole("combobox", { name: "Preview file" });
+    expect(await screen.findByText("notes.md")).toBeTruthy();
+    expect(screen.getByText("data.csv")).toBeTruthy();
+    expect(screen.queryByText("src/main.ts")).toBeNull();
+    expect(input.getAttribute("placeholder")).toBe("Preview a file…");
+    expect(screen.getByRole("dialog", { name: "Preview file" })).toBeTruthy();
+
+    await userEvent.keyboard("{Enter}");
+    expect(onPick).toHaveBeenCalledWith("notes.md");
   });
 
   it("closes on Escape", async () => {

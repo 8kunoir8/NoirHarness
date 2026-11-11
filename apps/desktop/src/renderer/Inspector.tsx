@@ -1,6 +1,7 @@
 import type { SessionStatus, SessionView } from "@noir/protocol";
 import type { ChatFile, ChatPlanItem, ChatTurn, ChatUsage } from "./events.js";
 import { formatDuration, formatTokens } from "./format.js";
+import { previewKind } from "./preview/kind.js";
 
 export interface InspectorProps {
   session: SessionView | undefined;
@@ -12,6 +13,8 @@ export interface InspectorProps {
   plan: readonly ChatPlanItem[];
   approvalTitles: readonly string[];
   onShowDiff: (path: string) => void;
+  /** Opens a previewable changed file in the artifact tab; absent means no preview action. */
+  onPreview?: ((path: string) => void) | undefined;
   onClose: () => void;
 }
 
@@ -26,6 +29,7 @@ export function Inspector({
   plan,
   approvalTitles,
   onShowDiff,
+  onPreview,
   onClose,
 }: InspectorProps) {
   if (session === undefined) {
@@ -134,6 +138,16 @@ export function Inspector({
                   >
                     Show diff
                   </button>
+                  {onPreview !== undefined && previewKind(file.path) !== undefined ? (
+                    <button
+                      type="button"
+                      className="link"
+                      aria-label={`Preview ${file.path}`}
+                      onClick={() => onPreview(file.path)}
+                    >
+                      Preview
+                    </button>
+                  ) : null}
                 </li>
               ))}
             </ul>

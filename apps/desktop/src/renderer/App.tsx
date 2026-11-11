@@ -18,6 +18,7 @@ import { FileTree } from "./FileTree.js";
 import { Inspector } from "./Inspector.js";
 import { MonacoEditor } from "./MonacoEditor.js";
 import { ArtifactPreview } from "./preview/ArtifactPreview.js";
+import { previewKind } from "./preview/kind.js";
 import { QuickOpen } from "./QuickOpen.js";
 import { SessionList, type ReadState, type SessionFilter } from "./SessionList.js";
 import { Setup } from "./Setup.js";
@@ -33,6 +34,7 @@ import {
   editorTab,
   loadTabs,
   openTab,
+  previewTab,
   pruneChatTabs,
   scopeTabs,
   TABS_KEY,
@@ -47,6 +49,9 @@ import "./styles.css";
 type View = "setup" | "chats" | "skills";
 
 type ListMode = "chats" | "files";
+
+/** Which file overlay is open; `undefined` means none, so only one can render. */
+type QuickOpenMode = "files" | "preview";
 
 /** One open editor document: the text last read from (or written to) disk, and the editable draft. */
 interface DocumentState {
@@ -107,7 +112,7 @@ export function App() {
   );
   const [failedReads, setFailedReads] = useState<Record<string, string>>({});
   const [listMode, setListMode] = useState<ListMode>("chats");
-  const [quickOpen, setQuickOpen] = useState(false);
+  const [quickOpen, setQuickOpen] = useState<QuickOpenMode | undefined>(undefined);
   const [read, setRead] = useState<ReadState>(() => loadJson<ReadState>(READ_KEY, {}));
   const [filter, setFilter] = useState<SessionFilter>("all");
   const [query, setQuery] = useState("");
@@ -407,6 +412,10 @@ export function App() {
     return document !== undefined && document.draft !== document.text;
   };
 
+  const openPreview = useCallback((path: string): void => {
+    setTabState((current) => openTab(current, previewTab(path)));
+  }, []);
+
   const openFile = useCallback(async (path: string): Promise<void> => {
     setTabState((current) => openTab(current, editorTab(path)));
     if (workspaceId === "" || documents[path] !== undefined) return;
@@ -604,7 +613,15 @@ export function App() {
       shortcut: { key: "p", mod: true },
       enabled: workspaceId !== "" && view === "chats",
       allowInInput: true,
-      run: () => setQuickOpen(true),
+      run: () => setQuickOpen("files"),
+    },
+    {
+      id: "preview-file",
+      label: "Preview file…",
+      keywords: "artifact markdown csv pdf",
+      enabled: workspaceId !== "",
+      allowInInput: true,
+      run: () => setQuickOpen("preview"),
     },
     {
       id: "save-file",
@@ -726,6 +743,33 @@ export function App() {
     />
   ) : null;
 
+  // An overlay, not part of any view: the palette's "Preview file…" is enabled wherever a
+  // workspace is selected, so the file list must render on the setup page too.
+  const quickOpenOverlay =
+    quickOpen === undefined ? null : quickOpen === "preview" ? (
+      <QuickOpen
+        request={request}
+        workspaceId={workspaceId}
+        filter={(path) => previewKind(path) !== undefined}
+        label="Preview file"
+        onPick={(path) => {
+          setQuickOpen(undefined);
+          openPreview(path);
+        }}
+        onClose={() => setQuickOpen(undefined)}
+      />
+    ) : (
+      <QuickOpen
+        request={request}
+        workspaceId={workspaceId}
+        onPick={(path) => {
+          setQuickOpen(undefined);
+          void openFile(path);
+        }}
+        onClose={() => setQuickOpen(undefined)}
+      />
+    );
+
   const listModeSwitch = (
     <div className="list-mode" role="group" aria-label="List pane">
       <button type="button" aria-pressed={listMode === "chats"} onClick={() => setListMode("chats")}>
@@ -772,6 +816,7 @@ export function App() {
           }
           status={statusbar}
         />
+        {quickOpenOverlay}
         {palette}
       </>
     );
@@ -799,6 +844,7 @@ export function App() {
                 workspaceId={workspaceId}
                 activePath={activeTab?.kind === "editor" ? activeTab.path : undefined}
                 onOpenFile={(path) => void openFile(path)}
+                onPreviewFile={openPreview}
               />
             ) : (
               <section aria-label="Sessions" className="sessions-region">
@@ -866,6 +912,7 @@ export function App() {
                     events={events}
                     diffStats={diffStats}
                     onSessionChange={() => void loadSessions().catch(() => undefined)}
+                    onPreview={openPreview}
                   />
                 )
               ) : activeTab.kind === "editor" ? (
@@ -897,19 +944,17 @@ export function App() {
               ) : activeTab.kind === "diff" ? (
                 <DiffView request={request} workspaceId={workspaceId} path={activeTab.path} />
               ) : (
-                <ArtifactPreview workspaceId={workspaceId} path={activeTab.path} request={request} />
-              )}
-              {quickOpen ? (
-                <QuickOpen
-                  request={request}
+                <ArtifactPreview
+                  key={activeTab.path}
                   workspaceId={workspaceId}
-                  onPick={(path) => {
-                    setQuickOpen(false);
-                    void openFile(path);
+                  path={activeTab.path}
+                  request={request}
+                  onOpenPath={(path) => {
+                    if (previewKind(path) !== undefined) openPreview(path);
+                    else void openFile(path);
                   }}
-                  onClose={() => setQuickOpen(false)}
                 />
-              ) : null}
+              )}
             </>
           )
         }
@@ -926,6 +971,7 @@ export function App() {
                   plan={events.state.plan}
                   approvalTitles={events.state.approval === undefined ? [] : [events.state.approval.title]}
                   onShowDiff={(path) => setTabState((current) => openTab(current, diffTab(path)))}
+                  onPreview={openPreview}
                   onClose={() => setInspectorOpen(false)}
                 />
               ),
@@ -933,6 +979,7 @@ export function App() {
           : {})}
         status={statusbar}
       />
+      {quickOpenOverlay}
       {palette}
     </>
   );

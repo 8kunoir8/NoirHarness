@@ -7,7 +7,7 @@ interface KernelInfo {
 
 declare global {
   interface Window {
-    noir: { kernelInfo(): Promise<KernelInfo> };
+    noir: { kernelInfo(): Promise<KernelInfo>; openExternal(url: string): Promise<void> };
   }
 }
 
