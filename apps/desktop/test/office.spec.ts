@@ -139,18 +139,20 @@ test("paints two agents, surfaces an approval, restores desks, and opens chat fr
       timeout: 30_000,
     });
 
-    // Keyboard: a focused row's Enter opens its session's chat tab with no pointer involved.
+    // Keyboard: a focused row's Enter opens its session's chat tab with no pointer involved. Only
+    // Alpha's transcript carries the tool turn, so finding it proves the tab belongs to Alpha.
     await page.getByRole("button", { name: "Select Alpha", exact: true }).focus();
     await page.keyboard.press("Enter");
     await expect(page.getByRole("tablist", { name: "Open tabs" })).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByRole("tab", { selected: true })).toHaveCount(1);
-    await expect(page.getByLabel("Prompt", { exact: true })).toBeVisible();
+    await expect(
+      page.getByTestId("message-assistant").filter({ hasText: "tool finished" }),
+    ).toBeVisible({ timeout: 20_000 });
   } finally {
     if (app !== undefined) await deleteProviderThroughKernel(harness.dataDir, "Mock").catch(() => undefined);
     await app?.close().catch(() => undefined);
     await mock.close().catch(() => undefined);
+    await waitForKernelExit(harness.dataDir).catch(() => undefined);
+    await removeDir(harness.dataDir);
+    await removeDir(harness.workspacePath);
   }
-  await waitForKernelExit(harness.dataDir).catch(() => undefined);
-  await removeDir(harness.dataDir);
-  await removeDir(harness.workspacePath);
 });
