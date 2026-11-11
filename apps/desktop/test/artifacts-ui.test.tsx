@@ -6,16 +6,18 @@ import { ArtifactPreview } from "../src/renderer/preview/ArtifactPreview.js";
 import { previewKind } from "../src/renderer/preview/kind.js";
 
 // pdf.js is a browser bundle; the component only needs its document API, so the tests
-// replace the whole module and assert the shapes handed to it.
+// replace the whole module and assert the shapes handed to it. The component loads the `legacy`
+// build (the modern one needs `Map.prototype.getOrInsertComputed`, absent in this Electron), so the
+// mock has to answer for that specifier and its worker URL.
 const pdfMock = vi.hoisted(() => ({ getDocument: vi.fn() }));
 
-vi.mock("pdfjs-dist", () => ({
+vi.mock("pdfjs-dist/legacy/build/pdf.mjs", () => ({
   getDocument: pdfMock.getDocument,
   GlobalWorkerOptions: { workerSrc: "" },
   RenderingCancelledException: class RenderingCancelledException extends Error {},
 }));
 
-vi.mock("pdfjs-dist/build/pdf.worker.min.mjs?url", () => ({ default: "/assets/pdf.worker.min.test.mjs" }));
+vi.mock("pdfjs-dist/legacy/build/pdf.worker.min.mjs?url", () => ({ default: "/assets/pdf.worker.min.test.mjs" }));
 
 const markdown = "# Title\n\n| a |\n| - |\n| 1 |";
 
