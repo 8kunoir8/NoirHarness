@@ -159,7 +159,7 @@ describe("SessionService", () => {
   });
 
   it("stores the model's engine on the session and rejects a different engine on setModel", () => {
-    const { projects, workspaces, sessions, providers, models } = setup();
+    const { projects, workspaces, sessions, providers, models, events } = setup();
     const openai = providers.create({ name: "OpenAI", baseUrl: "http://localhost:1/v1", apiKind: "openai-completions", apiKey: "k", enabled: true });
     const anthropic = providers.create({ name: "Anthropic", baseUrl: "http://localhost:1", apiKind: "anthropic-messages", apiKey: "k", enabled: true });
     const native = models.create({ providerId: openai.id, modelId: "native-1", contextWindow: 1000, enabled: true, engine: "native" });
@@ -170,5 +170,9 @@ describe("SessionService", () => {
     expect(sessions.view(session.id).engine).toBe("native");
     expect(() => sessions.setModel(session.id, acp.id)).toThrow(expect.objectContaining({ code: ErrorCodes.conflict }));
     expect(sessions.view(session.id).modelId).toBe(native.id);
+
+    sessions.setStatus(session.id, "idle");
+    sessions.setStatus(session.id, "closed");
+    expect(events.list(session.id).every((event) => event.provenance.engine === "native")).toBe(true);
   });
 });

@@ -85,17 +85,17 @@ export class SessionService {
   }
 
   setStatus(sessionId: string, to: SessionStatus, opts?: { from?: SessionStatus; reason?: string }): void {
-    const row = this.db.prepare("SELECT status, agent_id FROM sessions WHERE id = ?").get(sessionId) as { status: SessionStatus; agent_id: string } | undefined;
+    const row = this.db.prepare("SELECT status, agent_id, engine FROM sessions WHERE id = ?").get(sessionId) as { status: SessionStatus; agent_id: string; engine: EngineKind } | undefined;
     if (!row) throw new RpcFault(ErrorCodes.notFound, "Session not found");
     const from = opts?.from ?? row.status;
     if (from !== row.status) throw new RpcFault(ErrorCodes.conflict, `Session is ${row.status}, not ${from}`);
     assertTransition(from, to);
     if (to === "closed") {
-      this.events.append({ sessionId, agentId: row.agent_id, type: "session.closed", payload: {}, provenance: { engine: "acp", engineName: "none", adapterVersion: "0" } });
+      this.events.append({ sessionId, agentId: row.agent_id, type: "session.closed", payload: {}, provenance: { engine: row.engine, engineName: "none", adapterVersion: "0" } });
       return;
     }
     const payload = opts?.reason === undefined ? { status: to } : { status: to, reason: opts.reason };
-    this.events.append({ sessionId, agentId: row.agent_id, type: "session.status", payload, provenance: { engine: "acp", engineName: "none", adapterVersion: "0" } });
+    this.events.append({ sessionId, agentId: row.agent_id, type: "session.status", payload, provenance: { engine: row.engine, engineName: "none", adapterVersion: "0" } });
   }
 
   /** Switches the session's model. The engine applies it on the next turn; a live engine is not restarted. */

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AgentEvent, ContentBlock, PermissionDecision, SessionStatus } from "./events.js";
+import { AgentEvent, ContentBlock, EngineKind, PermissionDecision, SessionStatus } from "./events.js";
 
 export const Methods = {
   systemHealth: "system.health",
@@ -49,9 +49,6 @@ export const ProjectAddParams = z.object({ path: z.string().min(1) });
 export const WorkspaceCreateParams = z.object({ projectId: z.string().min(1) });
 export const SessionCreateParams = z.object({ workspaceId: z.string().min(1), modelId: z.string().optional() });
 export const SessionSubscribeParams = z.object({ sessionId: z.string().min(1), sinceSeq: z.number().int().nonnegative().default(0) });
-
-export const EngineKind = z.enum(["acp", "native"]);
-export type EngineKind = z.infer<typeof EngineKind>;
 
 export const ModelCreateParams = z.object({
   providerId: z.string().min(1),

@@ -158,6 +158,11 @@ describe("ModelService", () => {
     expect(models.setEngine(model.id, "native").engine).toBe("native");
     expect(models.list(provider.id)[0]!.engine).toBe("native");
 
+    const anthropic = providers.create({ name: "Anthropic", baseUrl: "https://example.test", apiKind: "anthropic-messages", apiKey: "k", enabled: true });
+    const anthropicModel = models.create(modelParams(anthropic.id));
+    expectFault(() => models.setEngine(anthropicModel.id, "native"), ErrorCodes.conflict, /openai-completions/);
+    expect(models.list(anthropic.id)[0]!.engine).toBe("acp");
+
     expectFault(() => models.setEngine("missing", "native"), ErrorCodes.notFound, /Model not found/);
   });
 });

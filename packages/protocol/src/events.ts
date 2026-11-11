@@ -5,6 +5,9 @@ export const EVENT_VERSION = 1 as const;
 export const SessionStatus = z.enum(["idle", "starting", "running", "waiting", "error", "closed"]);
 export type SessionStatus = z.infer<typeof SessionStatus>;
 
+export const EngineKind = z.enum(["acp", "native"]);
+export type EngineKind = z.infer<typeof EngineKind>;
+
 export const ContentBlock = z.discriminatedUnion("type", [
   z.object({ type: z.literal("text"), text: z.string() }),
   z.object({ type: z.literal("reasoning"), text: z.string() }),
@@ -86,7 +89,7 @@ export const AgentEvent = z.object({
   type: EventType,
   payload: z.unknown(),
   provenance: z.object({
-    engine: z.enum(["native", "acp"]),
+    engine: EngineKind,
     engineName: z.string(),
     adapterVersion: z.string(),
   }),
