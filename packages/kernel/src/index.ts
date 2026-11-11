@@ -24,6 +24,7 @@ import {
   McpServerCreateParams,
   McpServerDeleteParams,
   McpServerUpdateParams,
+  McpTestParams,
   Methods,
   ModelCreateParams,
   ModelDeleteParams,
@@ -54,6 +55,7 @@ import { EngineManager } from "./engineManager.js";
 import { EventStore } from "./eventStore.js";
 import { findFiles, listDirectory, readArtifact, readFileText, writeFileText } from "./fsService.js";
 import { gitDiff, gitStatus } from "./gitService.js";
+import { McpClient } from "./mcp/client.js";
 import { McpService } from "./mcp/service.js";
 import { ModelService } from "./models.js";
 import { clearProfileModels, profileAgentDir, syncProfile } from "./profile.js";
@@ -303,6 +305,21 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets } 
         [Methods.mcpCreate]: async (params) => mcp.create(McpServerCreateParams.parse(params)),
         [Methods.mcpUpdate]: async (params) => mcp.update(McpServerUpdateParams.parse(params)),
         [Methods.mcpDelete]: async (params) => ({ deleted: mcp.delete(McpServerDeleteParams.parse(params).id) }),
+        [Methods.mcpTest]: async (params) => {
+          const probe = McpTestParams.parse(params);
+          const client = new McpClient({ command: probe.command, args: probe.args, env: probe.env });
+          try {
+            await client.start();
+            return { ok: true, tools: (await client.listTools()).map((tool) => ({
+              name: tool.name,
+              ...(tool.description === undefined ? {} : { description: tool.description }),
+            })) };
+          } catch (error) {
+            return { ok: false, tools: [], error: error instanceof Error ? error.message : String(error) };
+          } finally {
+            await client.stop();
+          }
+        },
         [Methods.annotationList]: async (params) => {
           const { workspaceId, path } = AnnotationListParams.parse(params);
           return listAnnotations(database, workspaceRoot(workspaceId), workspaceId, path);
