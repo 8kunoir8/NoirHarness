@@ -69,14 +69,9 @@ function linkTarget(href: string | undefined): LinkTarget {
   return EXTERNAL_PROTOCOLS[url.protocol] === true ? { kind: "external", href } : { kind: "blocked" };
 }
 
-interface PreloadBridge {
-  openExternal?: (url: string) => Promise<void>;
-}
-
-/** The preload bridge gains `openExternal` with the M2.1 preload; a missing bridge is a no-op. */
+/** External links leave through the typed preload bridge; a missing bridge (unit tests) is a no-op. */
 function openExternally(href: string): void {
-  const bridge = (window as unknown as { noir?: PreloadBridge }).noir;
-  void bridge?.openExternal?.(href);
+  void window.noir?.openExternal?.(href);
 }
 
 export interface MarkdownArtifactProps {

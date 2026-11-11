@@ -23,7 +23,9 @@ export function diffTab(path: string): Tab {
   return { id: `diff:${path}`, kind: "diff", path };
 }
 export function previewTab(path: string): Tab {
-  return { id: `preview:${path}`, kind: "preview", path };
+  // `.` segments and duplicate slashes name the same artifact, exactly as the kernel's guard treats them.
+  const canonical = path.split("/").filter((segment) => segment !== "" && segment !== ".").join("/");
+  return { id: `preview:${canonical}`, kind: "preview", path: canonical };
 }
 
 export function openTab(state: TabsState, tab: Tab): TabsState {

@@ -414,6 +414,9 @@ export function App() {
 
   const openPreview = useCallback((path: string): void => {
     setTabState((current) => openTab(current, previewTab(path)));
+    // The artifact body mounts only in the chats view; setup and skills can still reach the
+    // palette, so a preview must not open invisibly there.
+    setView("chats");
   }, []);
 
   const openFile = useCallback(async (path: string): Promise<void> => {
@@ -619,7 +622,9 @@ export function App() {
       id: "preview-file",
       label: "Preview file…",
       keywords: "artifact markdown csv pdf",
-      enabled: workspaceId !== "",
+      // Runs from any view (it switches to chats), but the chats view is the only one that mounts
+      // a tab body, and it does not exist before a model is configured.
+      enabled: workspaceId !== "" && models.length > 0,
       allowInInput: true,
       run: () => setQuickOpen("preview"),
     },
@@ -950,8 +955,10 @@ export function App() {
                   path={activeTab.path}
                   request={request}
                   onOpenPath={(path) => {
-                    if (previewKind(path) !== undefined) openPreview(path);
-                    else void openFile(path);
+                    // A markdown anchor is not part of the file name: `other.md#usage` is `other.md`.
+                    const target = path.split("#")[0] ?? path;
+                    if (previewKind(target) !== undefined) openPreview(target);
+                    else void openFile(target);
                   }}
                 />
               )}

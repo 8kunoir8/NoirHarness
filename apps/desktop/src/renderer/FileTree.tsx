@@ -146,7 +146,7 @@ export function FileTree({ request, workspaceId, activePath, onOpenFile, onPrevi
               <button
                 type="button"
                 className="link"
-                aria-label={`Preview ${entry.name}`}
+                aria-label={`Preview ${entry.path}`}
                 onClick={(event) => {
                   event.stopPropagation();
                   onPreviewFile(entry.path);

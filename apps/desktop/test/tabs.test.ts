@@ -88,6 +88,17 @@ describe("tabs", () => {
     expect(loadTabs({ tabs: [{ kind: "preview", path: "" }] }).tabs).toEqual([]);
   });
 
+  it("treats a dotted or doubled path as the same preview artifact", () => {
+    expect(previewTab("./notes.md")).toEqual(previewTab("notes.md"));
+    expect(previewTab("docs//./notes.md")).toEqual(previewTab("docs/notes.md"));
+
+    const opened = openTab(openTab(empty, previewTab("./notes.md")), previewTab("notes.md"));
+    expect(opened.tabs).toEqual([{ id: "preview:notes.md", kind: "preview", path: "notes.md" }]);
+    expect(opened.active).toBe("preview:notes.md");
+    // A stored tab keeps the same canonical id and path.
+    expect(loadTabs({ tabs: [{ kind: "preview", path: "./notes.md" }] }).tabs).toEqual([previewTab("notes.md")]);
+  });
+
   it("dedupes duplicated stored ids, first wins", () => {
     const loaded = loadTabs({ tabs: [editorTab("a.ts"), editorTab("a.ts"), chatTab("s1")] });
     expect(loaded.tabs.map((tab) => tab.id)).toEqual(["editor:a.ts", "chat:s1"]);

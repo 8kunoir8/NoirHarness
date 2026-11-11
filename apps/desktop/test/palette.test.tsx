@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CommandPalette } from "../src/renderer/CommandPalette.js";
 
 const appApi = vi.hoisted(() => ({
@@ -32,6 +32,72 @@ const commands: Command[] = [
   command({ id: "close", label: "Close chat tab", shortcut: { key: "w", mod: true }, enabled: false }),
   command({ id: "copy", label: "Copy session id", keywords: "clipboard" }),
 ];
+
+/** Markdown fixture with two anchored links; only `notes.md` has content. */
+const NOTES_MARKDOWN = "[see](other.md#usage) and [pdf](doc.pdf#page=3)";
+
+/** The smallest kernel surface `App` needs; anything unlisted rejects so a wrong call is visible. */
+function stubApp(): void {
+  appApi.request.mockReset();
+  appApi.request.mockImplementation(async (method: string, params?: unknown): Promise<unknown> => {
+    switch (method) {
+      case "system.health":
+        return { status: "ok", pid: 1, engineDir: "engine" };
+      case "project.list":
+        return { projects: [] };
+      case "workspace.list":
+        return { workspaces: [{ id: "w1", projectId: "p1", path: "C:/ws", branch: null, kind: "git", status: "clean" }] };
+      case "model.list":
+        return {
+          models: [
+            {
+              id: "m1",
+              providerId: "pr1",
+              modelId: "mock-1",
+              displayName: "Mock",
+              contextWindow: 200_000,
+              maxTokens: null,
+              enabled: true,
+              createdAt: 1,
+              engine: "acp",
+            },
+          ],
+        };
+      case "session.list":
+        return { sessions: [] };
+      case "fs.files":
+        return { files: ["notes.md", "other.md", "doc.pdf", "src/main.ts"], truncated: false };
+      case "fs.list":
+        return {
+          entries: [
+            { name: "notes.md", path: "notes.md", kind: "file", size: 32 },
+            { name: "other.md", path: "other.md", kind: "file", size: 8 },
+          ],
+          truncated: false,
+        };
+      case "artifact.read": {
+        const path = typeof params === "object" && params !== null && "path" in params ? params.path : "";
+        return {
+          encoding: "utf8",
+          content: path === "notes.md" ? NOTES_MARKDOWN : "",
+          size: 32,
+          mtimeMs: 1,
+          truncated: false,
+        };
+      }
+      default:
+        throw new Error(method);
+    }
+  });
+}
+
+/** Runs the palette's "Preview file…" command and waits for the filtered overlay. */
+async function openPreviewOverlay(user: UserEvent): Promise<void> {
+  await user.click(await screen.findByRole("button", { name: "Commands" }));
+  await user.type(await screen.findByLabelText("Command"), "preview");
+  await user.click(screen.getByTestId("palette-preview-file"));
+  await screen.findByRole("combobox", { name: "Preview file" });
+}
 
 function keydown(init: KeyboardEventInit, target?: EventTarget): KeyboardEvent {
   const event = new KeyboardEvent("keydown", { cancelable: true, ...init });
@@ -89,57 +155,6 @@ describe("CommandPalette", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("opens an artifact preview from the preview command", async () => {
-    const user = userEvent.setup();
-    appApi.request.mockImplementation(async (method: string): Promise<unknown> => {
-      switch (method) {
-        case "system.health":
-          return { status: "ok", pid: 1, engineDir: "engine" };
-        case "project.list":
-          return { projects: [] };
-        case "workspace.list":
-          return { workspaces: [{ id: "w1", projectId: "p1", path: "C:/ws", branch: null, kind: "git", status: "clean" }] };
-        case "model.list":
-          return {
-            models: [
-              {
-                id: "m1",
-                providerId: "pr1",
-                modelId: "mock-1",
-                displayName: "Mock",
-                contextWindow: 200_000,
-                maxTokens: null,
-                enabled: true,
-                createdAt: 1,
-                engine: "acp",
-              },
-            ],
-          };
-        case "session.list":
-          return { sessions: [] };
-        case "fs.files":
-          return { files: ["notes.md", "src/main.ts"], truncated: false };
-        default:
-          throw new Error(method);
-      }
-    });
-
-    render(<App />);
-    await user.click(await screen.findByRole("button", { name: "Commands" }));
-    await user.type(await screen.findByLabelText("Command"), "preview");
-    await user.click(screen.getByTestId("palette-preview-file"));
-
-    expect(await screen.findByRole("combobox", { name: "Preview file" })).toBeTruthy();
-    expect(await screen.findByText("notes.md")).toBeTruthy();
-    expect(screen.queryByText("src/main.ts")).toBeNull();
-
-    await user.click(screen.getByText("notes.md"));
-
-    const tab = await screen.findByRole("tab", { name: "notes.md" });
-    expect(tab.closest(".tab")?.getAttribute("data-kind")).toBe("preview");
-    expect(screen.queryByRole("combobox", { name: "Preview file" })).toBeNull();
-  });
-
   it("refuses disabled commands", async () => {
     const user = userEvent.setup();
     const onRun = vi.fn();
@@ -149,5 +164,84 @@ describe("CommandPalette", () => {
     expect(screen.getByTestId("palette-close").getAttribute("aria-disabled")).toBe("true");
     await user.keyboard("{Enter}");
     expect(onRun).not.toHaveBeenCalled();
+  });
+});
+
+describe("App artifact entry points", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("opens an artifact from the preview command", async () => {
+    stubApp();
+    const user = userEvent.setup();
+    render(<App />);
+
+    await openPreviewOverlay(user);
+    expect(await screen.findByRole("option", { name: "notes.md" })).toBeTruthy();
+    expect(screen.queryByRole("option", { name: "src/main.ts" })).toBeNull();
+
+    await user.click(screen.getByRole("option", { name: "notes.md" }));
+
+    const tab = await screen.findByRole("tab", { name: "notes.md" });
+    expect(tab.closest(".tab")?.getAttribute("data-kind")).toBe("preview");
+    expect(screen.queryByRole("combobox", { name: "Preview file" })).toBeNull();
+  });
+
+  it("opens the overlay on the setup page and lands on a visible artifact", async () => {
+    stubApp();
+    const user = userEvent.setup();
+    render(<App />);
+
+    // The chats view (and its topbar Inspector button) appears once models are loaded.
+    await screen.findByRole("button", { name: "Inspector" });
+    await user.click(screen.getByRole("button", { name: "Setup" }));
+    expect(await screen.findByRole("region", { name: "Providers" })).toBeTruthy();
+
+    await openPreviewOverlay(user);
+    await user.click(await screen.findByRole("option", { name: "notes.md" }));
+
+    expect(await screen.findByRole("region", { name: "Preview notes.md" })).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Providers" })).toBeNull();
+  });
+
+  it("routes anchored markdown links to the artifact, not the editor", async () => {
+    stubApp();
+    const user = userEvent.setup();
+    render(<App />);
+
+    await openPreviewOverlay(user);
+    await user.click(await screen.findByRole("option", { name: "notes.md" }));
+
+    await user.click(await screen.findByText("see"));
+    const other = await screen.findByRole("tab", { name: "other.md" });
+    expect(other.closest(".tab")?.getAttribute("data-kind")).toBe("preview");
+    expect(screen.queryByRole("region", { name: "Editor" })).toBeNull();
+
+    await user.click(screen.getByRole("tab", { name: "notes.md" }));
+    await user.click(await screen.findByText("pdf"));
+    const pdf = await screen.findByRole("tab", { name: "doc.pdf" });
+    expect(pdf.closest(".tab")?.getAttribute("data-kind")).toBe("preview");
+
+    const paths = appApi.request.mock.calls.map(([, params]) =>
+      typeof params === "object" && params !== null && "path" in params ? params.path : "",
+    );
+    expect(paths.filter((path) => typeof path === "string" && path.includes("#"))).toEqual([]);
+    expect(appApi.request.mock.calls.some(([method]) => method === "fs.read")).toBe(false);
+  });
+
+  it("opens one tab for an artifact reached from the file tree and the palette", async () => {
+    stubApp();
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "File list" }));
+    await user.click(await screen.findByRole("button", { name: "Preview notes.md" }));
+    expect(screen.getAllByRole("tab", { name: "notes.md" })).toHaveLength(1);
+
+    await openPreviewOverlay(user);
+    await user.click(await screen.findByRole("option", { name: "notes.md" }));
+
+    expect(screen.getAllByRole("tab", { name: "notes.md" })).toHaveLength(1);
   });
 });
