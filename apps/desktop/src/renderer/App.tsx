@@ -415,9 +415,10 @@ export function App() {
   const openPreview = useCallback((path: string): void => {
     setTabState((current) => openTab(current, previewTab(path)));
     // The artifact body mounts only in the chats view; setup and skills can still reach the
-    // palette, so a preview must not open invisibly there.
-    setView("chats");
-  }, []);
+    // palette, so a preview must not open invisibly there. With no model configured the chats
+    // view only renders the setup page, so leaving skills would hide the artifact and the view.
+    setView((current) => (models.length === 0 && current === "skills" ? current : "chats"));
+  }, [models.length]);
 
   const openFile = useCallback(async (path: string): Promise<void> => {
     setTabState((current) => openTab(current, editorTab(path)));

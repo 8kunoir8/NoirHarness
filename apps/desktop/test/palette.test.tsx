@@ -36,8 +36,20 @@ const commands: Command[] = [
 /** Markdown fixture with two anchored links; only `notes.md` has content. */
 const NOTES_MARKDOWN = "[see](other.md#usage) and [pdf](doc.pdf#page=3)";
 
+const MODEL = {
+  id: "m1",
+  providerId: "pr1",
+  modelId: "mock-1",
+  displayName: "Mock",
+  contextWindow: 200_000,
+  maxTokens: null,
+  enabled: true,
+  createdAt: 1,
+  engine: "acp",
+};
+
 /** The smallest kernel surface `App` needs; anything unlisted rejects so a wrong call is visible. */
-function stubApp(): void {
+function stubApp({ models = [MODEL] }: { models?: readonly unknown[] } = {}): void {
   appApi.request.mockReset();
   appApi.request.mockImplementation(async (method: string, params?: unknown): Promise<unknown> => {
     switch (method) {
@@ -48,21 +60,7 @@ function stubApp(): void {
       case "workspace.list":
         return { workspaces: [{ id: "w1", projectId: "p1", path: "C:/ws", branch: null, kind: "git", status: "clean" }] };
       case "model.list":
-        return {
-          models: [
-            {
-              id: "m1",
-              providerId: "pr1",
-              modelId: "mock-1",
-              displayName: "Mock",
-              contextWindow: 200_000,
-              maxTokens: null,
-              enabled: true,
-              createdAt: 1,
-              engine: "acp",
-            },
-          ],
-        };
+        return { models };
       case "session.list":
         return { sessions: [] };
       case "fs.files":
@@ -202,6 +200,22 @@ describe("App artifact entry points", () => {
     await user.click(await screen.findByRole("option", { name: "notes.md" }));
 
     expect(await screen.findByRole("region", { name: "Preview notes.md" })).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Providers" })).toBeNull();
+  });
+
+  it("keeps the skills view when no model is configured", async () => {
+    stubApp({ models: [] });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Skills" }));
+    expect(await screen.findByRole("region", { name: "Skills" })).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "File list" }));
+    await user.click(await screen.findByRole("button", { name: "Preview notes.md" }));
+
+    // The tab exists, but with no model there is no chats view to render it in: stay in Skills.
+    expect(screen.getByRole("region", { name: "Skills" })).toBeTruthy();
     expect(screen.queryByRole("region", { name: "Providers" })).toBeNull();
   });
 
