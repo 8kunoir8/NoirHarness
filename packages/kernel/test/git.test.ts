@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { once } from "node:events";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
-import { startKernel, type Kernel } from "../src/index.js";
+import type { Kernel } from "../src/index.js";
+import { startKernel } from "./support.js";
 
 const dirs: string[] = [];
 const kernels: Kernel[] = [];

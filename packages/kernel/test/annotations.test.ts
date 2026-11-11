@@ -6,7 +6,8 @@ import { once } from "node:events";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import { ErrorCodes } from "@noir/protocol";
-import { startKernel, type Kernel } from "../src/index.js";
+import type { Kernel } from "../src/index.js";
+import { startKernel } from "./support.js";
 
 const dirs: string[] = [];
 const kernels: Kernel[] = [];

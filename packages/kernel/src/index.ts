@@ -76,7 +76,7 @@ import {
   type LockInfo,
   type RuntimeInfo,
 } from "./runtimeFile.js";
-import { KeyringSecrets } from "./secrets.js";
+import { KeyringSecrets, type Secrets } from "./secrets.js";
 import { SessionService } from "./sessions.js";
 import { WorkspaceService } from "./workspaces.js";
 
@@ -182,7 +182,11 @@ async function acquireOwnership(lockFile: string, runtimeFile: string, claim: Lo
   throw new Error("Kernel startup conflict: runtime lock is held by another instance");
 }
 
-export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kernel> {
+/**
+ * `secrets` lets a test own the key store. Production callers omit it and get the OS keyring, the
+ * only place a provider key may live.
+ */
+export async function startKernel(opts: { dataDir?: string; secrets?: Secrets } = {}): Promise<Kernel> {
   const dir = opts.dataDir ?? defaultDataDir();
   const file = runtimeFilePath(dir);
   const lockFile = lockFilePath(dir);
@@ -222,7 +226,7 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
       };
       const models = new ModelService(db);
       const sessions = new SessionService(db, events, models);
-      const providers = new ProviderService(db, new KeyringSecrets());
+      const providers = new ProviderService(db, opts.secrets ?? new KeyringSecrets());
       for (const key of providers.secretValues()) redactor.addSecret(key);
       const agents = new AgentService(db, models, sessions);
       // Task 5 shares this instance with EngineManager so enabled flags match what is materialized.

@@ -6,7 +6,8 @@ import { once } from "node:events";
 import WebSocket from "ws";
 import { ErrorCodes } from "@noir/protocol";
 import { MAX_ARTIFACT_PDF_BYTES, MAX_ARTIFACT_TEXT_BYTES, readArtifact } from "../src/fsService.js";
-import { startKernel, type Kernel } from "../src/index.js";
+import type { Kernel } from "../src/index.js";
+import { startKernel } from "./support.js";
 
 const dirs: string[] = [];
 const kernels: Kernel[] = [];

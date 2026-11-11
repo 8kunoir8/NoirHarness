@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 import { ErrorCodes } from "@noir/protocol";
-import { startKernel, type Kernel } from "../src/index.js";
+import type { Kernel } from "../src/index.js";
+import { memorySecrets, startKernel } from "./support.js";
 import { profileAgentDir } from "../src/profile.js";
 
 const dirs: string[] = [];
@@ -42,13 +43,14 @@ describe("startKernel", () => {
 
   it("persists a provider across restarts", async () => {
     const dir = tempDir();
-    const first = await startKernel({ dataDir: dir });
+    const secrets = memorySecrets();
+    const first = await startKernel({ dataDir: dir, secrets });
     const created = await call(first.port, first.token, "provider.create", {
       name: "Local", baseUrl: "http://localhost:11434/v1", apiKind: "openai-completions", apiKey: "k",
     });
     await first.close();
 
-    const second = await startKernel({ dataDir: dir });
+    const second = await startKernel({ dataDir: dir, secrets });
     const res = await call(second.port, second.token, "provider.list");
     expect(res.result.providers).toHaveLength(1);
     expect(res.result.providers[0].hasKey).toBe(true);

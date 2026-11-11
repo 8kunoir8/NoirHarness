@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import WebSocket from "ws";
 import { ErrorCodes, SkillListResult, SkillReadResult, SkillSetEnabledResult } from "@noir/protocol";
-import { startKernel } from "../src/index.js";
+import { startKernel } from "./support.js";
 
 const dirs: string[] = [];
 function tempDir(prefix: string): string {
