@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AgentOfficeState } from "./mapper.js";
 import type { PhaserModule } from "./scene.js";
 import {
@@ -59,6 +59,8 @@ export function AgentOffice({
 }: AgentOfficeProps) {
   const host = useRef<HTMLDivElement>(null);
   const handle = useRef<OfficeGameHandle | undefined>(undefined);
+  // `data-office-ready` must mean "booted and holding the first roster paint", not "mounted".
+  const [ready, setReady] = useState(false);
   // The mount effect runs once, so it reads the newest props through this ref instead of stale ones.
   const latest = useRef({ states, selectedId, reducedMotion, onSelect, onUnavailable });
   latest.current = { states, selectedId, reducedMotion, onSelect, onUnavailable };
@@ -113,8 +115,12 @@ export function AgentOffice({
             game.destroy(true);
           },
         };
+        if (!cancelled) setReady(true);
       } catch {
-        if (!cancelled) latest.current.onUnavailable?.();
+        if (!cancelled) {
+          setReady(false);
+          latest.current.onUnavailable?.();
+        }
       }
     }
 
@@ -130,5 +136,27 @@ export function AgentOffice({
     handle.current?.push(states, selectedId, reducedMotion);
   }, [states, selectedId, reducedMotion]);
 
-  return <div className="office-canvas" ref={host} aria-hidden="true" />;
+  // The E2E surface: what the scene was handed, plus the stable desk assignment it was derived from.
+  // Nothing inside the canvas is focusable or announced; the roster is the accessible office.
+  const desks = ready
+    ? JSON.stringify(
+        Object.fromEntries(
+          [...states]
+            .sort((left, right) => left.agentId.localeCompare(right.agentId))
+            .map((state) => [state.agentId, state.deskIndex]),
+        ),
+      )
+    : undefined;
+
+  return (
+    <div
+      className="office-canvas"
+      ref={host}
+      aria-hidden="true"
+      data-office-ready={ready ? "true" : undefined}
+      data-office-count={ready ? states.length : 0}
+      data-office-desks={desks}
+      data-office-selected={ready ? selectedId : undefined}
+    />
+  );
 }

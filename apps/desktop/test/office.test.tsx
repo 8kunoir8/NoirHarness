@@ -3,8 +3,10 @@ import { cleanup, render, waitFor } from "@testing-library/react";
 import type { AgentRosterEntry } from "@noir/protocol";
 import type * as OfficeSceneModule from "../src/renderer/office/scene.js";
 import {
+  MAX_BUBBLE_CHARS,
   MAX_OFFICE_AGENTS,
   actionFor,
+  approvalBubbleText,
   assignDesks,
   hashAgentId,
   toOfficeStates,
@@ -102,6 +104,7 @@ function rosterEntry(overrides: Partial<AgentRosterEntry> & { agentId: string })
     sessionCount: overrides.sessionCount ?? 0,
     lastActivityAt: overrides.lastActivityAt ?? 0,
     usage: overrides.usage ?? null,
+    pendingApproval: overrides.pendingApproval ?? null,
   };
 }
 
@@ -110,6 +113,18 @@ const DESKS: readonly OfficePoint[] = [
   { x: 2, y: 1 },
   { x: 3, y: 1 },
 ];
+
+function officeState(overrides: Partial<AgentOfficeState> & { agentId: string }): AgentOfficeState {
+  return {
+    agentId: overrides.agentId,
+    name: overrides.name ?? overrides.agentId,
+    status: overrides.status ?? "idle",
+    action: overrides.action ?? "idle",
+    desk: overrides.desk ?? { x: 1, y: 1 },
+    deskIndex: overrides.deskIndex ?? 0,
+    bubble: overrides.bubble ?? null,
+  };
+}
 
 describe("office mapper", () => {
   it("maps needs_you to blocked and error to error", () => {
@@ -162,6 +177,34 @@ describe("office mapper", () => {
       rosterEntry({ agentId: `agent-${index}` }),
     );
     expect(toOfficeStates(roster, officeMap.desks)).toHaveLength(MAX_OFFICE_AGENTS);
+  });
+
+  it("carries the approval title into the needs_you bubble and nothing else", () => {
+    const waiting = rosterEntry({
+      agentId: "a",
+      status: "needs_you",
+      pendingApproval: { approvalId: "ap-1", title: "Run ls", category: "shell" },
+    });
+    expect(toOfficeStates([waiting], DESKS)[0]?.bubble).toBe("Run ls");
+    expect(approvalBubbleText(waiting)).toBe("Run ls");
+    expect(approvalBubbleText(rosterEntry({ agentId: "b", status: "working" }))).toBeNull();
+    expect(approvalBubbleText(rosterEntry({ agentId: "c", status: "error" }))).toBeNull();
+  });
+
+  it("falls back to the category and truncates the bubble at 80 characters", () => {
+    const unreadable = rosterEntry({
+      agentId: "a",
+      status: "needs_you",
+      pendingApproval: { approvalId: "", title: "  ", category: "delete" },
+    });
+    expect(approvalBubbleText(unreadable)).toBe("delete");
+
+    const long = rosterEntry({
+      agentId: "b",
+      status: "needs_you",
+      pendingApproval: { approvalId: "ap-2", title: "x".repeat(200), category: "shell" },
+    });
+    expect(approvalBubbleText(long)).toHaveLength(MAX_BUBBLE_CHARS);
   });
 });
 
@@ -234,13 +277,13 @@ describe("AgentOffice", () => {
     sceneDouble.createOfficeScene.mockClear();
   });
 
-  const state: AgentOfficeState = {
+  const state: AgentOfficeState = officeState({
     agentId: "a-1",
     name: "Scout",
     status: "working",
     action: "working",
     desk: { x: 1, y: 1 },
-  };
+  });
 
   it("creates exactly one game per mount and destroys it on unmount", async () => {
     const onSelect = vi.fn();
@@ -272,6 +315,29 @@ describe("AgentOffice", () => {
     expect(phaserDouble.games).toHaveLength(1);
   });
 
+  it("publishes the ready, count, desk and selection hooks once the game boots", async () => {
+    const first = officeState({ agentId: "b", deskIndex: 3, desk: { x: 1, y: 1 } });
+    const second = officeState({ agentId: "a", deskIndex: 1, desk: { x: 2, y: 1 } });
+    const view = render(
+      <AgentOffice states={[first, second]} selectedId="a" reducedMotion={false} />,
+    );
+
+    expect(view.container.querySelector(".office-canvas")?.getAttribute("data-office-ready")).toBeNull();
+    await waitFor(() =>
+      expect(view.container.querySelector(".office-canvas")?.getAttribute("data-office-ready")).toBe("true"),
+    );
+
+    const canvas = view.container.querySelector<HTMLElement>(".office-canvas");
+    expect(canvas?.getAttribute("aria-hidden")).toBe("true");
+    expect(canvas?.getAttribute("data-office-count")).toBe("2");
+    // Sorted by agent id so the string is comparable across restarts.
+    expect(canvas?.getAttribute("data-office-desks")).toBe(JSON.stringify({ a: 1, b: 3 }));
+    expect(canvas?.getAttribute("data-office-selected")).toBe("a");
+    // The canvas is decorative: nothing inside it is focusable.
+    expect(canvas?.querySelector("button, [tabindex], [role]")).toBeNull();
+    view.unmount();
+  });
+
   it("keeps the canvas out of the accessibility tree and reports unavailability", async () => {
     const onUnavailable = vi.fn();
     sceneDouble.createOfficeScene.mockImplementationOnce(() => {
@@ -282,6 +348,7 @@ describe("AgentOffice", () => {
     );
     await waitFor(() => expect(onUnavailable).toHaveBeenCalledTimes(1));
     expect(view.container.querySelector("[aria-hidden='true']")).not.toBeNull();
+    expect(view.container.querySelector("[data-office-ready]")).toBeNull();
     view.unmount();
   });
 });
@@ -300,6 +367,8 @@ describe("office scene", () => {
     x: number;
     y: number;
     frame: string;
+    text: string;
+    visible: boolean;
     setOrigin: (x?: number, y?: number) => FakeGameObject;
     setDepth: (value: number) => FakeGameObject;
     setPosition: (x: number, y: number) => FakeGameObject;
@@ -310,6 +379,7 @@ describe("office scene", () => {
     setInteractive: () => FakeGameObject;
     on: (event: string, handler: () => void) => FakeGameObject;
     setText: (value: string) => FakeGameObject;
+    setVisible: (value: boolean) => FakeGameObject;
     destroy: () => void;
   }
 
@@ -330,10 +400,12 @@ describe("office scene", () => {
     };
     tweens: unknown[];
     sprites: FakeGameObject[];
+    texts: FakeGameObject[];
     createScene: (reducedMotion: boolean, states: AgentOfficeState[]) => Promise<{ scene: SceneLike }>;
   } {
     const tweens: unknown[] = [];
     const sprites: FakeGameObject[] = [];
+    const texts: FakeGameObject[] = [];
     const registry = new Map<string, unknown>();
     const handlers = new Map<string, Set<(payload?: unknown) => void>>();
     const game = {
@@ -361,6 +433,7 @@ describe("office scene", () => {
       text = "";
       scale = 1;
       flipX = false;
+      visible = true;
       tint: number | undefined = undefined;
       private handlers = new Map<string, () => void>();
 
@@ -405,6 +478,10 @@ describe("office scene", () => {
         this.text = value;
         return this;
       };
+      setVisible = (value: boolean): FakeGameObject => {
+        this.visible = value;
+        return this;
+      };
       destroy = (): void => undefined;
     }
 
@@ -425,6 +502,7 @@ describe("office scene", () => {
         text: (x: number, y: number, text: string): FakeGameObject => {
           const object = new GameObject(x, y, "text");
           object.setText(text);
+          texts.push(object);
           return object;
         },
       };
@@ -452,6 +530,7 @@ describe("office scene", () => {
       game,
       tweens,
       sprites,
+      texts,
       createScene: async (reducedMotion: boolean, states: AgentOfficeState[]) => {
         const factory = realScene.createOfficeScene(
           { AUTO: 0, Scene, Game: class {} } as never,
@@ -468,13 +547,13 @@ describe("office scene", () => {
 
   it("skips tweens but still seats the agent at its destination under reduced motion", async () => {
     const harnessed = harness();
-    const state: AgentOfficeState = {
+    const state: AgentOfficeState = officeState({
       agentId: "a-1",
       name: "Scout",
       status: "working",
       action: "reading",
       desk: { x: 2, y: 4 },
-    };
+    });
     await harnessed.createScene(true, [state]);
 
     expect(harnessed.tweens).toHaveLength(0);
@@ -487,26 +566,26 @@ describe("office scene", () => {
   it("plays the action animation when motion is allowed", async () => {
     const harnessed = harness();
     await harnessed.createScene(false, [
-      {
+      officeState({
         agentId: "a-1",
         name: "Scout",
         status: "working",
         action: "working",
         desk: { x: 2, y: 4 },
-      },
+      }),
     ]);
     expect(harnessed.tweens.length).toBeGreaterThan(0);
   });
 
   it("does not restart the action animation for an unchanged snapshot", async () => {
     const harnessed = harness();
-    const state: AgentOfficeState = {
+    const state: AgentOfficeState = officeState({
       agentId: "a-1",
       name: "Scout",
       status: "working",
       action: "working",
       desk: { x: 2, y: 4 },
-    };
+    });
     await harnessed.createScene(false, [state]);
     const started = harnessed.tweens.length;
     harnessed.game.events.emit(keys.OFFICE_STATES_EVENT, [state]);
@@ -516,18 +595,30 @@ describe("office scene", () => {
   it("walks towards the destination one tile per 120 ms", async () => {
     const harnessed = harness();
     const { scene } = await harnessed.createScene(false, [
-      {
+      officeState({
         agentId: "a-1",
         name: "Scout",
         status: "working",
         action: "reading",
         desk: { x: 2, y: 4 },
-      },
+      }),
     ]);
     const sprite = harnessed.sprites[0];
     expect(sprite?.x).toBe(2 * 16 + 8);
     expect(sprite?.y).toBe(4 * 16 + 8);
     scene.update(0, 120);
     expect(sprite?.x === 2 * 16 + 8 && sprite?.y === 4 * 16 + 8).toBe(false);
+  });
+
+  it("draws the approval title as a bubble and keeps the error marker", async () => {
+    const harnessed = harness();
+    await harnessed.createScene(false, [
+      officeState({ agentId: "a-1", status: "needs_you", action: "blocked", bubble: "Run rm -rf build" }),
+      officeState({ agentId: "a-2", status: "error", action: "error", desk: { x: 3, y: 4 }, deskIndex: 1 }),
+    ]);
+
+    const visible = harnessed.texts.filter((text) => text.visible).map((text) => text.text);
+    expect(visible).toContain("Run rm -rf build");
+    expect(visible).toContain("×");
   });
 });

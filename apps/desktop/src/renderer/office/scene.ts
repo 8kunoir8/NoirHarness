@@ -19,6 +19,9 @@ export const STEP_MS = 120;
 export const IDLE_WANDER_MS = 8_000;
 
 const SELECTED_TINT = 0x9ad0ff;
+/** Pixels above the character's feet, where the status glyph and the speech bubble sit. */
+const MARKER_OFFSET = 10;
+const BUBBLE_OFFSET = 20;
 
 /** The committed art, hashed into the renderer bundle by Vite — never fetched from a URL. */
 const ASSET_URLS: Record<string, string> = {
@@ -91,6 +94,8 @@ interface Mover {
   state: AgentOfficeState;
   sprite: Phaser.GameObjects.Image;
   marker: Phaser.GameObjects.Text;
+  /** The `needs_you` speech bubble; hidden for every other state. */
+  bubble: Phaser.GameObjects.Text;
   tile: OfficePoint;
   path: OfficePoint[];
   carry: number;
@@ -165,7 +170,8 @@ export function createOfficeScene(
           const py = next.y * tile + tile / 2;
           mover.sprite.setPosition(px, py);
           mover.sprite.setFlipX(mover.step % 2 === 1);
-          mover.marker.setPosition(px, py - 10);
+          mover.marker.setPosition(px, py - MARKER_OFFSET);
+          mover.bubble.setPosition(px, py - BUBBLE_OFFSET);
         }
         if (mover.path.length === 0) {
           mover.arrivedAt = time;
@@ -239,6 +245,7 @@ export function createOfficeScene(
         if (seen.has(agentId)) continue;
         mover.sprite.destroy();
         mover.marker.destroy();
+        mover.bubble.destroy();
         this.movers.delete(agentId);
       }
       for (const mover of this.movers.values()) this.applySelection(mover);
@@ -256,13 +263,27 @@ export function createOfficeScene(
       const py = state.desk.y * tile + tile / 2;
       const sprite = this.add.image(px, py, file, frame).setDepth(3);
       const marker = this.add
-        .text(px, py - 10, this.markerFor(state.action), {
+        .text(px, py - MARKER_OFFSET, this.markerFor(state.action), {
           fontFamily: "monospace",
           fontSize: "8px",
           color: "#f6c95c",
         })
         .setOrigin(0.5, 1)
         .setDepth(4);
+      // Spec §9.4: the approval title rides above the character; the roster row carries the same
+      // text, so nothing here is the only copy.
+      const bubble = this.add
+        .text(px, py - BUBBLE_OFFSET, state.bubble ?? "", {
+          fontFamily: "monospace",
+          fontSize: "8px",
+          color: "#16161c",
+          backgroundColor: "#f6f0dc",
+          padding: { x: 3, y: 1 },
+          wordWrap: { width: 96 },
+        })
+        .setOrigin(0.5, 1)
+        .setDepth(5)
+        .setVisible(state.bubble !== null);
 
       sprite.setInteractive();
       sprite.on("pointerdown", () => {
@@ -273,6 +294,7 @@ export function createOfficeScene(
         state,
         sprite,
         marker,
+        bubble,
         tile: { x: state.desk.x, y: state.desk.y },
         path: [],
         carry: 0,
@@ -294,6 +316,8 @@ export function createOfficeScene(
         previous.desk.y !== state.desk.y;
       mover.state = state;
       mover.marker.setText(this.markerFor(state.action));
+      mover.bubble.setText(state.bubble ?? "");
+      mover.bubble.setVisible(state.bubble !== null);
 
       if (this.reducedMotion) {
         if (!changed && mover.path.length === 0) return;
@@ -359,7 +383,8 @@ export function createOfficeScene(
       const py = tile.y * size + size / 2;
       mover.sprite.setPosition(px, py);
       mover.sprite.setFlipX(false);
-      mover.marker.setPosition(px, py - 10);
+      mover.marker.setPosition(px, py - MARKER_OFFSET);
+      mover.bubble.setPosition(px, py - BUBBLE_OFFSET);
     }
 
     /** The seated action animation. Reduced motion reaches here only through the early return. */

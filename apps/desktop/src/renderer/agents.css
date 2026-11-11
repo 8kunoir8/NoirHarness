@@ -134,6 +134,40 @@
   font-size: 1.05rem;
 }
 
+.agents-context {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.agents-context [role="progressbar"] {
+  display: inline-block;
+  width: 72px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.agents-context-fill {
+  display: block;
+  height: 100%;
+  min-width: 0;
+  background: var(--accent, var(--text));
+}
+
+/* The roster's copy of the office speech bubble: same text, readable without the canvas. */
+.agents-row-bubble {
+  margin: 0;
+  padding: 3px 8px;
+  border: 1px solid var(--warning);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  color: var(--text);
+  font-size: 0.76rem;
+  overflow-wrap: anywhere;
+}
+
 .agents-start {
   display: flex;
   align-items: flex-end;

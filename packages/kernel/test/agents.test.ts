@@ -366,6 +366,86 @@ describe("AgentService.roster", () => {
     });
   });
 
+  it("reports the active session's pending approval with its title and category", () => {
+    const services = setup();
+    const workspaceId = workspaceFor(services);
+    const agent = services.agents.create(agentInput({ name: "Waiting" }));
+    const session = services.sessions.create(workspaceId, { agentId: agent.id });
+    services.sessions.setStatus(session.id, "running");
+    services.events.append({
+      sessionId: session.id,
+      agentId: agent.id,
+      type: "permission.requested",
+      payload: { approvalId: "a1", category: "shell", title: "Run rm -rf build", options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }] },
+      provenance,
+    });
+
+    expect(entryFor(services, agent.id)).toMatchObject({
+      status: "needs_you",
+      pendingApproval: { approvalId: "a1", title: "Run rm -rf build", category: "shell" },
+    });
+  });
+
+  it("clears the pending approval when a newer permission.resolved arrives", () => {
+    const services = setup();
+    const workspaceId = workspaceFor(services);
+    const agent = services.agents.create(agentInput({ name: "Resolved" }));
+    const session = services.sessions.create(workspaceId, { agentId: agent.id });
+    services.sessions.setStatus(session.id, "running");
+    services.events.append({
+      sessionId: session.id,
+      agentId: agent.id,
+      type: "permission.requested",
+      payload: { approvalId: "a1", category: "shell", title: "Run ls", options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }] },
+      provenance,
+    });
+    services.events.append({
+      sessionId: session.id,
+      agentId: agent.id,
+      type: "permission.resolved",
+      payload: { approvalId: "a1", decision: "allow_once" },
+      provenance,
+    });
+
+    expect(entryFor(services, agent.id).pendingApproval).toBeNull();
+  });
+
+  it("reports no pending approval when the active session never asked", () => {
+    const services = setup();
+    const workspaceId = workspaceFor(services);
+    const agent = services.agents.create(agentInput({ name: "Quiet" }));
+    const session = services.sessions.create(workspaceId, { agentId: agent.id });
+    services.sessions.setStatus(session.id, "running");
+
+    expect(entryFor(services, agent.id).pendingApproval).toBeNull();
+  });
+
+  it("keeps the approval row's category when the stored request payload is unreadable", () => {
+    const services = setup();
+    const workspaceId = workspaceFor(services);
+    const agent = services.agents.create(agentInput({ name: "Corrupt" }));
+    const session = services.sessions.create(workspaceId, { agentId: agent.id });
+    services.sessions.setStatus(session.id, "running");
+    const event = services.events.append({
+      sessionId: session.id,
+      agentId: agent.id,
+      type: "permission.requested",
+      payload: { approvalId: "a1", category: "delete", title: "Delete build", options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }] },
+      provenance,
+    });
+    services.db
+      .prepare("INSERT INTO approvals (id, session_id, event_id, kind, payload_json) VALUES (?,?,?,?,?)")
+      .run("a1", session.id, event.id, "delete", "{}");
+    services.db.prepare("UPDATE events SET payload_json = ? WHERE id = ?").run("{not json", event.id);
+
+    // The marker survives a corrupt payload; the bubble falls back to the category (empty title).
+    expect(entryFor(services, agent.id).pendingApproval).toEqual({
+      approvalId: "a1",
+      title: "",
+      category: "delete",
+    });
+  });
+
   it("reports working for starting and running sessions", () => {
     const services = setup();
     const workspaceId = workspaceFor(services);

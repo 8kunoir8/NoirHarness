@@ -1,7 +1,7 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
-import type { AgentRosterEntry, AgentView, ModelView, SessionView, SkillView } from "@noir/protocol";
+import type { AgentEvent, AgentRosterEntry, AgentView, ModelView, SessionView, SkillView } from "@noir/protocol";
 import type { RequestFn } from "../src/renderer/api.js";
 import type { WorkspaceView } from "../src/renderer/WorkspacePanel.js";
 
@@ -17,10 +17,35 @@ const appApi = vi.hoisted(() => ({
 vi.mock("../src/renderer/api.js", () => appApi);
 
 // The canvas itself is covered by `office.test.tsx`; a double keeps Phaser out of jsdom here and
-// lets these tests assert the List view toggle.
+// lets these tests assert the List view toggle, the office props and the selection round trip.
 vi.mock("../src/renderer/office/AgentOffice.js", () => ({
-  AgentOffice: ({ states }: { states: readonly unknown[] }) => (
-    <div data-testid="agent-office" data-count={states.length} />
+  AgentOffice: ({
+    states,
+    selectedId,
+    onSelect,
+  }: {
+    states: readonly { agentId: string; bubble: string | null }[];
+    selectedId?: string | undefined;
+    onSelect?: ((agentId: string) => void) | undefined;
+  }) => (
+    <div data-testid="agent-office" data-count={states.length} data-selected={selectedId ?? ""}>
+      {states.map((state) =>
+        state.bubble === null ? null : (
+          <span key={state.agentId} data-testid="office-bubble">
+            {state.bubble}
+          </span>
+        ),
+      )}
+      <button
+        type="button"
+        onClick={() => {
+          const first = states[0];
+          if (first !== undefined) onSelect?.(first.agentId);
+        }}
+      >
+        Select first character
+      </button>
+    </div>
   ),
 }));
 
@@ -52,6 +77,7 @@ const ROSTER: AgentRosterEntry = {
   sessionCount: 2,
   lastActivityAt: 1,
   usage: null,
+  pendingApproval: null,
 };
 
 const MODEL: ModelView = {
@@ -122,6 +148,27 @@ function makeRequest(overrides: Partial<Record<string, (params?: unknown) => unk
 
 function renderAgents(request: RequestMock, onOpenChat = vi.fn()): void {
   render(<Agents workspaceId="w1" request={request as unknown as RequestFn} onOpenChat={onOpenChat} />);
+}
+
+function rosterCalls(request: RequestMock): number {
+  return request.mock.calls.filter(([method]) => method === "agent.roster").length;
+}
+
+/** A broadcast frame; only `type` matters to the roster listener. */
+function frame(type: AgentEvent["type"]): AgentEvent {
+  return {
+    v: 1,
+    id: `${type}-1`,
+    seq: 1,
+    ts: 1,
+    sessionId: "s-1",
+    agentId: "a-1",
+    parentAgentId: null,
+    turnId: null,
+    type,
+    payload: {},
+    provenance: { engine: "acp", engineName: "test", adapterVersion: "0" },
+  };
 }
 
 /** The roster is the region named `Agents`; the inspector is the region named `Agent config`. */
@@ -387,6 +434,128 @@ describe("Agents", () => {
     expect(meta.textContent).toContain("Tool: read");
     expect(meta.textContent).toContain("62% context");
   });
+
+  it("coalesces a broadcast burst into one roster refresh and ignores unrelated events", async () => {
+    const request = makeRequest({
+      "agent.list": () => ({ agents: [AGENT] }),
+      "agent.roster": () => ({ agents: [ROSTER], generatedAt: 1 }),
+    });
+    renderAgents(request);
+    await waitFor(() => expect(rosterCalls(request)).toBe(1));
+
+    const listener = appApi.connect.mock.calls.at(-1)?.[0] as ((event: AgentEvent) => void) | undefined;
+    expect(listener).toBeTypeOf("function");
+    act(() => {
+      for (const type of [
+        "session.status",
+        "turn.started",
+        "tool.started",
+        "permission.requested",
+        "usage.updated",
+      ] as const) {
+        listener?.(frame(type));
+      }
+    });
+
+    await waitFor(() => expect(rosterCalls(request)).toBe(2));
+
+    // A message delta cannot change the roster, so it must not schedule a fetch either.
+    act(() => listener?.(frame("message.delta")));
+    const settled = Promise.withResolvers<void>();
+    setTimeout(settled.resolve, 350);
+    await settled.promise;
+    expect(rosterCalls(request)).toBe(2);
+  });
+
+  it("keeps the roster and office selection in sync in both directions", async () => {
+    const second: AgentView = { ...AGENT, id: "a-2", name: "Builder" };
+    const request = makeRequest({
+      "agent.list": () => ({ agents: [AGENT, second] }),
+      "agent.roster": () => ({
+        agents: [ROSTER, { ...ROSTER, agentId: "a-2", name: "Builder", activeSessionId: "s-2" }],
+        generatedAt: 1,
+      }),
+    });
+    renderAgents(request);
+
+    const office = await screen.findByTestId("agent-office");
+    await userEvent.click(await within(roster()).findByRole("button", { name: "Select Builder" }));
+    expect(office.getAttribute("data-selected")).toBe("a-2");
+
+    await userEvent.click(within(office).getByRole("button", { name: "Select first character" }));
+    expect(within(roster()).getByRole("button", { name: "Select Scout" }).getAttribute("aria-pressed")).toBe("true");
+    expect(office.getAttribute("data-selected")).toBe("a-1");
+  });
+
+  it("opens the active chat with Enter on a roster row", async () => {
+    const request = makeRequest({
+      "agent.list": () => ({ agents: [AGENT] }),
+      "agent.roster": () => ({ agents: [ROSTER], generatedAt: 1 }),
+    });
+    const onOpenChat = vi.fn();
+    renderAgents(request, onOpenChat);
+
+    const row = await within(roster()).findByRole("button", { name: "Select Scout" });
+    act(() => row.focus());
+    await userEvent.keyboard("{Enter}");
+
+    expect(onOpenChat).toHaveBeenCalledWith({ id: "s-1" });
+  });
+
+  it("shows the approval title in the office bubble and the roster row", async () => {
+    const request = makeRequest({
+      "agent.list": () => ({ agents: [AGENT] }),
+      "agent.roster": () => ({
+        agents: [
+          {
+            ...ROSTER,
+            status: "needs_you",
+            pendingApproval: { approvalId: "ap-1", title: "Run rm -rf build", category: "shell" },
+          },
+        ],
+        generatedAt: 1,
+      }),
+    });
+    renderAgents(request);
+
+    const bubble = await screen.findByTestId("office-bubble");
+    expect(bubble.textContent).toBe("Run rm -rf build");
+    // The roster is the accessible copy: the bubble must never be the only place this text lives.
+    expect(within(roster()).getByText("Run rm -rf build")).toBeTruthy();
+    expect(within(roster()).getByText("Needs you").getAttribute("data-status")).toBe("needs_you");
+  });
+
+  it("renders the HUD context bar and opens the active chat", async () => {
+    const request = makeRequest({
+      "agent.list": () => ({ agents: [AGENT] }),
+      "agent.roster": () => ({
+        agents: [{ ...ROSTER, usage: { used: 62_000, size: 100_000 } }],
+        generatedAt: 1,
+      }),
+    });
+    const onOpenChat = vi.fn();
+    renderAgents(request, onOpenChat);
+
+    const office = screen.getByRole("region", { name: "Office" });
+    const bar = await within(office).findByRole("progressbar", { name: "Context usage" });
+    expect(bar.getAttribute("aria-valuenow")).toBe("62");
+    expect(within(office).getByText(/Context 62/)).toBeTruthy();
+
+    await userEvent.click(within(office).getByRole("button", { name: "Open chat" }));
+    expect(onOpenChat).toHaveBeenCalledWith({ id: "s-1" });
+  });
+
+  it("focuses the inspector from the Configure button", async () => {
+    const request = makeRequest({
+      "agent.list": () => ({ agents: [AGENT] }),
+      "agent.roster": () => ({ agents: [ROSTER], generatedAt: 1 }),
+    });
+    renderAgents(request);
+
+    const office = screen.getByRole("region", { name: "Office" });
+    await userEvent.click(await within(office).findByRole("button", { name: "Configure" }));
+    expect(document.activeElement).toBe(config());
+  });
 });
 
 describe("App agents rail", () => {
@@ -394,7 +563,7 @@ describe("App agents rail", () => {
     localStorage.clear();
   });
 
-  it("keeps Agents between Chats and Skills and reachable with no model", async () => {
+  function stubAppRequests(roster: AgentRosterEntry[] = []): void {
     appApi.request.mockReset();
     appApi.request.mockImplementation(async (method: string): Promise<unknown> => {
       switch (method) {
@@ -411,13 +580,17 @@ describe("App agents rail", () => {
         case "agent.list":
           return { agents: [AGENT] };
         case "agent.roster":
-          return { agents: [], generatedAt: 1 };
+          return { agents: roster, generatedAt: 1 };
         case "skill.list":
           return { skills: [], shadowed: [], warnings: [] };
         default:
           throw new Error(`unexpected ${method}`);
       }
     });
+  }
+
+  it("keeps Agents between Chats and Skills and reachable with no model", async () => {
+    stubAppRequests();
 
     render(<App />);
     const nav = screen.getByRole("navigation", { name: "Main" });
@@ -431,5 +604,23 @@ describe("App agents rail", () => {
     // model must still be configurable, so the rail button must land on the roster.
     expect(await screen.findByRole("region", { name: "Agents" })).toBeTruthy();
     expect(screen.getByRole("region", { name: "Office" })).toBeTruthy();
+  });
+
+  it("focuses the agent inspector with C, but never while typing in the form", async () => {
+    stubAppRequests([ROSTER]);
+    render(<App />);
+
+    const nav = screen.getByRole("navigation", { name: "Main" });
+    await userEvent.click(within(nav).getByRole("button", { name: "Agents" }));
+    const inspector = await screen.findByRole("region", { name: "Agent config" });
+
+    await userEvent.keyboard("c");
+    expect(document.activeElement).toBe(inspector);
+
+    const name = within(inspector).getByLabelText("Name") as HTMLInputElement;
+    await userEvent.click(name);
+    await userEvent.keyboard("c");
+    expect(document.activeElement).toBe(name);
+    expect(name.value).toBe("Scoutc");
   });
 });

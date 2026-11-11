@@ -1,5 +1,12 @@
 import { z } from "zod";
-import { AgentEvent, ContentBlock, EngineKind, PermissionDecision, SessionStatus } from "./events.js";
+import {
+  AgentEvent,
+  ContentBlock,
+  EngineKind,
+  PermissionCategory,
+  PermissionDecision,
+  SessionStatus,
+} from "./events.js";
 
 export const Methods = {
   systemHealth: "system.health",
@@ -176,6 +183,17 @@ export const AgentRosterEntry = z.object({
   sessionCount: z.number().int().nonnegative(),
   lastActivityAt: z.number().int(),
   usage: z.object({ used: z.number().int(), size: z.number().int() }).nullable(),
+  /**
+   * The active session's newest unanswered `permission.requested`. `title` is empty when the stored
+   * payload could not be read; the office bubble then falls back to `category`.
+   */
+  pendingApproval: z
+    .object({
+      approvalId: z.string(),
+      title: z.string(),
+      category: PermissionCategory,
+    })
+    .nullable(),
 });
 export type AgentRosterEntry = z.infer<typeof AgentRosterEntry>;
 export const AgentRosterResult = z.object({ agents: z.array(AgentRosterEntry), generatedAt: z.number().int() });

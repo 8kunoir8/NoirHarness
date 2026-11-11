@@ -3,6 +3,7 @@ import { v7 as uuidv7 } from "uuid";
 import {
   ErrorCodes,
   PayloadSchemas,
+  PermissionCategory,
   RpcFault,
   type AgentCreateParams,
   type AgentRosterEntry,
@@ -20,9 +21,20 @@ const STATUS_URGENCY: Record<AgentRosterEntry["status"], number> = {
   idle: 3,
 };
 
+/** The newest `permission.requested` for a session, plus the category its approval row kept. */
+type ApprovalRequest = {
+  seq: number;
+  payloadJson: string;
+  approvalId: string | null;
+  category: PermissionCategory | null;
+};
+
 type ActiveSessionState = {
   kind: AgentRosterEntry["activeToolKind"];
   usage: AgentRosterEntry["usage"];
+  request: ApprovalRequest | null;
+  /** The newest `permission.resolved`; a request is pending only while it is the later event. */
+  resolvedSeq: number | null;
 };
 
 /** Malformed JSON is no worse than a missing event: both read as `null`. */
@@ -32,6 +44,24 @@ function parsePayloadJson(payloadJson: string): unknown {
   } catch {
     return null;
   }
+}
+
+/**
+ * The active session's unanswered approval. It mirrors the session list's rule — a request counts
+ * only while it is newer than every resolve — and falls back to the joined approval row's category
+ * when the stored payload cannot be read, so the office bubble always has something to show.
+ */
+function pendingApprovalFrom(state: ActiveSessionState | undefined): AgentRosterEntry["pendingApproval"] {
+  const request = state?.request;
+  if (request === null || request === undefined) return null;
+  const resolvedSeq = state?.resolvedSeq ?? null;
+  if (resolvedSeq !== null && resolvedSeq > request.seq) return null;
+  const parsed = PayloadSchemas["permission.requested"].safeParse(parsePayloadJson(request.payloadJson));
+  if (parsed.success) {
+    return { approvalId: parsed.data.approvalId, title: parsed.data.title, category: parsed.data.category };
+  }
+  if (request.category === null) return null;
+  return { approvalId: request.approvalId ?? "", title: "", category: request.category };
 }
 
 const AGENT_COLUMNS = "id, name, role, engine_id, model_ref, permission_policy, default_workspace_id, archived_at, created_at";
@@ -202,6 +232,7 @@ export class AgentService {
         sessionCount: mine.length,
         lastActivityAt: mine.reduce((latest, session) => Math.max(latest, session.lastEventAt), agent.createdAt),
         usage: activeState?.usage ?? null,
+        pendingApproval: pendingApprovalFrom(activeState),
       };
     });
     return entries.sort((a, b) => {
@@ -213,30 +244,49 @@ export class AgentService {
   }
 
   /**
-   * The newest `tool.started` kind and the newest `usage.updated` reading per open session, in one
-   * query. Closed sessions can never be active, so they are excluded before ranking.
+   * The newest `tool.started` kind, `usage.updated` reading and permission event per open session, in
+   * one query. Closed sessions can never be active, so they are excluded before ranking. The
+   * approval row is joined so a corrupt request payload still contributes its category.
    */
   private openSessionState(): Map<string, ActiveSessionState> {
     const rows = this.db
       .prepare(
-        `SELECT session_id, type, payload_json FROM (
-           SELECT session_id, type, payload_json,
-                  ROW_NUMBER() OVER (PARTITION BY session_id, type ORDER BY seq DESC, rowid DESC) AS rn
-           FROM events
-           WHERE type IN ('tool.started', 'usage.updated')
-             AND session_id IN (SELECT id FROM sessions WHERE status <> 'closed')
+        `SELECT session_id, type, payload_json, seq, approval_id, approval_kind FROM (
+           SELECT e.session_id, e.type, e.payload_json, e.seq, a.id AS approval_id, a.kind AS approval_kind,
+                  ROW_NUMBER() OVER (PARTITION BY e.session_id, e.type ORDER BY e.seq DESC, e.rowid DESC) AS rn
+           FROM events e
+           LEFT JOIN approvals a ON a.event_id = e.id
+           WHERE e.type IN ('tool.started', 'usage.updated', 'permission.requested', 'permission.resolved')
+             AND e.session_id IN (SELECT id FROM sessions WHERE status <> 'closed')
          ) WHERE rn = 1`,
       )
-      .all() as Array<{ session_id: string; type: string; payload_json: string }>;
+      .all() as Array<{
+        session_id: string;
+        type: string;
+        payload_json: string;
+        seq: number;
+        approval_id: string | null;
+        approval_kind: string | null;
+      }>;
     const state = new Map<string, ActiveSessionState>();
     for (const row of rows) {
-      const current = state.get(row.session_id) ?? { kind: null, usage: null };
+      const current = state.get(row.session_id) ?? { kind: null, usage: null, request: null, resolvedSeq: null };
       if (row.type === "tool.started") {
         const started = PayloadSchemas["tool.started"].safeParse(parsePayloadJson(row.payload_json));
         current.kind = started.success ? (started.data.kind ?? null) : null;
-      } else {
+      } else if (row.type === "usage.updated") {
         const usage = PayloadSchemas["usage.updated"].safeParse(parsePayloadJson(row.payload_json));
         current.usage = usage.success ? { used: usage.data.contextUsed, size: usage.data.contextWindow } : null;
+      } else if (row.type === "permission.requested") {
+        const category = PermissionCategory.safeParse(row.approval_kind);
+        current.request = {
+          seq: row.seq,
+          payloadJson: row.payload_json,
+          approvalId: row.approval_id,
+          category: category.success ? category.data : null,
+        };
+      } else {
+        current.resolvedSeq = row.seq;
       }
       state.set(row.session_id, current);
     }

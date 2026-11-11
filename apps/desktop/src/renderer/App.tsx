@@ -120,6 +120,8 @@ export function App() {
   const [error, setError] = useState<string | undefined>(undefined);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  // The Office header's Configure button and the `C` command both focus the inspector it names.
+  const agentConfigRef = useRef<HTMLElement | null>(null);
 
   const activeTab = tabState.tabs.find((tab) => tab.id === tabState.active);
   // Opening a file leaves the chat subscription alone: the last chat that was actually active stays
@@ -485,7 +487,7 @@ export function App() {
     setError(undefined);
   }, [applyDocument, fetchDocument, tabState, workspaceId]);
 
-  function openSession(session: SessionView): void {
+  function openSession(session: Pick<SessionView, "id">): void {
     setTabState((current) => openTab(current, chatTab(session.id)));
   }
 
@@ -681,6 +683,15 @@ export function App() {
         const prompt = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Prompt"]');
         prompt?.focus();
       },
+    },
+    {
+      id: "configure-agent",
+      label: "Configure the selected agent",
+      keywords: "agent profile inspector permissions",
+      // Spec §9.4: `C` focuses the inspector, and the typing guard keeps it out of the form fields.
+      shortcut: { key: "c" },
+      enabled: view === "agents",
+      run: () => agentConfigRef.current?.focus(),
     },
     {
       id: "interrupt",
@@ -914,6 +925,7 @@ export function App() {
                 key={workspaceId}
                 workspaceId={workspaceId}
                 request={request}
+                configRef={agentConfigRef}
                 onOpenChat={(session) => {
                   openSession(session);
                   // A started session is only visible in the chats view; the session list must know

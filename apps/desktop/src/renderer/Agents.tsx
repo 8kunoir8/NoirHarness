@@ -1,5 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type RefObject,
+} from "react";
+import {
+  type AgentEvent,
   type AgentListResult,
   type AgentRosterEntry,
   type AgentRosterResult,
@@ -12,16 +21,33 @@ import {
   type SkillListResult,
   type SkillView,
 } from "@noir/protocol";
-import type { RequestFn } from "./api.js";
+import { connect, offEvent, type RequestFn } from "./api.js";
 import { errorMessage } from "./events.js";
 import { formatTokens } from "./format.js";
 import type { WorkspaceView } from "./WorkspacePanel.js";
 import { AgentOffice } from "./office/AgentOffice.js";
-import { toOfficeStates } from "./office/mapper.js";
+import { approvalBubbleText, MAX_OFFICE_AGENTS, toOfficeStates } from "./office/mapper.js";
 import officeMap from "./office/map.json";
 import "./agents.css";
 
 type Decision = "ask" | "allow" | "reject";
+
+/** Trailing window for the live roster refresh: a burst of events costs one `agent.roster` call. */
+const ROSTER_REFRESH_MS = 250;
+
+/**
+ * Broadcast events that can change the roster. Everything else (message deltas, file changes) is
+ * irrelevant to status, the active tool and the context share, so it must not schedule a fetch.
+ */
+function refreshesRoster(type: AgentEvent["type"]): boolean {
+  return (
+    type === "session.status" ||
+    type === "usage.updated" ||
+    type.startsWith("turn.") ||
+    type.startsWith("tool.") ||
+    type.startsWith("permission.")
+  );
+}
 
 /** The five policy categories, in the order the matrix renders them. */
 const POLICY_CATEGORIES: readonly PermissionCategory[] = [
@@ -113,6 +139,8 @@ interface ConfigFormProps {
   skills: readonly SkillView[];
   error: string | undefined;
   busy: boolean;
+  /** The office header's Configure action and the `C` command both focus this region. */
+  configRef?: RefObject<HTMLElement | null> | undefined;
   onSave: (draft: AgentDraft) => void;
   /** `true` archives the current agent; `false` unarchives it. Never called in create mode. */
   onArchive: (archived: boolean) => void;
@@ -122,7 +150,17 @@ interface ConfigFormProps {
  * The inspector form. It owns only the draft; the parent owns persistence, so a create and an
  * update share the same fields and the same validation.
  */
-function AgentConfigForm({ agent, models, workspaces, skills, error, busy, onSave, onArchive }: ConfigFormProps) {
+function AgentConfigForm({
+  agent,
+  models,
+  workspaces,
+  skills,
+  error,
+  busy,
+  configRef,
+  onSave,
+  onArchive,
+}: ConfigFormProps) {
   const [name, setName] = useState(agent?.name ?? "");
   const [role, setRole] = useState(agent?.role ?? "Coder");
   const [engineId, setEngineId] = useState<AgentView["engineId"]>(agent?.engineId ?? "acp");
@@ -159,7 +197,7 @@ function AgentConfigForm({ agent, models, workspaces, skills, error, busy, onSav
   const shownError = validationError ?? error;
 
   return (
-    <section className="agents-config" aria-label="Agent config">
+    <section ref={configRef} tabIndex={-1} className="agents-config" aria-label="Agent config">
       <h2>{agent === undefined ? "New agent" : agent.name}</h2>
       {shownError === undefined ? null : (
         <p role="alert" className="agents-error">
@@ -286,7 +324,10 @@ function AgentConfigForm({ agent, models, workspaces, skills, error, busy, onSav
 export interface AgentsProps {
   workspaceId: string;
   request: RequestFn;
-  onOpenChat: (session: SessionView) => void;
+  /** Opens a chat tab; a roster row's Enter and the office's Open chat both land here. */
+  onOpenChat: (session: Pick<SessionView, "id">) => void;
+  /** `App` owns the ref so the `C` command can focus the inspector from anywhere in the view. */
+  configRef?: RefObject<HTMLElement | null> | undefined;
 }
 
 /**
@@ -294,7 +335,7 @@ export interface AgentsProps {
  * profile inspector on the right. The middle region is named `Office`: it renders the lazy Phaser
  * canvas over the roster's list view, which the `List view` toggle keeps reachable.
  */
-export function Agents({ workspaceId, request, onOpenChat }: AgentsProps) {
+export function Agents({ workspaceId, request, onOpenChat, configRef }: AgentsProps) {
   const [agents, setAgents] = useState<AgentView[] | undefined>(undefined);
   const [roster, setRoster] = useState<AgentRosterEntry[]>([]);
   const [models, setModels] = useState<ModelView[]>([]);
@@ -312,6 +353,9 @@ export function Agents({ workspaceId, request, onOpenChat }: AgentsProps) {
   const [showOffice, setShowOffice] = useState(true);
   const [officeUnavailable, setOfficeUnavailable] = useState(false);
   const reducedMotion = useReducedMotion();
+  // `App` supplies the ref for the `C` command; alone, the view still focuses its own inspector.
+  const ownConfigRef = useRef<HTMLElement | null>(null);
+  const configTargetRef = configRef ?? ownConfigRef;
 
   // The RPC server answers concurrently, so a slower earlier batch must not overwrite a newer one.
   const loadSeq = useRef(0);
@@ -342,6 +386,38 @@ export function Agents({ workspaceId, request, onOpenChat }: AgentsProps) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // A broadcast may change status, the active tool, the context share or an approval. Only the
+  // roster is refetched; the event types are filtered so message and file traffic never schedules it.
+  const refreshTimer = useRef<number | undefined>(undefined);
+  const refreshRoster = useCallback(async (): Promise<void> => {
+    const run = loadSeq.current;
+    try {
+      const result = await request<AgentRosterResult>("agent.roster", {});
+      if (run !== loadSeq.current) return;
+      setRoster(result.agents);
+    } catch {
+      // A failed live refresh keeps the last good snapshot; the next matching event retries.
+    }
+  }, [request]);
+
+  useEffect(() => {
+    const listener = (event: AgentEvent): void => {
+      if (!refreshesRoster(event.type)) return;
+      // Trailing coalescing: many events in one burst schedule exactly one fetch.
+      if (refreshTimer.current !== undefined) return;
+      refreshTimer.current = window.setTimeout(() => {
+        refreshTimer.current = undefined;
+        void refreshRoster();
+      }, ROSTER_REFRESH_MS);
+    };
+    void connect(listener).catch(() => undefined);
+    return () => {
+      if (refreshTimer.current !== undefined) window.clearTimeout(refreshTimer.current);
+      refreshTimer.current = undefined;
+      offEvent(listener);
+    };
+  }, [refreshRoster]);
 
   // Keep one row selected so the office pane and the inspector always describe a real agent, but
   // never steal the selection while a blank create form is open.
@@ -374,6 +450,13 @@ export function Agents({ workspaceId, request, onOpenChat }: AgentsProps) {
   function beginCreate(): void {
     setCreating(true);
     setFormError(undefined);
+  }
+
+  /** A roster row's Enter and the office header's Open chat both open the active session. */
+  function openChat(agent: AgentView): void {
+    const entry = roster.find((candidate) => candidate.agentId === agent.id);
+    if (entry?.activeSessionId == null) return;
+    onOpenChat({ id: entry.activeSessionId });
   }
 
   async function saveAgent(draft: AgentDraft): Promise<void> {
@@ -473,6 +556,10 @@ export function Agents({ workspaceId, request, onOpenChat }: AgentsProps) {
   }
 
   const configTarget = creating ? "new" : selectedAgent?.id;
+  const selectedUsage = selectedEntry?.usage ?? null;
+  const selectedUsagePercent = selectedUsage !== null && selectedUsage.size > 0
+    ? Math.min(100, Math.round((selectedUsage.used / selectedUsage.size) * 100))
+    : null;
 
   return (
     <div className="agents-view">
@@ -517,6 +604,7 @@ export function Agents({ workspaceId, request, onOpenChat }: AgentsProps) {
               const usagePercent = entry?.usage != null && entry.usage.size > 0
                 ? Math.round((entry.usage.used / entry.usage.size) * 100)
                 : null;
+              const bubble = entry === undefined ? null : approvalBubbleText(entry);
               return (
                 <li
                   key={agent.id}
@@ -529,6 +617,14 @@ export function Agents({ workspaceId, request, onOpenChat }: AgentsProps) {
                       aria-label={`Select ${agent.name}`}
                       aria-pressed={agent.id === selectedId && !creating}
                       onClick={() => select(agent.id)}
+                      // Spec §9.4: focusing a row highlights its character; Enter opens the chat
+                      // through this row's own handler instead of a second global listener.
+                      onFocus={() => setSelectedId(agent.id)}
+                      onKeyDown={(event) => {
+                        if (event.key !== "Enter") return;
+                        event.preventDefault();
+                        openChat(agent);
+                      }}
                     >
                       <strong>{agent.name}</strong>
                       <span className="agents-row-role">{agent.role}</span>
@@ -548,6 +644,11 @@ export function Agents({ workspaceId, request, onOpenChat }: AgentsProps) {
                       Start
                     </button>
                   </div>
+                  {bubble === null ? null : (
+                    <p className="agents-row-bubble" data-approval={entry?.pendingApproval?.approvalId ?? ""}>
+                      {bubble}
+                    </p>
+                  )}
                   <p className="agents-row-meta">
                     {modelLabel(models, agent.modelRef)} ·{" "}
                     {defaultWorkspace === undefined
@@ -579,17 +680,41 @@ export function Agents({ workspaceId, request, onOpenChat }: AgentsProps) {
                   : "Archived"}
               </span>
               <span className="agents-hint">{modelLabel(models, selectedAgent.modelRef)}</span>
+              {selectedUsagePercent === null || selectedUsage === null ? null : (
+                <span className="agents-context">
+                  <span
+                    role="progressbar"
+                    aria-label="Context usage"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={selectedUsagePercent}
+                  >
+                    <span className="agents-context-fill" style={{ width: `${selectedUsagePercent}%` }} />
+                  </span>
+                  <span className="agents-hint">
+                    Context {formatTokens(selectedUsage.used)} / {formatTokens(selectedUsage.size)}
+                  </span>
+                </span>
+              )}
               <span className="agents-hint">
                 {selectedEntry?.activeSessionId == null ? "No active session" : "1 active session"}
               </span>
               <span className="agents-hint">
                 {selectedEntry?.sessionCount ?? 0} session{selectedEntry?.sessionCount === 1 ? "" : "s"}
               </span>
+              <button
+                type="button"
+                disabled={selectedEntry?.activeSessionId == null}
+                onClick={() => openChat(selectedAgent)}
+              >
+                Open chat
+              </button>
+              <button type="button" onClick={() => configTargetRef.current?.focus()}>
+                Configure
+              </button>
             </header>
-            {selectedEntry?.usage == null ? null : (
-              <p className="agents-hint">
-                Context {formatTokens(selectedEntry.usage.used)} / {formatTokens(selectedEntry.usage.size)}
-              </p>
+            {roster.length <= MAX_OFFICE_AGENTS ? null : (
+              <p className="agents-hint">{roster.length - MAX_OFFICE_AGENTS} more agents in the roster</p>
             )}
             <div className="office-bar">
               <button type="button" aria-pressed={!showOffice} onClick={() => setShowOffice((shown) => !shown)}>
@@ -669,6 +794,7 @@ export function Agents({ workspaceId, request, onOpenChat }: AgentsProps) {
           skills={skills}
           error={formError}
           busy={busy}
+          configRef={configTargetRef}
           onSave={(draft) => void saveAgent(draft)}
           onArchive={(archived) => {
             if (selectedAgent !== undefined) void archiveAgent(selectedAgent, archived);

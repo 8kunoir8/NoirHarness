@@ -17,10 +17,32 @@ export interface AgentOfficeState {
   status: AgentRosterEntry["status"];
   action: OfficeAction;
   desk: OfficePoint;
+  /** Index into the map's desk list; published so an E2E can compare the assignment across restarts. */
+  deskIndex: number;
+  /** The `needs_you` speech bubble text; `null` for every other status. */
+  bubble: string | null;
 }
 
 /** Spec §9.5: the office renders at most 32 characters; the rest stay in the roster. */
 export const MAX_OFFICE_AGENTS = 32;
+
+/** Spec §9.4: a bubble is truncated at 80 characters so it never covers the map. */
+export const MAX_BUBBLE_CHARS = 80;
+
+/**
+ * The text a `needs_you` character says. A readable request carries its title; a corrupt one falls
+ * back to the category the kernel kept from the approval row. The roster row renders the same text,
+ * so the bubble is never the only way to read it.
+ */
+export function approvalBubbleText(
+  entry: Pick<AgentRosterEntry, "status" | "pendingApproval">,
+): string | null {
+  if (entry.status !== "needs_you") return null;
+  const approval = entry.pendingApproval;
+  if (approval === null) return null;
+  const title = approval.title.trim();
+  return (title === "" ? approval.category : title).slice(0, MAX_BUBBLE_CHARS);
+}
 
 /** Spec §9.3: `needs_you` wins over the tool kind, and `idle` ignores the last tool. */
 export function actionFor(entry: Pick<AgentRosterEntry, "status" | "activeToolKind">): OfficeAction {
@@ -59,28 +81,38 @@ export function hashAgentId(agentId: string): number {
 }
 
 /**
- * Assigns one desk per agent. Ids are processed in sorted order and start at their hashed desk, so
- * the assignment depends on the id set alone — never on roster order or event timing. A collision
- * probes forward to the next free desk; agents beyond the desk count reuse their hashed desk.
+ * Assigns one desk index per agent. Ids are processed in sorted order and start at their hashed
+ * desk, so the assignment depends on the id set alone — never on roster order or event timing. A
+ * collision probes forward to the next free desk; agents beyond the desk count reuse their hashed
+ * desk.
  */
-export function assignDesks(
-  agentIds: readonly string[],
-  desks: readonly OfficePoint[],
-): Map<string, OfficePoint> {
-  const assignment = new Map<string, OfficePoint>();
-  if (desks.length === 0) return assignment;
+export function assignDeskIndices(agentIds: readonly string[], deskCount: number): Map<string, number> {
+  const assignment = new Map<string, number>();
+  if (deskCount <= 0) return assignment;
 
   const taken = new Set<number>();
   for (const agentId of [...new Set(agentIds)].sort()) {
-    const start = hashAgentId(agentId) % desks.length;
+    const start = hashAgentId(agentId) % deskCount;
     let index = start;
-    for (let probe = 0; probe < desks.length; probe += 1) {
-      index = (start + probe) % desks.length;
+    for (let probe = 0; probe < deskCount; probe += 1) {
+      index = (start + probe) % deskCount;
       if (!taken.has(index)) break;
     }
     // Every desk is occupied: share deterministically instead of dropping the agent.
     if (taken.has(index)) index = start;
     taken.add(index);
+    assignment.set(agentId, index);
+  }
+  return assignment;
+}
+
+/** The same assignment resolved to points, for the scene's destination tiles. */
+export function assignDesks(
+  agentIds: readonly string[],
+  desks: readonly OfficePoint[],
+): Map<string, OfficePoint> {
+  const assignment = new Map<string, OfficePoint>();
+  for (const [agentId, index] of assignDeskIndices(agentIds, desks.length)) {
     const desk = desks[index];
     if (desk !== undefined) assignment.set(agentId, desk);
   }
@@ -93,20 +125,23 @@ export function toOfficeStates(
   desks: readonly OfficePoint[],
 ): AgentOfficeState[] {
   const visible = roster.slice(0, MAX_OFFICE_AGENTS);
-  const assignment = assignDesks(
+  const assignment = assignDeskIndices(
     visible.map((entry) => entry.agentId),
-    desks,
+    desks.length,
   );
   const states: AgentOfficeState[] = [];
   for (const entry of visible) {
-    const desk = assignment.get(entry.agentId);
-    if (desk === undefined) continue;
+    const deskIndex = assignment.get(entry.agentId);
+    const desk = deskIndex === undefined ? undefined : desks[deskIndex];
+    if (deskIndex === undefined || desk === undefined) continue;
     states.push({
       agentId: entry.agentId,
       name: entry.name,
       status: entry.status,
       action: actionFor(entry),
       desk,
+      deskIndex,
+      bubble: approvalBubbleText(entry),
     });
   }
   return states;
