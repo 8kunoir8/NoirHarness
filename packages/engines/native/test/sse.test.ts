@@ -30,9 +30,19 @@ describe("parseSseChunks", () => {
 
   it("reassembles multi-byte characters split across chunks", async () => {
     const encoded = new TextEncoder().encode("data: {\"a\":\"é\"}\n\n");
-    const split = 8; // inside the two-byte é sequence
+    const split = 13; // between the 0xC3 and 0xA9 bytes of é
     const chunks = [encoded.slice(0, split), encoded.slice(split)];
     expect(await collect(parseSseChunks(asIterableChunks(chunks)))).toEqual([{ a: "é" }]);
+  });
+
+  it("stops at [DONE] and emits nothing after it", async () => {
+    const chunks = ["data: {\"a\":1}\n\n", "data: [DONE]\n\n", "data: {\"b\":2}\n\n"];
+    expect(await collect(parseSseChunks(asIterable(chunks)))).toEqual([{ a: 1 }]);
+  });
+
+  it("discards an event the stream ends without terminating", async () => {
+    const chunks = ["data: {\"a\":1}\n\n", "data: {\"b\":2}"];
+    expect(await collect(parseSseChunks(asIterable(chunks)))).toEqual([{ a: 1 }]);
   });
 });
 
