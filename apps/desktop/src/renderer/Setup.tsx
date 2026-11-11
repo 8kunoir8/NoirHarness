@@ -5,6 +5,7 @@ import {
   ProviderListResult,
   SystemHealthResult,
   type ApiKind,
+  type EngineKind,
   type ModelCreateParams,
   type ModelView,
   type ProviderCreateParams,
@@ -40,6 +41,7 @@ export function Setup({ request, onOpenChat }: SetupProps) {
   const [modelId, setModelId] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [contextWindow, setContextWindow] = useState("200000");
+  const [engine, setEngine] = useState<EngineKind>("acp");
   const [engineDir, setEngineDir] = useState("");
   const [error, setError] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(false);
@@ -69,6 +71,9 @@ export function Setup({ request, onOpenChat }: SetupProps) {
   const modelValid =
     providerId !== "" && modelId.trim().length > 0 && Number.isInteger(Number(contextWindow)) &&
     Number(contextWindow) > 0 && !busy;
+  // The native loop speaks the chat-completions protocol, so only such a provider can back it.
+  const selectedProvider = providers.find((candidate) => candidate.id === providerId);
+  const nativeSupported = selectedProvider?.apiKind === "openai-completions";
 
   async function addProvider(event: FormEvent): Promise<void> {
     event.preventDefault();
@@ -104,7 +109,7 @@ export function Setup({ request, onOpenChat }: SetupProps) {
       modelId: modelId.trim(),
       contextWindow: Number(contextWindow),
       enabled: true,
-      engine: "acp",
+      engine,
     };
     if (displayName.trim() !== "") params.displayName = displayName.trim();
     setBusy(true);
@@ -213,7 +218,7 @@ export function Setup({ request, onOpenChat }: SetupProps) {
             const provider = providers.find((candidate) => candidate.id === model.providerId);
             return (
               <li key={model.id}>
-                <strong>{model.displayName}</strong>
+                <strong>{model.displayName} · {model.engine}</strong>
                 <span>{provider === undefined ? model.modelId : `${provider.name}/${model.modelId}`}</span>
                 <span>{model.contextWindow.toLocaleString()} ctx</span>
                 <button type="button" disabled={busy} onClick={() => void removeModel(model)}>
@@ -226,13 +231,39 @@ export function Setup({ request, onOpenChat }: SetupProps) {
         <form onSubmit={(event) => void addModel(event)}>
           <label>
             Provider
-            <select aria-label="Provider" value={providerId} onChange={(event) => setProviderId(event.target.value)}>
+            <select
+              aria-label="Provider"
+              value={providerId}
+              onChange={(event) => {
+                const next = event.target.value;
+                setProviderId(next);
+                // A previously chosen native engine cannot survive a provider switch it cannot use.
+                if (providers.find((provider) => provider.id === next)?.apiKind !== "openai-completions") {
+                  setEngine("acp");
+                }
+              }}
+            >
               <option value="">Select a provider</option>
               {providers.map((provider) => (
                 <option key={provider.id} value={provider.id}>{provider.name}</option>
               ))}
             </select>
           </label>
+          <label>
+            Engine
+            <select
+              aria-label="Engine"
+              value={engine}
+              onChange={(event) => setEngine(event.target.value as EngineKind)}
+              disabled={providerId !== "" && !nativeSupported}
+            >
+              <option value="acp">ACP</option>
+              <option value="native" disabled={!nativeSupported}>Native</option>
+            </select>
+          </label>
+          {providerId !== "" && !nativeSupported ? (
+            <p className="hint">Native requires an OpenAI-compatible provider</p>
+          ) : null}
           <label>
             Model id
             <input

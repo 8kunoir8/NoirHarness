@@ -10,8 +10,10 @@ import { setTimeout as delay } from "node:timers/promises";
  * reads its profile, posts here, and streams the result back over ACP. Only what the engine
  * actually sends is handled; anything else is a 404 so a wrong URL fails loudly.
  *
- * Prompt text selects the script: `tool` asks for a bash call, `slow` streams for ~6s so a spec
- * can queue a second prompt and interrupt, and `queued` answers with a distinct reply.
+ * Prompt text selects the script: `tool` asks for a bash call, `ntool` asks for a `shell.exec`
+ * call whose arguments arrive split across two frames (the native engine's reassembly path),
+ * `slow` streams for ~6s so a spec can queue a second prompt and interrupt, and `queued`
+ * answers with a distinct reply.
  */
 export interface MockProvider {
   /** `http://127.0.0.1:<port>/v1` — the base URL the provider form expects. */
@@ -22,13 +24,20 @@ export interface MockProvider {
   toolMessageSeen(): boolean;
   /** Every user prompt the engine sent, in arrival order. */
   prompts(): string[];
+  /**
+   * The `messages` array of every POSTed request body, in arrival order. `[0]` is the cold-start
+   * request, which is where a duplicated or dropped user prompt would show up.
+   */
+  requestMessages(): MockMessage[][];
   close(): Promise<void>;
 }
 
-interface WireMessage {
+export interface MockMessage {
   role?: unknown;
   content?: unknown;
 }
+
+type WireMessage = MockMessage;
 
 const MODELS_URL_PATH = "/v1/chat/completions";
 
@@ -95,6 +104,7 @@ function parseMessages(raw: string): WireMessage[] {
 export async function startMockProvider(): Promise<MockProvider> {
   const requests: string[] = [];
   const prompts: string[] = [];
+  const bodies: MockMessage[][] = [];
   const sockets = new Set<Socket>();
   let toolMessageSeen = false;
 
@@ -110,6 +120,7 @@ export async function startMockProvider(): Promise<MockProvider> {
     void readBody(req)
       .then(async (raw) => {
         const messages = parseMessages(raw);
+        bodies.push(messages);
         const hasToolMessage = messages.some((message) => message.role === "tool");
         if (hasToolMessage) toolMessageSeen = true;
         const prompt = lastUserText(messages);
@@ -117,6 +128,43 @@ export async function startMockProvider(): Promise<MockProvider> {
 
         startSse(res);
         res.on("error", () => undefined);
+
+        // Before the `tool` branches: `ntool` contains `tool`, and the native engine answers
+        // `shell.exec` where the ACP engine answers `bash`.
+        if (prompt.includes("ntool")) {
+          if (hasToolMessage) {
+            res.write(chunk({ role: "assistant", content: "native tool finished" }, null));
+            res.write(chunk({}, "stop"));
+            res.write("data: [DONE]\n\n");
+            res.end();
+            return;
+          }
+          // One call whose arguments JSON is split across two frames: the native loop must
+          // concatenate fragments by `index` before it can parse the shell command.
+          res.write(
+            chunk(
+              {
+                role: "assistant",
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call_native_1",
+                    type: "function",
+                    function: { name: "shell.exec", arguments: "{\"comm" },
+                  },
+                ],
+              },
+              null,
+            ),
+          );
+          res.write(
+            chunk({ tool_calls: [{ index: 0, function: { arguments: "and\":\"echo hi\"}" } }] }, null),
+          );
+          res.write(chunk({}, "tool_calls"));
+          res.write("data: [DONE]\n\n");
+          res.end();
+          return;
+        }
 
         if (prompt.includes("slow")) {
           // Stream long enough for a spec to queue a second prompt and interrupt this turn.
@@ -202,6 +250,7 @@ export async function startMockProvider(): Promise<MockProvider> {
     requests,
     toolMessageSeen: () => toolMessageSeen,
     prompts: () => [...prompts],
+    requestMessages: () => bodies.map((messages) => [...messages]),
     close: () => {
       const closed = Promise.withResolvers<void>();
       for (const socket of sockets) socket.destroy();

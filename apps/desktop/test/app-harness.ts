@@ -36,6 +36,7 @@ export async function bootstrap(
   mock: MockProvider,
   workspacePath: string,
   view = "Chats",
+  engine: "acp" | "native" = "acp",
 ): Promise<void> {
   await expect(page.getByTestId("kernel-status")).toHaveText("kernel ok", { timeout: 20_000 });
 
@@ -49,6 +50,8 @@ export async function bootstrap(
   const models = page.getByRole("region", { name: "Models", exact: true });
   await models.getByLabel("Provider", { exact: true }).selectOption({ label: "Mock" });
   await models.getByLabel("Model id", { exact: true }).fill("mock-1");
+  // The default is ACP; only a spec that drives the native loop touches this control.
+  if (engine !== "acp") await models.getByLabel("Engine", { exact: true }).selectOption(engine);
   await models.getByLabel("Context window", { exact: true }).fill("200000");
   await models.getByRole("button", { name: "Add model" }).click();
   await expect(models.locator("li").filter({ hasText: "mock-1" })).toBeVisible();

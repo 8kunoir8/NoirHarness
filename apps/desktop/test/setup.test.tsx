@@ -133,6 +133,53 @@ describe("Setup", () => {
     expect((screen.getByLabelText("API key") as HTMLInputElement).value).toBe("sk-keep");
   });
 
+  it("creates a native model and blocks native for a non-completions provider", async () => {
+    const created: unknown[] = [];
+    const request = makeRequest({
+      "provider.list": () => ({
+        providers: [
+          {
+            id: "p1",
+            name: "Mock",
+            baseUrl: "https://example.test/v1",
+            apiKind: "openai-completions",
+            enabled: true,
+            hasKey: true,
+            createdAt: 1,
+          },
+          {
+            id: "p2",
+            name: "Anthropic",
+            baseUrl: "https://api.anthropic.com",
+            apiKind: "anthropic-messages",
+            enabled: true,
+            hasKey: true,
+            createdAt: 2,
+          },
+        ],
+      }),
+      "model.create": (params) => {
+        created.push(params);
+        return { id: "m1" };
+      },
+    });
+
+    render(<Setup request={request} onOpenChat={() => undefined} />);
+    await screen.findByRole("option", { name: "Mock" });
+    await userEvent.selectOptions(screen.getByLabelText("Provider"), "p1");
+    await userEvent.selectOptions(screen.getByLabelText("Engine"), "native");
+    await userEvent.type(screen.getByLabelText("Model id"), "mock-1");
+    await userEvent.click(screen.getByRole("button", { name: "Add model" }));
+
+    await waitFor(() => expect(request).toHaveBeenCalledWith("model.create", expect.anything()));
+    expect(created[0]).toMatchObject({ providerId: "p1", modelId: "mock-1", engine: "native" });
+
+    // The native loop speaks chat-completions: another provider disables the choice and says why.
+    await userEvent.selectOptions(screen.getByLabelText("Provider"), "p2");
+    expect((screen.getByLabelText("Engine") as HTMLSelectElement).disabled).toBe(true);
+    expect(screen.getByText("Native requires an OpenAI-compatible provider")).toBeTruthy();
+  });
+
   it("enables Open chat only after a model exists", async () => {
     const empty = makeRequest();
     const { unmount } = render(<Setup request={empty} onOpenChat={() => undefined} />);
