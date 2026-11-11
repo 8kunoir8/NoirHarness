@@ -2,13 +2,23 @@ import type Database from "better-sqlite3";
 import { v7 as uuidv7 } from "uuid";
 import {
   ErrorCodes,
+  PayloadSchemas,
   RpcFault,
   type AgentCreateParams,
+  type AgentRosterEntry,
   type AgentUpdateParams,
   type AgentView,
 } from "@noir/protocol";
 import type { ModelService } from "./models.js";
 import { parsePermissionPolicy } from "./policy.js";
+import type { SessionService } from "./sessions.js";
+
+const STATUS_URGENCY: Record<AgentRosterEntry["status"], number> = {
+  needs_you: 0,
+  working: 1,
+  error: 2,
+  idle: 3,
+};
 
 const AGENT_COLUMNS = "id, name, role, engine_id, model_ref, permission_policy, default_workspace_id, archived_at, created_at";
 
@@ -31,7 +41,11 @@ function toView(row: Record<string, unknown>): AgentView {
  * never mutated by a running session, so every write here only affects sessions created afterwards.
  */
 export class AgentService {
-  constructor(private readonly db: Database.Database, private readonly models: ModelService) {}
+  constructor(
+    private readonly db: Database.Database,
+    private readonly models: ModelService,
+    private readonly sessions: SessionService,
+  ) {}
 
   /** Non-archived agents first by default; archived profiles keep their row and their sessions. */
   list(includeArchived = false): AgentView[] {
@@ -139,6 +153,68 @@ export class AgentService {
       | undefined;
     if (row === undefined) throw new RpcFault(ErrorCodes.notFound, "Agent not found");
     return toView(row);
+  }
+
+  /**
+   * The office snapshot. Status folds over every session the agent owns with a fixed precedence, so a
+   * pending approval is never hidden by a sibling session's error. The active fields describe the
+   * newest session that is still open; a closed session has nothing to open.
+   */
+  roster(): AgentRosterEntry[] {
+    const sessions = this.sessions.list();
+    const entries = this.list().map((agent): AgentRosterEntry => {
+      const mine = sessions.filter((session) => session.agentId === agent.id);
+      const active = mine.find((session) => session.status !== "closed");
+      return {
+        agentId: agent.id,
+        name: agent.name,
+        role: agent.role,
+        status: mine.some((session) => session.pendingApproval)
+          ? "needs_you"
+          : mine.some((session) => session.status === "running" || session.status === "starting")
+            ? "working"
+            : mine.some((session) => session.status === "error")
+              ? "error"
+              : "idle",
+        activeSessionId: active?.id ?? null,
+        activeSessionStatus: active?.status ?? null,
+        activeToolKind: active === undefined ? null : this.toolKindOf(active.id),
+        sessionCount: mine.length,
+        lastActivityAt: mine.reduce((latest, session) => Math.max(latest, session.lastEventAt), agent.createdAt),
+        usage: active === undefined ? null : this.usageOf(active.id),
+      };
+    });
+    return entries.sort((a, b) => {
+      const byStatus = STATUS_URGENCY[a.status] - STATUS_URGENCY[b.status];
+      if (byStatus !== 0) return byStatus;
+      const byName = a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+      return byName !== 0 ? byName : a.agentId.localeCompare(b.agentId);
+    });
+  }
+
+  /** The newest started tool's kind, or `null` when that payload names no known kind. */
+  toolKindOf(sessionId: string): AgentRosterEntry["activeToolKind"] {
+    const started = PayloadSchemas["tool.started"].safeParse(this.latestPayload(sessionId, "tool.started"));
+    return started.success ? (started.data.kind ?? null) : null;
+  }
+
+  /** The newest usage reading for a session, or `null` when the payload cannot be trusted. */
+  usageOf(sessionId: string): AgentRosterEntry["usage"] {
+    const usage = PayloadSchemas["usage.updated"].safeParse(this.latestPayload(sessionId, "usage.updated"));
+    return usage.success ? { used: usage.data.contextUsed, size: usage.data.contextWindow } : null;
+  }
+
+  /** Malformed JSON is no worse than a missing event: both read as `null`. */
+  private latestPayload(sessionId: string, type: "tool.started" | "usage.updated"): unknown {
+    const row = this.db
+      .prepare("SELECT payload_json FROM events WHERE session_id = ? AND type = ? ORDER BY seq DESC, rowid DESC LIMIT 1")
+      .get(sessionId, type) as { payload_json: string } | undefined;
+    if (row === undefined) return null;
+    try {
+      return JSON.parse(row.payload_json) as unknown;
+    } catch {
+      return null;
+    }
   }
 
   private assertNameAvailable(name: string, exceptId?: string): void {

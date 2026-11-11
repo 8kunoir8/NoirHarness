@@ -124,7 +124,7 @@ function setup(
     engine: opts.engine ?? "acp",
   });
   const skills = new SkillService(db, dataDir);
-  const agents = new AgentService(db, models);
+  const agents = new AgentService(db, models, sessions);
   const session =
     opts.agentPermissionPolicy === undefined
       ? sessions.create(workspace.id, { modelId: model.id })
@@ -1138,11 +1138,12 @@ describe("EngineManager over the fake ACP server", () => {
 
     const events = new EventStore(db);
     const models = new ModelService(db);
+    const sessions = new SessionService(db, events, models);
     const manager = new EngineManager({
       db,
       events,
-      sessions: new SessionService(db, events, models),
-      agents: new AgentService(db, models),
+      sessions,
+      agents: new AgentService(db, models, sessions),
       models,
       providers: new ProviderService(db, memorySecrets()),
       skills: new SkillService(db, tempDir()),

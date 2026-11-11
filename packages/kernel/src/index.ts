@@ -217,7 +217,7 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
       const sessions = new SessionService(db, events, models);
       const providers = new ProviderService(db, new KeyringSecrets());
       for (const key of providers.secretValues()) redactor.addSecret(key);
-      const agents = new AgentService(db, models);
+      const agents = new AgentService(db, models, sessions);
       // Task 5 shares this instance with EngineManager so enabled flags match what is materialized.
       const skills = new SkillService(database, dir);
       const engineManager = new EngineManager({
@@ -316,6 +316,7 @@ export async function startKernel(opts: { dataDir?: string } = {}): Promise<Kern
           agents.archive(id, archived);
           return { ok: true };
         },
+        [Methods.agentRoster]: async () => ({ agents: agents.roster(), generatedAt: Date.now() }),
         [Methods.sessionPrompt]: async (params) => engineManager.prompt(SessionPromptParams.parse(params)),
         [Methods.sessionInterrupt]: async (params) => engineManager.interrupt(SessionInterruptParams.parse(params).sessionId),
         [Methods.sessionCancelQueued]: async (params) =>

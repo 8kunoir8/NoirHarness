@@ -13,6 +13,7 @@ export const Methods = {
   agentCreate: "agent.create",
   agentUpdate: "agent.update",
   agentArchive: "agent.archive",
+  agentRoster: "agent.roster",
   sessionSubscribe: "session.subscribe",
   modelCreate: "model.create",
   modelList: "model.list",
@@ -163,6 +164,22 @@ export const AgentListParams = z.object({ includeArchived: z.boolean().optional(
 export type AgentListParams = z.infer<typeof AgentListParams>;
 export const AgentListResult = z.object({ agents: z.array(AgentView) });
 export type AgentListResult = z.infer<typeof AgentListResult>;
+
+export const AgentRosterEntry = z.object({
+  agentId: z.string(),
+  name: z.string(),
+  role: z.string(),
+  status: z.enum(["idle", "working", "needs_you", "error"]),
+  activeSessionId: z.string().nullable(),
+  activeSessionStatus: SessionStatus.nullable(),
+  activeToolKind: z.enum(["read", "write", "shell", "search", "skill", "other"]).nullable(),
+  sessionCount: z.number().int().nonnegative(),
+  lastActivityAt: z.number().int(),
+  usage: z.object({ used: z.number().int(), size: z.number().int() }).nullable(),
+});
+export type AgentRosterEntry = z.infer<typeof AgentRosterEntry>;
+export const AgentRosterResult = z.object({ agents: z.array(AgentRosterEntry), generatedAt: z.number().int() });
+export type AgentRosterResult = z.infer<typeof AgentRosterResult>;
 
 export const FsEntry = z.object({
   name: z.string(),

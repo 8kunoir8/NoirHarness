@@ -5,6 +5,7 @@ import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   AgentCreateParams,
+  AgentRosterEntry,
   AgentView,
   ErrorCodes,
   PermissionPolicySchema,
@@ -13,9 +14,11 @@ import {
 } from "@noir/protocol";
 import { AgentService } from "../src/agents.js";
 import { openDb } from "../src/db.js";
+import { EventStore } from "../src/eventStore.js";
 import { ModelService } from "../src/models.js";
 import { ProjectService } from "../src/projects.js";
 import { ProviderService, type Secrets } from "../src/providers.js";
+import { SessionService } from "../src/sessions.js";
 import { WorkspaceService } from "../src/workspaces.js";
 
 const dirs: string[] = [];
@@ -42,22 +45,26 @@ function memorySecrets(): Secrets {
 
 interface TestServices {
   db: Database.Database;
+  events: EventStore;
   projects: ProjectService;
   workspaces: WorkspaceService;
   providers: ProviderService;
   models: ModelService;
+  sessions: SessionService;
   agents: AgentService;
 }
 
 function setup(): TestServices {
   const db = openDb(join(tempDir(), "noir.db"));
   dbs.push(db);
+  const events = new EventStore(db);
   const projects = new ProjectService(db);
   const workspaces = new WorkspaceService(db, projects);
   const providers = new ProviderService(db, memorySecrets());
   const models = new ModelService(db);
-  const agents = new AgentService(db, models);
-  return { db, projects, workspaces, providers, models, agents };
+  const sessions = new SessionService(db, events, models);
+  const agents = new AgentService(db, models, sessions);
+  return { db, events, projects, workspaces, providers, models, sessions, agents };
 }
 
 function agentInput(overrides: Record<string, unknown> = {}): AgentCreateParams {
@@ -314,5 +321,232 @@ describe("AgentService", () => {
       ErrorCodes.conflict,
       /openai-completions/,
     );
+  });
+});
+
+const provenance = { engine: "acp" as const, engineName: "test", adapterVersion: "0" };
+
+function workspaceFor(services: TestServices): string {
+  return services.workspaces.createLocal(services.projects.add(tempDir()).id).id;
+}
+
+function entryFor(services: TestServices, agentId: string): AgentRosterEntry {
+  const entry = services.agents.roster().find((candidate) => candidate.agentId === agentId);
+  if (entry === undefined) throw new Error(`No roster entry for ${agentId}`);
+  return AgentRosterEntry.parse(entry);
+}
+
+describe("AgentService.roster", () => {
+  it("reports needs_you when any session has a pending approval", () => {
+    const services = setup();
+    const workspaceId = workspaceFor(services);
+    const agent = services.agents.create(agentInput({ name: "Nyx" }));
+    const session = services.sessions.create(workspaceId, { agentId: agent.id });
+    services.sessions.setStatus(session.id, "running");
+    services.events.append({
+      sessionId: session.id,
+      agentId: agent.id,
+      type: "permission.requested",
+      payload: {
+        approvalId: "a1",
+        category: "shell",
+        title: "Run ls",
+        options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }],
+      },
+      provenance,
+    });
+
+    expect(entryFor(services, agent.id)).toMatchObject({
+      status: "needs_you",
+      activeSessionId: session.id,
+      activeSessionStatus: "running",
+      sessionCount: 1,
+      activeToolKind: null,
+      usage: null,
+    });
+  });
+
+  it("reports working for starting and running sessions", () => {
+    const services = setup();
+    const workspaceId = workspaceFor(services);
+    const starting = services.agents.create(agentInput({ name: "Starting" }));
+    const running = services.agents.create(agentInput({ name: "Running" }));
+    services.sessions.create(workspaceId, { agentId: starting.id });
+    const runningSession = services.sessions.create(workspaceId, { agentId: running.id });
+    services.sessions.setStatus(runningSession.id, "running");
+
+    expect(entryFor(services, starting.id).status).toBe("working");
+    expect(entryFor(services, running.id).status).toBe("working");
+  });
+
+  it("reports error for an agent whose only session errored", () => {
+    const services = setup();
+    const workspaceId = workspaceFor(services);
+    const agent = services.agents.create(agentInput({ name: "Broken" }));
+    const session = services.sessions.create(workspaceId, { agentId: agent.id });
+    services.sessions.setStatus(session.id, "error");
+
+    expect(entryFor(services, agent.id)).toMatchObject({ status: "error", activeSessionId: session.id, activeSessionStatus: "error" });
+  });
+
+  it("reports idle for idle or closed sessions and for an agent with no sessions", () => {
+    const services = setup();
+    const workspaceId = workspaceFor(services);
+    const idle = services.agents.create(agentInput({ name: "Idle" }));
+    const closed = services.agents.create(agentInput({ name: "Closed" }));
+    const fresh = services.agents.create(agentInput({ name: "Fresh" }));
+
+    const idleSession = services.sessions.create(workspaceId, { agentId: idle.id });
+    services.sessions.setStatus(idleSession.id, "idle");
+    const closedSession = services.sessions.create(workspaceId, { agentId: closed.id });
+    services.sessions.setStatus(closedSession.id, "closed");
+
+    expect(entryFor(services, idle.id)).toMatchObject({ status: "idle", activeSessionId: idleSession.id, activeSessionStatus: "idle" });
+    // A closed session is not "active": there is nothing to open.
+    expect(entryFor(services, closed.id)).toMatchObject({ status: "idle", activeSessionId: null, activeSessionStatus: null });
+    expect(entryFor(services, fresh.id)).toMatchObject({ status: "idle", activeSessionId: null, sessionCount: 0, lastActivityAt: fresh.createdAt });
+  });
+
+  it("ranks working above error when the agent has both kinds of session", () => {
+    const services = setup();
+    const workspaceId = workspaceFor(services);
+    const agent = services.agents.create(agentInput({ name: "Mixed" }));
+    const errored = services.sessions.create(workspaceId, { agentId: agent.id });
+    services.sessions.setStatus(errored.id, "error");
+    const running = services.sessions.create(workspaceId, { agentId: agent.id });
+    services.sessions.setStatus(running.id, "running");
+
+    expect(entryFor(services, agent.id)).toMatchObject({ status: "working", sessionCount: 2 });
+  });
+
+  it("describes the newest open session, not the newest session overall", () => {
+    const services = setup();
+    const workspaceId = workspaceFor(services);
+    const agent = services.agents.create(agentInput({ name: "Multi" }));
+    const first = services.sessions.create(workspaceId, { agentId: agent.id });
+    const second = services.sessions.create(workspaceId, { agentId: agent.id });
+    services.db.prepare("UPDATE sessions SET created_at = 1 WHERE id = ?").run(first.id);
+    services.db.prepare("UPDATE sessions SET created_at = 2 WHERE id = ?").run(second.id);
+    services.db.prepare("UPDATE sessions SET status = 'closed' WHERE id = ?").run(second.id);
+
+    expect(entryFor(services, agent.id)).toMatchObject({
+      activeSessionId: first.id,
+      activeSessionStatus: "starting",
+      sessionCount: 2,
+    });
+  });
+
+  it("takes activeToolKind from the newest tool.started kind and rejects unknown or malformed payloads", () => {
+    const services = setup();
+    const workspaceId = workspaceFor(services);
+    const agent = services.agents.create(agentInput({ name: "Tools" }));
+    const session = services.sessions.create(workspaceId, { agentId: agent.id });
+
+    services.events.append({
+      sessionId: session.id,
+      agentId: agent.id,
+      type: "tool.started",
+      payload: { toolCallId: "t1", title: "Read file", kind: "read" },
+      provenance,
+    });
+    expect(entryFor(services, agent.id).activeToolKind).toBe("read");
+
+    // A newer payload without `kind` supersedes the older one instead of falling back to it.
+    services.events.append({
+      sessionId: session.id,
+      agentId: agent.id,
+      type: "tool.started",
+      payload: { toolCallId: "t2", title: "Untyped" },
+      provenance,
+    });
+    expect(entryFor(services, agent.id).activeToolKind).toBeNull();
+
+    services.db
+      .prepare(
+        "UPDATE events SET payload_json = ? WHERE id = (SELECT id FROM events WHERE session_id = ? AND type = 'tool.started' ORDER BY seq DESC LIMIT 1)",
+      )
+      .run(JSON.stringify({ toolCallId: "t3", title: "Bad kind", kind: "telepathy" }), session.id);
+    expect(entryFor(services, agent.id).activeToolKind).toBeNull();
+
+    services.db
+      .prepare(
+        "UPDATE events SET payload_json = ? WHERE id = (SELECT id FROM events WHERE session_id = ? AND type = 'tool.started' ORDER BY seq DESC LIMIT 1)",
+      )
+      .run("{not json", session.id);
+    expect(entryFor(services, agent.id).activeToolKind).toBeNull();
+  });
+
+  it("reports usage from the newest usage.updated payload", () => {
+    const services = setup();
+    const workspaceId = workspaceFor(services);
+    const agent = services.agents.create(agentInput({ name: "Tokens" }));
+    const session = services.sessions.create(workspaceId, { agentId: agent.id });
+    expect(entryFor(services, agent.id).usage).toBeNull();
+
+    services.events.append({
+      sessionId: session.id,
+      agentId: agent.id,
+      type: "usage.updated",
+      payload: { inputTokens: 1, outputTokens: 2, contextUsed: 500, contextWindow: 2_000, costUsd: 0 },
+      provenance,
+    });
+    expect(entryFor(services, agent.id).usage).toEqual({ used: 500, size: 2_000 });
+
+    services.events.append({
+      sessionId: session.id,
+      agentId: agent.id,
+      type: "usage.updated",
+      payload: { inputTokens: 3, outputTokens: 4, contextUsed: 900, contextWindow: 2_000, costUsd: 0 },
+      provenance,
+    });
+    expect(entryFor(services, agent.id).usage).toEqual({ used: 900, size: 2_000 });
+
+    services.db
+      .prepare(
+        "UPDATE events SET payload_json = ? WHERE id = (SELECT id FROM events WHERE session_id = ? AND type = 'usage.updated' ORDER BY seq DESC LIMIT 1)",
+      )
+      .run(JSON.stringify({ contextUsed: "lots", contextWindow: 2_000 }), session.id);
+    expect(entryFor(services, agent.id).usage).toBeNull();
+  });
+
+  it("uses the newest event time across all of the agent's sessions", () => {
+    const services = setup();
+    const workspaceId = workspaceFor(services);
+    const agent = services.agents.create(agentInput({ name: "Busy" }));
+    const older = services.sessions.create(workspaceId, { agentId: agent.id });
+    const newer = services.sessions.create(workspaceId, { agentId: agent.id });
+    services.db.prepare("UPDATE sessions SET created_at = 1 WHERE id = ?").run(older.id);
+    services.db.prepare("UPDATE sessions SET created_at = 2 WHERE id = ?").run(newer.id);
+
+    const later = Date.now() + 60_000;
+    services.events.append({
+      sessionId: older.id,
+      agentId: agent.id,
+      type: "message.delta",
+      payload: { messageId: "m1", role: "assistant", block: { type: "text", text: "later" } },
+      provenance,
+      ts: later,
+    });
+
+    expect(entryFor(services, agent.id).lastActivityAt).toBe(later);
+  });
+
+  it("sorts by status urgency, then by name", () => {
+    const services = setup();
+    const workspaceId = workspaceFor(services);
+    const beta = services.agents.create(agentInput({ name: "Beta" }));
+    const alpha = services.agents.create(agentInput({ name: "Alpha" }));
+    const zulu = services.agents.create(agentInput({ name: "Zulu" }));
+    const aardvark = services.agents.create(agentInput({ name: "Aardvark" }));
+
+    const betaSession = services.sessions.create(workspaceId, { agentId: beta.id });
+    services.sessions.setStatus(betaSession.id, "error");
+    const alphaSession = services.sessions.create(workspaceId, { agentId: alpha.id });
+    services.sessions.setStatus(alphaSession.id, "idle");
+    services.sessions.create(workspaceId, { agentId: zulu.id }); // starting -> working
+    const aardvarkSession = services.sessions.create(workspaceId, { agentId: aardvark.id });
+    services.sessions.setStatus(aardvarkSession.id, "idle");
+
+    expect(services.agents.roster().map((entry) => entry.name)).toEqual(["Zulu", "Beta", "Aardvark", "Alpha"]);
   });
 });
