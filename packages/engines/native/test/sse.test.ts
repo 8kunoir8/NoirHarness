@@ -1,0 +1,41 @@
+import { describe, expect, it } from "vitest";
+import { parseSseChunks } from "../src/sse.js";
+
+async function* asIterable(chunks: readonly string[]): AsyncGenerator<Uint8Array> {
+  const encoder = new TextEncoder();
+  for (const chunk of chunks) yield encoder.encode(chunk);
+}
+
+async function collect<T>(chunks: AsyncIterable<T>): Promise<T[]> {
+  const events: T[] = [];
+  for await (const event of chunks) events.push(event);
+  return events;
+}
+
+describe("parseSseChunks", () => {
+  it("reassembles events split across chunks and ignores comments", async () => {
+    const chunks = [": keepalive\n", "data: {\"a\":", "1}\n\n", "data: [DONE]\n\n"];
+    expect(await collect(parseSseChunks(asIterable(chunks)))).toEqual([{ a: 1 }]);
+  });
+
+  it("supports CRLF and multi-line data", async () => {
+    const chunks = ["data: {\"a\":\r\n", "data: 1}\r\n\r\n"];
+    expect(await collect(parseSseChunks(asIterable(chunks)))).toEqual([{ a: 1 }]);
+  });
+
+  it("throws on malformed JSON instead of skipping the event", async () => {
+    const chunks = ["data: not json\n\n"];
+    await expect(collect(parseSseChunks(asIterable(chunks)))).rejects.toThrow("invalid SSE chunk");
+  });
+
+  it("reassembles multi-byte characters split across chunks", async () => {
+    const encoded = new TextEncoder().encode("data: {\"a\":\"é\"}\n\n");
+    const split = 8; // inside the two-byte é sequence
+    const chunks = [encoded.slice(0, split), encoded.slice(split)];
+    expect(await collect(parseSseChunks(asIterableChunks(chunks)))).toEqual([{ a: "é" }]);
+  });
+});
+
+async function* asIterableChunks(chunks: readonly Uint8Array[]): AsyncGenerator<Uint8Array> {
+  for (const chunk of chunks) yield chunk;
+}
