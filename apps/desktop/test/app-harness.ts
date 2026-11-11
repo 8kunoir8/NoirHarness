@@ -30,8 +30,12 @@ export function launchApp(harness: Harness): Promise<ElectronApplication> {
   });
 }
 
-/** Registers provider, model, project and workspace, then creates the chat from the list pane. */
-export async function bootstrap(
+/**
+ * Registers provider, model, project and workspace, then lands on `view`. It stops short of
+ * creating a chat because `session.create` without an agent also inserts an "Agent" profile:
+ * a spec that counts the roster must own every agent it expects.
+ */
+export async function setupWorkspace(
   page: Page,
   mock: MockProvider,
   workspacePath: string,
@@ -65,8 +69,17 @@ export async function bootstrap(
   await projects.getByLabel("Project", { exact: true }).selectOption({ label: basename(workspacePath) });
   await projects.getByRole("button", { name: "Create workspace" }).click();
   await projects.getByLabel("Workspace", { exact: true }).selectOption({ label: workspacePath });
+}
 
-  // Create the chat from the rail list, not from a tab: that is the path the shell owns.
+/** `setupWorkspace` plus one chat created from the rail list: the path the shell owns. */
+export async function bootstrap(
+  page: Page,
+  mock: MockProvider,
+  workspacePath: string,
+  view = "Chats",
+  engine: "acp" | "native" = "acp",
+): Promise<void> {
+  await setupWorkspace(page, mock, workspacePath, view, engine);
   const sessions = page.getByRole("region", { name: "Sessions", exact: true });
   await sessions.getByLabel("New chat model", { exact: true }).selectOption({ label: "mock-1" });
   await sessions.getByRole("button", { name: "New chat" }).click();
