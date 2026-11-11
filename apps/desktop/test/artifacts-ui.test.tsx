@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RequestFn } from "../src/renderer/api.js";
@@ -186,10 +186,12 @@ describe("CsvArtifact", () => {
     expect(within(table).queryByRole("cell", { name: "row5099" })).toBeNull();
   });
 
-  it("marks a cell cut at the 500-character cap", async () => {
+  it("marks a cell cut at the 500-character cap without claiming a row cap", async () => {
     const request = vi.fn(async () => ({ ...readResult, content: `text\n${"x".repeat(600)}` }));
     const { container } = render(harness(request as unknown as RequestFn, "wide.csv"));
 
+    expect(await screen.findByText("1 row")).toBeTruthy();
+    expect(screen.queryByText(/5,000 rows/)).toBeNull();
     const cell = await waitFor(() => {
       const found = container.querySelector("tbody td");
       if (found === null) throw new Error("no cell yet");
@@ -197,6 +199,44 @@ describe("CsvArtifact", () => {
     });
     expect(cell.textContent?.endsWith("…")).toBe(true);
     expect(cell.textContent?.length).toBe(500);
+  });
+
+  it("keeps the row count when only the column cap is hit", async () => {
+    const row = (prefix: string) => Array.from({ length: 121 }, (_, index) => `${prefix}${index}`).join(",");
+    const request = vi.fn(async () => ({ ...readResult, content: `${row("c")}\n${row("v")}` }));
+    render(harness(request as unknown as RequestFn, "columns.csv"));
+
+    const table = await screen.findByRole("table");
+    expect(within(table).getAllByRole("columnheader")).toHaveLength(100);
+    expect(screen.getByText("1 row")).toBeTruthy();
+    expect(screen.queryByText(/5,000 rows/)).toBeNull();
+  });
+
+  it("generates Column N headers when the first row has no header", async () => {
+    const request = vi.fn(async () => ({ ...readResult, content: "1,2\n3,4" }));
+    render(harness(request as unknown as RequestFn, "numbers.csv"));
+
+    const table = await screen.findByRole("table");
+    expect(within(table).getByRole("columnheader", { name: "Column 1" })).toBeTruthy();
+    expect(within(table).getByRole("columnheader", { name: "Column 2" })).toBeTruthy();
+    expect(within(table).getByRole("cell", { name: "3" })).toBeTruthy();
+    expect(screen.getByText("2 rows")).toBeTruthy();
+  });
+
+  it("windows the body to the scroll position", async () => {
+    const rows = Array.from({ length: 1_000 }, (_, index) => `row${index}`);
+    const request = vi.fn(async () => ({ ...readResult, content: ["id", ...rows].join("\n") }));
+    const { container } = render(harness(request as unknown as RequestFn, "tall.csv"));
+
+    const table = await screen.findByRole("table");
+    expect(within(table).getByRole("cell", { name: "row0" })).toBeTruthy();
+
+    const scroller = container.querySelector(".artifact-csv-scroll");
+    if (scroller === null) throw new Error("no scroller");
+    fireEvent.scroll(scroller, { target: { scrollTop: 24 * 500 } });
+
+    await waitFor(() => expect(within(table).queryByRole("cell", { name: "row0" })).toBeNull());
+    expect(within(table).getByRole("cell", { name: "row500" })).toBeTruthy();
   });
 });
 

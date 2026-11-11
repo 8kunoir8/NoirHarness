@@ -16,9 +16,14 @@ function formatCount(value: number): string {
   return value.toLocaleString("en-US");
 }
 
-/** The parser drops everything past the cap, so an at-cap cell is the only evidence it was cut. */
-function displayCell(value: string): string {
-  return value.length >= MAX_CELL_CHARS ? `${value.slice(0, MAX_CELL_CHARS - 1)}…` : value;
+/**
+ * The parser drops everything past the cell cap without a marker, so an at-cap cell is the
+ * only evidence one was cut — and only a truncated table proves some cell hit the cap.
+ */
+function displayCell(value: string, truncated: boolean): string {
+  return truncated && value.length >= MAX_CELL_CHARS
+    ? `${value.slice(0, MAX_CELL_CHARS - 1)}…`
+    : value;
 }
 
 export function CsvArtifact({ text }: CsvArtifactProps) {
@@ -68,7 +73,8 @@ export function CsvArtifact({ text }: CsvArtifactProps) {
   return (
     <section className="artifact-csv">
       <p className="artifact-csv-summary" role="status">
-        {table.truncated
+        {/* `truncated` also covers the cell and column caps, so it cannot claim 5,000 rows on its own. */}
+        {table.truncated && table.rows.length >= MAX_ROWS
           ? `${formatCount(MAX_ROWS)} rows shown (truncated)`
           : `${formatCount(table.rows.length)} ${table.rows.length === 1 ? "row" : "rows"}`}
       </p>
@@ -82,7 +88,7 @@ export function CsvArtifact({ text }: CsvArtifactProps) {
             <tr>
               {table.headers.map((header, index) => (
                 <th key={index} scope="col">
-                  {displayCell(header)}
+                  {displayCell(header, table.truncated)}
                 </th>
               ))}
             </tr>
@@ -92,9 +98,9 @@ export function CsvArtifact({ text }: CsvArtifactProps) {
             {visible.map((row, rowIndex) => {
               const width = Math.max(table.headers.length, row.length);
               return (
-                <tr key={start + rowIndex}>
+                <tr key={start + rowIndex} className={(start + rowIndex) % 2 === 1 ? "artifact-csv-stripe" : undefined}>
                   {Array.from({ length: width }, (_, cellIndex) => (
-                    <td key={cellIndex}>{displayCell(row[cellIndex] ?? "")}</td>
+                    <td key={cellIndex}>{displayCell(row[cellIndex] ?? "", table.truncated)}</td>
                   ))}
                 </tr>
               );

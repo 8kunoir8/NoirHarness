@@ -233,7 +233,8 @@
   font-weight: 600;
 }
 
-.artifact-csv-table tbody tr:nth-child(even) td {
+/* Striping follows the absolute row index (set by CsvArtifact), not the windowed DOM order. */
+.artifact-csv-table tbody tr.artifact-csv-stripe td {
   background: color-mix(in srgb, var(--surface-sunken) 45%, transparent);
 }
 
@@ -293,13 +294,12 @@
   min-height: 0;
   overflow: auto;
   padding: 16px;
-  display: flex;
-  justify-content: center;
-  align-items: flex-start;
 }
 
 .pdf-canvas {
   display: block;
+  /* Centres a page narrower than the pane while leaving the left edge scrollable when it is wider. */
+  margin-inline: auto;
   background: #fff;
   box-shadow: 0 1px 6px rgba(0, 0, 0, 0.25);
 }

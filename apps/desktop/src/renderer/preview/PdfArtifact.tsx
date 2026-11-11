@@ -27,7 +27,11 @@ function loadPdfJs(): Promise<PdfJs> {
     ]);
     pdfjs.GlobalWorkerOptions.workerSrc = worker.default;
     return pdfjs;
-  })();
+  })().catch((cause: unknown) => {
+    // A failed import must not poison later attempts, including Reload.
+    loading = undefined;
+    throw cause;
+  });
   return loading;
 }
 
@@ -49,6 +53,7 @@ export function PdfArtifact({ base64 }: PdfArtifactProps) {
 
   const [status, setStatus] = useState<PdfStatus>("loading");
   const [message, setMessage] = useState("");
+  const [renderError, setRenderError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [pageCount, setPageCount] = useState(0);
   const [zoom, setZoom] = useState(1);
@@ -59,6 +64,7 @@ export function PdfArtifact({ base64 }: PdfArtifactProps) {
     let live = true;
     setStatus("loading");
     setMessage("");
+    setRenderError(null);
     setPage(1);
     setPageCount(0);
 
@@ -119,6 +125,8 @@ export function PdfArtifact({ base64 }: PdfArtifactProps) {
     if (document === null || canvas === null) return;
     let live = true;
     let task: RenderTask | undefined;
+    // A render failure is per page/zoom, not per document: this run retries it.
+    setRenderError(null);
 
     void (async () => {
       const pdfPage = await document.getPage(page);
@@ -148,8 +156,7 @@ export function PdfArtifact({ base64 }: PdfArtifactProps) {
     })().catch((cause: unknown) => {
       // Cancelling the previous page rejects its task; that is expected, not an error.
       if (!live || (cause instanceof Error && cause.name === "RenderingCancelledException")) return;
-      setStatus("error");
-      setMessage(errorMessage(cause));
+      setRenderError(errorMessage(cause));
     });
 
     return () => {
@@ -158,6 +165,9 @@ export function PdfArtifact({ base64 }: PdfArtifactProps) {
       if (renderTaskRef.current === task) renderTaskRef.current = null;
     };
   }, [status, page, zoom, fit, paneWidth]);
+
+  // Document and render failures share one panel; only the document failure drops the pane.
+  const failure = status === "error" ? message : renderError;
 
   return (
     <section className="artifact-pdf">
@@ -218,19 +228,24 @@ export function PdfArtifact({ base64 }: PdfArtifactProps) {
       </div>
       {status === "loading" ? (
         <p className="empty">Loading PDF…</p>
-      ) : status === "error" ? (
-        <div role="alert" className="artifact-error pdf-error">
-          <p className="pdf-error-title">Could not read PDF</p>
-          {message.split("\n").map((line, index) => (
-            <p key={index} className="pdf-error-detail">
-              {line}
-            </p>
-          ))}
-        </div>
       ) : (
-        <div className="pdf-scroll" ref={scrollRef}>
-          <canvas ref={canvasRef} className="pdf-canvas" role="img" aria-label={`PDF page ${page}`} />
-        </div>
+        <>
+          {failure !== null ? (
+            <div role="alert" className="artifact-error pdf-error">
+              <p className="pdf-error-title">Could not read PDF</p>
+              {failure.split("\n").map((line, index) => (
+                <p key={index} className="pdf-error-detail">
+                  {line}
+                </p>
+              ))}
+            </div>
+          ) : null}
+          {status === "ready" ? (
+            <div className="pdf-scroll" ref={scrollRef}>
+              <canvas ref={canvasRef} className="pdf-canvas" role="img" aria-label={`PDF page ${page}`} />
+            </div>
+          ) : null}
+        </>
       )}
     </section>
   );
