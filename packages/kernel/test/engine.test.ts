@@ -1003,6 +1003,36 @@ describe("EngineManager with the native engine", () => {
     },
     TEST_TIMEOUT_MS,
   );
+
+  it(
+    "reports the exit code native appends, not one the command printed",
+    async () => {
+      const server = await startFakeOpenAiServer([
+        { toolCall: { id: "call_1", name: "shell.exec", args: JSON.stringify({ command: "echo exit code: 7" }) } },
+        { text: "done" },
+      ]);
+      try {
+        const { events, manager, session } = setup({ baseUrl: server.baseUrl, engine: "native" });
+        await manager.prompt({
+          sessionId: session.id,
+          requestId: "native-exit",
+          content: [{ type: "text", text: "run it" }],
+        });
+
+        const requested = await waitForEvent(events, session.id, (event) => event.type === "permission.requested");
+        await manager.respond(eventPayload(requested, "permission.requested").approvalId, "allow_once");
+        await waitForEvent(events, session.id, (event) => event.type === "turn.completed");
+
+        // stdout contains a line that looks like the trailer; the real trailer is appended last, so 0 wins.
+        const completed = events.list(session.id).find((event) => event.type === "command.completed");
+        expect(eventPayload(completed!, "command.completed")).toEqual({ commandId: "call_1", exitCode: 0 });
+        await manager.closeSession(session.id);
+      } finally {
+        await server.close();
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
 });
 
 describe("kernel RPC over the fake ACP server", () => {

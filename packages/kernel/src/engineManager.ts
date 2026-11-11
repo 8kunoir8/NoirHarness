@@ -201,9 +201,9 @@ function planStatus(status: string): "pending" | "active" | "done" {
   }
 }
 
-/** Native's shell result reports the real exit code; ACP's content does not, so a finished call is 0. */
+/** Native's shell result appends the real exit code last; ACP's content does not, so a finished call is 0. */
 function exitCodeFrom(text: string | undefined): number {
-  const match = /(?:^|\n)exit code: (-?\d+)/.exec(text ?? "");
+  const match = /(?:^|\n)exit code: (-?\d+)\s*$/.exec(text ?? "");
   const parsed = match?.[1] === undefined ? 0 : Number(match[1]);
   return Number.isSafeInteger(parsed) ? parsed : 0;
 }
