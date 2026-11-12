@@ -1,5 +1,5 @@
 import { lstat } from "node:fs/promises";
-import { isAbsolute } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { ErrorCodes, RpcFault } from "@noir/protocol";
 
 export type FetchTarget =
@@ -29,16 +29,26 @@ export function parseGitTarget(source: string, ref: string | undefined): FetchTa
   return { kind: "git", url: url.href, ref };
 }
 
+/** A component that is a file reports ENOTDIR, which means the same thing as ENOENT here. */
+function isMissing(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
 /** Resolves a `local` target to a real directory; a link is refused rather than followed. */
 export async function parseLocalTarget(source: string): Promise<FetchTarget> {
   if (!isAbsolute(source)) throw new RpcFault(ErrorCodes.invalidParams, "A local skill source must be an absolute path");
-  const marker = await lstat(source).catch((error: unknown) => {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+  // `resolve` strips a trailing separator; without that, POSIX `lstat` resolves the final component
+  // as a directory and reports the target, accepting the very link this refuses. It also normalizes
+  // `.`/`..` segments, so the path stored and the path checked are the same one.
+  const resolved = resolve(source);
+  const marker = await lstat(resolved).catch((error: unknown) => {
+    if (isMissing(error)) {
       throw new RpcFault(ErrorCodes.invalidParams, `${source} is not a directory`);
     }
-    throw error;
+    throw new RpcFault(ErrorCodes.invalidParams, `${source} cannot be inspected: ${(error as Error).message}`);
   });
   if (marker.isSymbolicLink()) throw new RpcFault(ErrorCodes.invalidParams, `${source} is a symlink`);
   if (!marker.isDirectory()) throw new RpcFault(ErrorCodes.invalidParams, `${source} is not a directory`);
-  return { kind: "local", path: source };
+  return { kind: "local", path: resolved };
 }

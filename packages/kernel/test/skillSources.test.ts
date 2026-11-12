@@ -1,8 +1,20 @@
-import { mkdtempSync, mkdirSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { join, resolve, sep } from "node:path";
+import { ErrorCodes } from "@noir/protocol";
+import { afterAll, describe, expect, it } from "vitest";
 import { parseGitTarget, parseLocalTarget } from "../src/skillSources.js";
+
+const root = mkdtempSync(join(tmpdir(), "noir src "));
+const realDir = join(root, "real");
+mkdirSync(realDir);
+const link = join(root, "link");
+if (process.platform === "win32") symlinkSync(realDir, link, "junction");
+else symlinkSync(realDir, link, "dir");
+const file = join(root, "afile");
+writeFileSync(file, "plain");
+
+afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 describe("fetch target validation", () => {
   it("accepts https anywhere", () => {
@@ -43,15 +55,18 @@ describe("fetch target validation", () => {
   });
 
   it("accepts an absolute local directory and refuses a link", async () => {
-    const root = mkdtempSync(join(tmpdir(), "noir src "));
-    expect(await parseLocalTarget(root)).toEqual({ kind: "local", path: root });
-    const target = join(root, "real");
-    mkdirSync(target);
-    const link = join(root, "link");
-    if (process.platform === "win32") symlinkSync(target, link, "junction");
-    else symlinkSync(target, link, "dir");
+    expect(await parseLocalTarget(realDir)).toEqual({ kind: "local", path: resolve(realDir) });
     await expect(parseLocalTarget(link)).rejects.toThrow(/symlink/);
     await expect(parseLocalTarget(join(root, "missing"))).rejects.toThrow(/not a directory/);
     await expect(parseLocalTarget("relative/path")).rejects.toThrow(/absolute/);
+  });
+
+  it("normalizes the path before stat, so a trailing separator cannot smuggle a link", async () => {
+    await expect(parseLocalTarget(link + sep)).rejects.toThrow(/symlink/);
+    expect(await parseLocalTarget(root + sep)).toEqual({ kind: "local", path: resolve(root) });
+  });
+
+  it("reports a path that traverses a file as an invalid parameter, not an internal error", async () => {
+    await expect(parseLocalTarget(join(file, "x"))).rejects.toMatchObject({ code: ErrorCodes.invalidParams });
   });
 });
