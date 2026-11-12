@@ -452,6 +452,23 @@ describe("fetchPage limits", () => {
     }
   });
 
+  it("does not call a body that ended exactly at the cap truncated", async () => {
+    // Destroying the stream at the cap is also how a body that is exactly the cap ends. The flag
+    // is for the page that had more to give.
+    const exact = Buffer.alloc(2 * 1024 * 1024, 0x61);
+    const site = await serve((_req, res) => {
+      res.writeHead(200, { "content-type": "text/plain", "content-length": String(exact.length) });
+      res.end(exact);
+    });
+    try {
+      const page = await fetchPage(site.url, new AbortController().signal, { allowLoopback: true });
+      expect(page.bytes).toBe(exact.length);
+      expect(page.truncated).toBe(false);
+    } finally {
+      await site.close();
+    }
+  });
+
   it("reports the size a binary body declares, not the cap it was stopped at", async () => {
     const declared = 5 * 1024 * 1024;
     const site = await serve((_req, res) => {

@@ -248,6 +248,7 @@ function requestOnce(
       // hops would otherwise each hold up to 2 MiB of a page nobody reads.
       const redirect = REDIRECTS[response.statusCode ?? 0] === true && typeof response.headers.location === "string";
       const keep = !redirect && isTextual(bareType(response.headers["content-type"] ?? ""));
+      const declared = declaredLength(response.headers["content-length"]);
       // A binary body is never returned, so its bytes are counted and dropped rather than held.
       const chunks: Buffer[] = [];
       let bytes = 0;
@@ -267,8 +268,9 @@ function requestOnce(
             headers: response.headers,
             body: keep ? Buffer.concat(chunks) : Buffer.alloc(0),
             // A capped body is shorter than the response: report what the server declared.
-            bytes: Math.max(bytes, declaredLength(response.headers["content-length"])),
-            truncated: stopped,
+            bytes: Math.max(bytes, declared),
+            // A body that ended exactly at the cap was complete, not cut.
+            truncated: stopped && bytes !== declared,
           });
         }
       };
