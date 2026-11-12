@@ -128,9 +128,9 @@ only forwards the list there and spawns nothing.
 
 The native engine has one outbound tool, `web.fetch`: a single `GET` of a public URL, with no
 request body, no cookies, and no caller-chosen headers, following at most five redirects. A URL that
-carries credentials is refused rather than turned into `Authorization: Basic`. It is approved as the `network`
-category, so a `network: allow` policy skips the card, `reject` refuses without one, and nothing is
-fetched before the decision.
+carries credentials is refused rather than turned into `Authorization: Basic`. It is approved as the
+`network` category, so a `network: allow` policy skips the card, `reject` refuses without one, and
+nothing is fetched before the decision.
 
 What comes back is readable text, not the document. HTML goes through the engine's own tokenizer
 (`packages/engines/native/src/htmlText.ts`): `<title>` becomes the first heading, `<main>`-like
@@ -139,21 +139,24 @@ keep their targets resolved against the final URL, nested lists and tables survi
 `<code>` is marked with backticks. JSON is pretty-printed unless indenting it would cost more than
 64 KiB, which is what the returned text is capped at anyway; other textual types pass through; a
 binary type is refused with its name and size — the size the server declared — instead of its bytes,
-and its body is counted rather than buffered. Text is decoded as its declared charset — the header, a
-BOM, then a `<meta charset>` — and falls back to UTF-8. The text is capped at 64 KiB, and a non-2xx
-status is prefixed as `HTTP 404 Not Found`. A page longer than the 2 MiB download cap ends with a
-line saying the body stopped there, so a cut page does not read as a complete one.
+and its body is counted rather than buffered. Text is decoded as its declared charset — the header,
+a BOM, then a `<meta charset>`. A page that declares nothing is read as UTF-8 when it is valid UTF-8
+and as windows-1252 when it is not, which is HTML's own rule. The text is capped at 64 KiB, and a
+non-2xx status is prefixed as `HTTP 404 Not Found`. A page longer than the 2 MiB download cap ends
+with a line saying the body stopped there, so a cut page does not read as a complete one.
 
 Targets are refused before the request leaves the machine, or by the socket's own DNS answer: only
 `http` and `https`; no `localhost`, `.local`, `.internal`, or `home.arpa` name; and no private,
-loopback, link-local, multicast, reserved, or IPv4-in-IPv6 address. The `lookup` handed to `net.connect` validates every
-address the host resolves to and connects to that same answer, so a second resolution cannot point
-back at the local machine. The check runs again on every redirect hop, and a literal address in the
-URL is checked directly — `net.connect` never asks DNS for one. Compression is kept out of the
-path: `Accept-Encoding: identity` is sent and there is no decoding code, so a page that arrives
-compressed anyway is refused by name rather than returned as bytes. A body stops at 2 MiB, a fetch
-at 20 s in total across redirects, a stalled response at 10 s, and an interrupt aborts the socket.
-Only `301`, `302`, `303`, `307`, and `308` are followed, and a redirect's body is never read.
+loopback, link-local, multicast, reserved, or IPv4-in-IPv6 address. The `lookup` handed to
+`net.connect` validates every address the host resolves to and connects to that same answer, so a
+second resolution cannot point back at the local machine. The check runs again on every redirect
+hop, and a literal address in the URL is checked directly — `net.connect` never asks DNS for one.
+`Accept-Encoding: identity` is sent, and a page that arrives compressed anyway is decoded —
+`gzip`, `deflate`, `brotli` — with the decoded size capped at the body limit, so a compression
+bomb stops where a long body does. An encoding with no decoder is refused by name. A body stops at
+2 MiB, a fetch at 20 s in total across redirects, a stalled response at 10 s, and an interrupt
+aborts the socket. Only `301`, `302`, `303`, `307`, and `308` are followed, and a redirect's body is
+never read.
 
 Only the native engine has it. An ACP agent reaches the network through whatever tools it brings.
 

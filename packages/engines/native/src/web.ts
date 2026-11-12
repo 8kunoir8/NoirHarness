@@ -3,6 +3,8 @@ import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { BlockList, isIPv4, isIPv6, type LookupFunction } from "node:net";
 import { TextDecoder } from "node:util";
+import type { Transform } from "node:stream";
+import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
 import { htmlToText } from "./htmlText.js";
 
 /**
@@ -35,6 +37,10 @@ for (const [network, prefix] of [
   // Wrappers that carry an IPv4 target: a translator or relay on the host's path would reach it,
   // and refusing them costs a page nothing. `::ffff:0:0/96` is deliberately absent — it is how
   // `BlockList` itself represents every IPv4 address, so listing it refuses the whole internet.
+  // The translated and compatible forms are checked instead; `net.isIP` reads both as plain IPv6,
+  // so no mapping rule catches them, and each was measured reaching a loopback listener.
+  ["::ffff:0:0:0", 96],
+  ["::", 96],
   ["64:ff9b::", 96],
   ["2002::", 16],
 ] as const) {
@@ -54,6 +60,49 @@ export function isPrivateAddress(address: string): boolean {
 const REQUEST_TIMEOUT_MS = 20_000;
 const IDLE_TIMEOUT_MS = 10_000;
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
+/**
+ * The codings a server may apply to a body it was asked to send plainly. A stream is used rather
+ * than a one-shot decode so the cap can stop it: the first 2 MiB of the page is what the model gets,
+ * exactly as with a body that arrived long, and a compression bomb costs the same 2 MiB.
+ */
+const DECODERS: Record<string, () => Transform> = {
+  gzip: () => createGunzip(),
+  "x-gzip": () => createGunzip(),
+  deflate: () => createInflate(),
+  br: () => createBrotliDecompress(),
+};
+
+/** The decoded body, cut at the cap, or a rejection when the bytes are not what they claim. */
+function decodeStream(body: Buffer, decoder: (() => Transform) | undefined): Promise<{ body: Buffer; cut: boolean }> {
+  if (decoder === undefined) return Promise.resolve({ body, cut: false });
+  const { promise, resolve, reject } = Promise.withResolvers<{ body: Buffer; cut: boolean }>();
+  const stream = decoder();
+  const chunks: Buffer[] = [];
+  let size = 0;
+  let settled = false;
+  const settle = (value: { body: Buffer; cut: boolean }): void => {
+    if (settled) return;
+    settled = true;
+    stream.destroy();
+    resolve(value);
+  };
+  stream.on("data", (chunk: Buffer) => {
+    if (size >= MAX_BODY_BYTES) return;
+    const kept = chunk.length > MAX_BODY_BYTES - size ? chunk.subarray(0, MAX_BODY_BYTES - size) : chunk;
+    chunks.push(kept);
+    size += kept.length;
+    if (size >= MAX_BODY_BYTES) settle({ body: Buffer.concat(chunks), cut: true });
+  });
+  stream.on("end", () => settle({ body: Buffer.concat(chunks), cut: false }));
+  stream.on("error", (error: Error) => {
+    if (settled) return;
+    settled = true;
+    reject(error);
+  });
+  stream.end(body);
+  return promise;
+}
+
 /**
  * Pretty-printing indents by nesting depth, so a 6 KB body nested 3,000 deep builds about 18 MB
  * before the 64 KiB cap is applied — on the kernel thread, from a page nobody reviewed. Past this
@@ -154,16 +203,38 @@ function declaredCharset(body: Buffer): string | undefined {
 }
 
 /**
- * Decodes with the declared charset, or UTF-8 when there is none or the label is unknown. A page
- * that says it is Latin-1 no longer arrives full of replacement characters.
+ * Decodes with the declared charset. When nothing is declared, HTML is decided by whether the bytes
+ * are valid UTF-8, and anything else — and every non-HTML type — is UTF-8. A page that says it is
+ * Latin-1 no longer arrives full of replacement characters.
  */
-function decodeBody(body: Buffer, charset: string | undefined): string {
+function decodeBody(body: Buffer, charset: string | undefined, type: string): string {
   const label = charset ?? bomCharset(body) ?? declaredCharset(body);
-  if (label === undefined) return body.toString("utf8");
+  if (label !== undefined) return decodeAs(body, label);
+  // Nothing declared. HTML's own rule is that bytes which are not UTF-8 are windows-1252, and a
+  // legacy page is exactly the case that declares nothing: decoding it as UTF-8 turns every accent
+  // into a replacement character. Strict UTF-8 decides, so a UTF-8 page is never misread.
+  if (type === "text/html" || type === "application/xhtml+xml") {
+    if (isUtf8(body)) return body.toString("utf8");
+    return decodeAs(body, "windows-1252");
+  }
+  return body.toString("utf8");
+}
+
+function decodeAs(body: Buffer, label: string): string {
   try {
     return new TextDecoder(label).decode(body);
   } catch {
     return body.toString("utf8");
+  }
+}
+
+/** Whether the bytes are valid UTF-8, which is what tells an undeclared page apart. */
+function isUtf8(body: Buffer): boolean {
+  try {
+    new TextDecoder("utf-8", { fatal: true }).decode(body);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -237,11 +308,13 @@ function requestOnce(
       lookup: guardedLookup(options.allowLoopback === true),
     },
     (response) => {
-      // `identity` is a request, and servers ignore it. Decoding is not implemented, so a body that
-      // arrived compressed is bytes that would reach the model as mojibake: say so instead.
+      // `identity` is a request, and servers ignore it. The body is decoded rather than refused,
+      // with the output capped: `zlib` stops at `maxOutputLength`, so a 200 MB bomb of a few
+      // hundred KB costs milliseconds and no memory instead of being a reason not to read the page.
       const encoding = (response.headers["content-encoding"] ?? "").trim().toLowerCase();
-      if (encoding !== "" && encoding !== "identity") {
-        fail(new Error(`${target.host} sent the page ${encoding}-compressed after identity was asked for`));
+      const decompress = DECODERS[encoding];
+      if (encoding !== "" && encoding !== "identity" && decompress === undefined) {
+        fail(new Error(`${target.host} sent the page ${encoding}-compressed, which cannot be decoded`));
         return;
       }
       // A redirect's body is never returned, so it is counted and dropped like a binary one: six
@@ -259,20 +332,29 @@ function requestOnce(
         if (settledResponse) return;
         settledResponse = true;
         request.destroy();
-        if (!settled) {
-          settled = true;
-          clearTimeout(overall);
+        if (settled) return;
+        settled = true;
+        clearTimeout(overall);
+        const done = (body: Buffer, cut: boolean): void => {
           resolve({
             status: response.statusCode ?? 0,
             statusText: response.statusMessage ?? "",
             headers: response.headers,
-            body: keep ? Buffer.concat(chunks) : Buffer.alloc(0),
+            body,
             // A capped body is shorter than the response: report what the server declared.
             bytes: Math.max(bytes, declared),
             // A body that ended exactly at the cap was complete, not cut.
-            truncated: stopped && bytes !== declared,
+            truncated: cut && bytes !== declared,
           });
+        };
+        if (!keep) {
+          done(Buffer.alloc(0), stopped);
+          return;
         }
+        decodeStream(Buffer.concat(chunks), decompress).then(
+          (decoded) => done(decoded.body, stopped || decoded.cut),
+          (error: Error) => reject(new Error(`${target.host} sent a body that is not valid ${encoding}: ${error.message}`)),
+        );
       };
       if (redirect) {
         // Nothing in a redirect body is returned and nothing in it is read: settle on the headers
@@ -367,7 +449,7 @@ export async function fetchPage(
       status: response.status,
       statusText: response.statusText,
       contentType: type,
-      body: isTextual(type) ? decodeBody(response.body, charsetOf(declared)) : "",
+      body: isTextual(type) ? decodeBody(response.body, charsetOf(declared), type) : "",
       bytes: response.bytes,
       truncated: response.truncated,
       finalUrl: target.toString(),

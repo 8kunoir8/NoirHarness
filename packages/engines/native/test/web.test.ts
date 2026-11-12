@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { gzipSync } from "node:zlib";
 import { describe, expect, it, vi } from "vitest";
 import type { EnginePermissionRequest } from "@noir/engine-core";
 import { PERMISSION_DENIED, runTool, toolKind, toolTitle, type ToolContext } from "../src/tools.js";
@@ -34,6 +35,10 @@ describe("isPrivateAddress", () => {
     "::ffff:10.0.0.1",
     "64:ff9b::7f00:1",
     "2002:7f00:1::",
+    // `net.isIP` sees both of these as IPv6, so neither reaches a mapping rule, and both were
+    // measured connecting to a loopback listener the guard let through.
+    "::ffff:0:7f00:1",
+    "::7f00:1",
   ])("refuses %s", (address) => {
     expect(isPrivateAddress(address)).toBe(true);
   });
@@ -185,6 +190,13 @@ describe("fetchPage refusals", () => {
     }
   });
 
+  it("refuses an IPv4-translated or IPv4-compatible literal before a socket", async () => {
+    // The same address in the two forms `net.isIP` reports as plain IPv6: both used to connect.
+    for (const host of ["[::ffff:0:7f00:1]", "[::7f00:1]"]) {
+      await expect(fetchPage(`http://${host}:1/`, new AbortController().signal)).rejects.toThrow(/private/);
+    }
+  });
+
   it("refuses the IPv6 loopback and the unspecified address as literals", async () => {
     for (const host of ["[::1]", "[::]"]) {
       await expect(fetchPage(`http://${host}:1/`, new AbortController().signal)).rejects.toThrow(/private/i);
@@ -240,16 +252,112 @@ describe("fetchPage refusals", () => {
     }
   });
 
-  it("refuses a body that arrived compressed despite asking for identity", async () => {
+  it("reads a page that declares no charset and is not UTF-8", async () => {
+    // The HTML default is windows-1252, not UTF-8: a legacy page that declares nothing is the
+    // shape this matters for, and UTF-8 turns every accent in it into a replacement character.
+    const latin1 = Buffer.from("<html><body><p>caf\xe9 na\xefve</p></body></html>", "latin1");
     const site = await serve((_req, res) => {
-      // Servers do this: `identity` is a request, not a guarantee.
-      res.writeHead(200, { "content-type": "text/html", "content-encoding": "gzip" });
-      res.end(Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00]));
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end(latin1);
+    });
+    try {
+      const page = await fetchPage(site.url, new AbortController().signal, { allowLoopback: true });
+      expect(formatPage(page)).toBe("café naïve");
+    } finally {
+      await site.close();
+    }
+  });
+
+  it("still reads an undeclared page that is valid UTF-8 as UTF-8", async () => {
+    const utf8 = Buffer.from("<html><body><p>café naïve</p></body></html>", "utf8");
+    const site = await serve((_req, res) => {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end(utf8);
+    });
+    try {
+      const page = await fetchPage(site.url, new AbortController().signal, { allowLoopback: true });
+      expect(formatPage(page)).toBe("café naïve");
+    } finally {
+      await site.close();
+    }
+  });
+
+  it("decodes a body that arrived compressed despite asking for identity", async () => {
+    // Servers do this: `identity` is a request, not a guarantee. Refusing would fail a page that
+    // is perfectly readable once inflated.
+    const html = "<html><body><h1>Café</h1><p>naïve</p></body></html>";
+    const site = await serve((_req, res) => {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-encoding": "gzip" });
+      res.end(gzipSync(Buffer.from(html)));
+    });
+    try {
+      const page = await fetchPage(site.url, new AbortController().signal, { allowLoopback: true });
+      expect(formatPage(page)).toBe("# Café\n\nnaïve");
+    } finally {
+      await site.close();
+    }
+  });
+
+  it("bounds a compression bomb at the body cap instead of inflating it", async () => {
+    // 200 MB of zeros compresses to ~200 KB. `maxOutputLength` stops the decode at 2 MiB, so the
+    // bomb costs milliseconds rather than being the reason a compressed page cannot be read.
+    const bomb = gzipSync(Buffer.alloc(200 * 1024 * 1024));
+    const site = await serve((_req, res) => {
+      res.writeHead(200, { "content-type": "text/plain", "content-encoding": "gzip" });
+      res.end(bomb);
+    });
+    try {
+      const heapBefore = process.memoryUsage().heapUsed;
+      const page = await fetchPage(site.url, new AbortController().signal, { allowLoopback: true });
+      expect(Buffer.byteLength(page.body)).toBeLessThanOrEqual(2 * 1024 * 1024);
+      expect(page.truncated).toBe(true);
+      // The page up to the cap is kept: a long compressed page still reads, it just stops.
+      expect(page.body.length).toBe(2 * 1024 * 1024);
+      expect((process.memoryUsage().heapUsed - heapBefore) / 1048576).toBeLessThan(64);
+    } finally {
+      await site.close();
+    }
+  });
+
+  it("refuses a body whose encoding it cannot decode", async () => {
+    const site = await serve((_req, res) => {
+      res.writeHead(200, { "content-type": "text/html", "content-encoding": "zstd" });
+      res.end("not really zstd");
     });
     try {
       await expect(fetchPage(site.url, new AbortController().signal, { allowLoopback: true })).rejects.toThrow(
-        /compressed/i,
+        /zstd/,
       );
+    } finally {
+      await site.close();
+    }
+  });
+
+  it("reads a page that declares no charset and is not UTF-8", async () => {
+    // The HTML default is windows-1252, not UTF-8: a legacy page that declares nothing is the
+    // shape this matters for, and UTF-8 turns every accent in it into a replacement character.
+    const latin1 = Buffer.from("<html><body><p>caf\xe9 na\xefve</p></body></html>", "latin1");
+    const site = await serve((_req, res) => {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end(latin1);
+    });
+    try {
+      const page = await fetchPage(site.url, new AbortController().signal, { allowLoopback: true });
+      expect(formatPage(page)).toBe("café naïve");
+    } finally {
+      await site.close();
+    }
+  });
+
+  it("still reads an undeclared page that is valid UTF-8 as UTF-8", async () => {
+    const utf8 = Buffer.from("<html><body><p>café naïve</p></body></html>", "utf8");
+    const site = await serve((_req, res) => {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end(utf8);
+    });
+    try {
+      const page = await fetchPage(site.url, new AbortController().signal, { allowLoopback: true });
+      expect(formatPage(page)).toBe("café naïve");
     } finally {
       await site.close();
     }
