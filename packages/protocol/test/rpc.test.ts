@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { PayloadSchemas } from "../src/events.js";
-import { ModelCreateParams, ProviderCreateParams, RpcFault, SessionPromptParams, SkillListParams, SkillReadParams, SkillSetEnabledParams, SkillUpdateParams, SkillView, toRpcFailure } from "../src/rpc.js";
+import { ModelCreateParams, ProviderCreateParams, RpcFault, SessionPromptParams, SkillListParams, SkillReadParams, SkillRemoveResult, SkillSetEnabledParams, SkillUpdateParams, SkillView, toRpcFailure } from "../src/rpc.js";
 
 describe("provider params", () => {
   it("trims and accepts a valid provider", () => {
@@ -131,5 +131,12 @@ describe("skill source schemas", () => {
   it("requires expectHash for an update", () => {
     expect(SkillUpdateParams.safeParse({ scope: "global", name: "s", expectHash: "h" }).success).toBe(true);
     expect(SkillUpdateParams.safeParse({ scope: "global", name: "s" }).success).toBe(false);
+  });
+
+  it("returns the remaining listing from a removal", () => {
+    const row = { scope: "global" as const, name: "s", description: "", hash: "h", enabled: true, source: null };
+    expect(SkillRemoveResult.parse({ ok: true, skills: [row] }).skills).toHaveLength(1);
+    expect(SkillRemoveResult.parse({ ok: true, skills: [] }).skills).toEqual([]);
+    expect(() => SkillRemoveResult.parse({ ok: true })).toThrow();
   });
 });

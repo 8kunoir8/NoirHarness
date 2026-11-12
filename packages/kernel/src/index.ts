@@ -41,9 +41,14 @@ import {
   SessionPromptParams,
   SessionSetModelParams,
   SessionSubscribeParams,
+  SkillCheckUpdateParams,
+  SkillInstallParams,
   SkillListParams,
   SkillReadParams,
+  SkillRemoveParams,
   SkillSetEnabledParams,
+  SkillUpdateParams,
+  type SkillListResult,
   WorkspaceCreateParams,
   type AgentEvent,
 } from "@noir/protocol";
@@ -64,6 +69,7 @@ import { ProviderService } from "./providers.js";
 import { parseRedactionPatterns, Redactor } from "./redact.js";
 import { startRpcServer, type RpcServer } from "./rpcServer.js";
 import { SkillService } from "./skills.js";
+import { SkillSourceService } from "./skillSources.js";
 import {
   lockFilePath,
   isProcessAlive,
@@ -233,7 +239,16 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets } 
       const agents = new AgentService(db, models, sessions);
       // Task 5 shares this instance with EngineManager so enabled flags match what is materialized.
       const skills = new SkillService(database, dir);
+      const skillSources = new SkillSourceService(database, skills, dir);
       const mcp = new McpService(database);
+      /** Both `skill.list` and `skill.remove` answer with the listing, provenance attached. */
+      const withSources = (listed: SkillListResult, workspaceId: string): SkillListResult => {
+        const sources = skillSources.sourcesFor(workspaceId);
+        return {
+          ...listed,
+          skills: listed.skills.map((row) => ({ ...row, source: sources.get(`${row.scope}|${row.name}`) ?? null })),
+        };
+      };
       const engineManager = new EngineManager({
         db,
         events,
@@ -288,8 +303,9 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets } 
         },
         [Methods.skillList]: async (params) => {
           const { workspaceId } = SkillListParams.parse(params ?? {});
-          if (workspaceId === undefined) return skills.list("", undefined);
-          return skills.list(workspaceId, workspaceRoot(workspaceId));
+          const root = workspaceId === undefined ? undefined : workspaceRoot(workspaceId);
+          const listed = workspaceId === undefined ? await skills.list("", undefined) : await skills.list(workspaceId, root);
+          return withSources(listed, workspaceId ?? "");
         },
         [Methods.skillSetEnabled]: async (params) => {
           const { workspaceId, scope, name, enabled } = SkillSetEnabledParams.parse(params);
@@ -301,6 +317,28 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets } 
           const { workspaceId, scope, name } = SkillReadParams.parse(params);
           const root = workspaceId === undefined ? undefined : workspaceRoot(workspaceId);
           return skills.read(workspaceId ?? "", root, scope, name);
+        },
+        [Methods.skillInstall]: async (params) => {
+          const { workspaceId, scope, kind, source, ref } = SkillInstallParams.parse(params);
+          const root = workspaceId === undefined ? undefined : workspaceRoot(workspaceId);
+          const installed = await skillSources.install(workspaceId ?? "", root, scope, kind, source, ref);
+          return { ok: true, ...installed };
+        },
+        [Methods.skillCheckUpdate]: async (params) => {
+          const { workspaceId, scope, name } = SkillCheckUpdateParams.parse(params);
+          return skillSources.checkUpdate(workspaceId ?? "", scope, name);
+        },
+        [Methods.skillUpdate]: async (params) => {
+          const { workspaceId, scope, name, expectHash } = SkillUpdateParams.parse(params);
+          const root = workspaceId === undefined ? undefined : workspaceRoot(workspaceId);
+          return skillSources.update(workspaceId ?? "", root, scope, name, expectHash);
+        },
+        [Methods.skillRemove]: async (params) => {
+          const { workspaceId, scope, name } = SkillRemoveParams.parse(params);
+          const root = workspaceId === undefined ? undefined : workspaceRoot(workspaceId);
+          await skillSources.remove(workspaceId ?? "", root, scope, name);
+          const listed = workspaceId === undefined ? await skills.list("", undefined) : await skills.list(workspaceId, root);
+          return { ok: true as const, skills: withSources(listed, workspaceId ?? "").skills };
         },
         [Methods.mcpList]: async () => ({ servers: mcp.list() }),
         [Methods.mcpCreate]: async (params) => mcp.create(McpServerCreateParams.parse(params)),

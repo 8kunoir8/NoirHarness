@@ -246,4 +246,42 @@ describe("startKernel", () => {
     expect(listed.result.workspaces[0].id).toBe(first.result.id);
     await kernel.close();
   });
+
+  it("installs a skill over rpc and lists it with its source", async () => {
+    const dir = tempDir();
+    const root = tempDir();
+    const kernel = await startKernel({ dataDir: dir });
+    try {
+      const project = await call(kernel.port, kernel.token, "project.add", { path: root });
+      const workspace = await call(kernel.port, kernel.token, "workspace.create", { projectId: project.result.id });
+      const workspaceId = workspace.result.id as string;
+
+      // A seed directory inside the data dir: no git, no network, and the copy path is the same one a URL takes.
+      const source = join(dir, "seed");
+      mkdirSync(join(source, "rpc-skill"), { recursive: true });
+      writeFileSync(join(source, "rpc-skill", "SKILL.md"), "---\nname: rpc-skill\ndescription: d\n---\n\nB\n");
+
+      const installed = await call(kernel.port, kernel.token, "skill.install", {
+        workspaceId, scope: "project", kind: "local", source,
+      });
+      expect(installed.error).toBeUndefined();
+      expect(installed.result.name).toBe("rpc-skill");
+      expect(installed.result.hash).toMatch(/^[0-9a-f]{64}$/);
+
+      const listed = await call(kernel.port, kernel.token, "skill.list", { workspaceId });
+      const row = (listed.result.skills as Array<{ name: string; source: { kind: string } | null }>).find(
+        (skill) => skill.name === "rpc-skill",
+      );
+      expect(row?.source?.kind).toBe("local");
+
+      const removed = await call(kernel.port, kernel.token, "skill.remove", { workspaceId, scope: "project", name: "rpc-skill" });
+      expect(removed.error).toBeUndefined();
+      expect(removed.result).toEqual({ ok: true, skills: [] });
+      const after = await call(kernel.port, kernel.token, "skill.list", { workspaceId });
+      expect(after.result.skills).toEqual([]);
+      expect(existsSync(join(root, ".noir", "skills", "rpc-skill"))).toBe(false);
+    } finally {
+      await kernel.close();
+    }
+  });
 });

@@ -412,7 +412,8 @@ export const SkillRemoveParams = z.object({
 });
 export type SkillRemoveParams = z.infer<typeof SkillRemoveParams>;
 
-export const SkillRemoveResult = z.object({ ok: z.literal(true) });
+/** Removal answers with the workspace's remaining listing so the UI needs no follow-up call. */
+export const SkillRemoveResult = z.object({ ok: z.literal(true), skills: z.array(SkillView) });
 export type SkillRemoveResult = z.infer<typeof SkillRemoveResult>;
 /** A configured MCP server. `args` and `env` are decoded from the row's JSON columns. */
 export const McpServerView = z.object({
