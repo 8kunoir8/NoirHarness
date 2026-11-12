@@ -27,18 +27,35 @@ const STOP_GRACE_MS = 3_000;
 
 /**
  * Windows ships `npx` and friends as `.cmd` shims, and Node refuses to spawn one directly
- * (`npx` is ENOENT, `npx.cmd` is EINVAL). `cmd.exe /c` is the only way to run it, so the command
- * line is quoted here the way cmd reads it: an argument with spaces or metacharacters is wrapped
- * and its inner quotes doubled. `%NAME%` inside an argument still expands — cmd offers no escape
- * on a command line — which is the same deal a shell gives the user.
+ * (`npx` is ENOENT, `npx.cmd` is EINVAL). `cmd.exe /c` is the only way to run it — but cmd reads
+ * the line before any escaping rule can protect `%`, so a literal `%PATH%` in an argument would be
+ * expanded and a trailing backslash would swallow the closing quote.
+ *
+ * So no argument text is written on the command line at all: each one rides in its own environment
+ * variable and the line only holds `"%NAME%"`. cmd expands that reference exactly once, so the
+ * value arrives verbatim — including `%` — whatever it contains. The two quoting hazards that
+ * survive are handled before the value is stored: `"` is doubled (cmd's own convention inside
+ * quotes) and a trailing backslash is doubled, because the target's CRT would otherwise read it as
+ * escaping the closing quote.
+ *
+ * The only argument this cannot carry is one with a newline in it: cmd ends the line there. The
+ * `NOIR_MCP_ARG_*` variables are visible to the server too; the name is prefixed so that a server
+ * reading its own environment cannot mistake one for its own setting.
  */
-function windowsCommandLine(command: string, args: string[]): string {
-  const quote = (value: string): string => {
+function windowsCommandLine(
+  command: string,
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): string {
+  const parts = args.map((value, index) => {
     if (value === "") return '""';
-    if (!/[\s"&|<>^]/.test(value)) return value;
-    return `"${value.replace(/"/g, '""')}"`;
-  };
-  return [command, ...args].map(quote).join(" ");
+    const name = `NOIR_MCP_ARG_${index}`;
+    env[name] = value.replace(/"/g, '""').replace(/\\+$/, (run) => run + run);
+    return `"%${name}%"`;
+  });
+  // The command itself is user text too; only its quoting can be fixed on the line.
+  const head = /[\s"&|<>^%]/.test(command) ? `"${command}"` : command;
+  return [head, ...parts].join(" ");
 }
 
 /** cmd.exe resolves a bare `npx` to its `.cmd`; a native executable is spawned directly. */
@@ -121,23 +138,20 @@ export class McpClient {
 
   async start(): Promise<void> {
     if (this.#child !== undefined) return;
+    const env = { ...process.env, ...this.options.env };
     const shim = isWindowsShim(this.options.command);
     const child = shim
-      ? spawn(
-          process.env["ComSpec"] ?? "cmd.exe",
-          ["/d", "/s", "/c", `"${windowsCommandLine(this.options.command, this.options.args)}"`],
-          {
-            ...(this.options.cwd === undefined ? {} : { cwd: this.options.cwd }),
-            env: { ...process.env, ...this.options.env },
-            stdio: ["pipe", "pipe", "pipe"],
-            windowsHide: true,
-            // The line is already quoted for cmd; Node must not quote it again.
-            windowsVerbatimArguments: true,
-          },
-        )
+      ? spawn(process.env["ComSpec"] ?? "cmd.exe", ["/d", "/s", "/c", `"${windowsCommandLine(this.options.command, this.options.args, env)}"`], {
+          ...(this.options.cwd === undefined ? {} : { cwd: this.options.cwd }),
+          env,
+          stdio: ["pipe", "pipe", "pipe"],
+          windowsHide: true,
+          // The line is already quoted for cmd; Node must not quote it again.
+          windowsVerbatimArguments: true,
+        })
       : spawn(this.options.command, this.options.args, {
           ...(this.options.cwd === undefined ? {} : { cwd: this.options.cwd }),
-          env: { ...process.env, ...this.options.env },
+          env,
           stdio: ["pipe", "pipe", "pipe"],
           windowsHide: true,
         });

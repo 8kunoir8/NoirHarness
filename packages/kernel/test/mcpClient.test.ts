@@ -149,20 +149,27 @@ process.stdin.on("data", (chunk) => {
     const dir = mkdtempSync(join(tmpdir(), "noir mcp shim "));
     dirs.push(dir);
     const pidFile = join(dir, "server.pid");
+    const argvFile = join(dir, "server.argv");
     writeFileSync(
       join(dir, "server.js"),
       `${ECHO_SERVER}
-require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+const fs = require("node:fs");
+fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+fs.writeFileSync(${JSON.stringify(argvFile)}, JSON.stringify(process.argv.slice(2)));
 `,
     );
     // `npx` ships as this kind of shim, and it forwards its arguments to the real server.
     const shim = join(dir, "server.cmd");
     writeFileSync(shim, `@echo off\r\n"${process.execPath}" "%~dp0server.js" %*\r\n`);
-    const client = new McpClient({ command: shim, args: ["C:\\Program Files\\x"], env: {} });
+    // `%FOO%` must reach the server literally, not expanded by cmd, and a trailing backslash must
+    // not eat the closing quote — both were broken when the arguments rode on the cmd line.
+    const args = ["C:\\Program Files\\x", "%FOO%", "100%", "a b\\", 'x"y'];
+    const client = new McpClient({ command: shim, args, env: { FOO: "bar" } });
     clients.push(client);
 
     await client.start();
     await expect(client.callTool("echo", { text: "a b" })).resolves.toBe("Echo: a b");
+    expect(JSON.parse(readFileSync(argvFile, "utf8"))).toEqual(args);
 
     await vi.waitFor(() => expect(existsSync(pidFile)).toBe(true), { timeout: 10_000 });
     const serverPid = Number(readFileSync(pidFile, "utf8"));

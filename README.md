@@ -114,8 +114,10 @@ change applies to the next session. The kernel speaks MCP over stdio itself
 (`packages/kernel/src/mcp/`): newline-delimited JSON-RPC with a 10 s handshake and a 120 s call
 deadline, 64 KiB of server stderr kept for diagnostics, and `SIGTERM` then `SIGKILL` after 3 s on
 dispose; a server process dies with the session that started it. On Windows a command like `npx` is
-a `.cmd` shim, so it is run through `cmd.exe` and killed with its process tree. A server that fails
-to start does not fail the session; its tools are absent and the transcript carries `name: reason`.
+a `.cmd` shim, so it is run through `cmd.exe` — with its arguments passed in the environment, so a
+literal `%PATH%` in one reaches the server unexpanded — and killed with its process tree. A server
+that fails to start does not fail the session; its tools are absent and the transcript carries
+`name: reason`.
 
 For the native engine the kernel spawns the session's servers, aggregates their tools as
 `mcp__<server>__<tool>` with the server's own JSON schema, and routes `tools/call` back through the
