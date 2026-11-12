@@ -201,13 +201,21 @@ describe("Skills", () => {
     expect(within(project).getByTitle("/seed/new")).toBeDefined();
 
     await userEvent.click(within(project).getByRole("button", { name: "Check for updates new" }));
-    const update = await within(project).findByRole("button", { name: "Update new" });
-    await userEvent.click(update);
+    // Opening the update only shows what would change; nothing is written yet.
+    await userEvent.click(await within(project).findByRole("button", { name: "Update new" }));
+    // Installed hash → fetched hash, both shortened, so the user sees what they are replacing.
+    expect(within(project).getByText(`new: ${"n".repeat(7)} → ${"m".repeat(7)}`)).toBeDefined();
+    await userEvent.click(within(project).getByRole("button", { name: "Cancel update new" }));
+    expect(calls.some((call) => call.method === "skill.update")).toBe(false);
+
+    await userEvent.click(within(project).getByRole("button", { name: "Update new" }));
+    await userEvent.click(within(project).getByRole("button", { name: "Confirm update new" }));
     // The confirmation carries the hash the user was shown, so the kernel enforces exactly that pin.
     expect(calls).toContainEqual({
       method: "skill.update",
       params: { workspaceId: "ws-1", scope: "project", name: "new", expectHash: "m".repeat(64) },
     });
+    expect(calls.filter((call) => call.method === "skill.update")).toHaveLength(1);
   });
 
   it("keys the badge, the pin, and a hand-placed row on their own scope", async () => {
@@ -254,6 +262,7 @@ describe("Skills", () => {
 
     await userEvent.click(within(global).getByRole("button", { name: "Check for updates dup" }));
     await userEvent.click(await within(global).findByRole("button", { name: "Update dup" }));
+    await userEvent.click(within(global).getByRole("button", { name: "Confirm update dup" }));
     // The project `dup` was never checked, so it has no pin to confirm.
     expect(within(project).queryByRole("button", { name: "Update dup" })).toBeNull();
     expect(calls).toContainEqual({

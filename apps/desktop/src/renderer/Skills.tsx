@@ -62,20 +62,33 @@ function SkillRow({
   skill,
   busy,
   selected,
+  pinned,
+  confirming,
   onView,
   onToggle,
   onCheckUpdate,
-  onUpdate,
+  onRequestUpdate,
+  onConfirmUpdate,
+  onCancelUpdate,
 }: {
   skill: SkillView;
   busy: boolean;
   selected: boolean;
+  /** The hash `checkUpdate` fetched, or undefined when this row has no live pin. */
+  pinned: string | undefined;
+  /** This row is the one whose confirmation is open. */
+  confirming: boolean;
   onView: (skill: SkillRef) => void;
   onToggle: (skill: SkillView) => void;
   onCheckUpdate: (skill: SkillView) => void;
-  onUpdate: (skill: SkillView) => void;
+  onRequestUpdate: (skill: SkillView) => void;
+  onConfirmUpdate: (skill: SkillView) => void;
+  onCancelUpdate: (skill: SkillView) => void;
 }) {
   const source = skill.source ?? null;
+  // A confirmation without a pinned hash would print an arrow to nothing, so it needs both.
+  const pinnedHash = pinned ?? "";
+  const confirmingUpdate = confirming && pinnedHash !== "";
   return (
     <li className={`skills-row${selected ? " skills-row-selected" : ""}`}>
       <div className="skills-row-head">
@@ -98,13 +111,25 @@ function SkillRow({
         <button type="button" disabled={busy} onClick={() => onToggle(skill)}>
           {`${skill.enabled ? "Disable" : "Enable"} ${skill.name}`}
         </button>
-        {source === null ? null : (
+        {source === null ? null : confirmingUpdate ? (
+          <>
+            <span className="skills-confirm">
+              {`${skill.name}: ${skill.hash.slice(0, 7)} → ${pinnedHash.slice(0, 7)}`}
+            </span>
+            <button type="button" disabled={busy} onClick={() => onConfirmUpdate(skill)}>
+              {`Confirm update ${skill.name}`}
+            </button>
+            <button type="button" disabled={busy} onClick={() => onCancelUpdate(skill)}>
+              {`Cancel update ${skill.name}`}
+            </button>
+          </>
+        ) : (
           <>
             <button type="button" disabled={busy} onClick={() => onCheckUpdate(skill)}>
               {`Check for updates ${skill.name}`}
             </button>
-            {source.updateAvailable ? (
-              <button type="button" disabled={busy} onClick={() => onUpdate(skill)}>
+            {source.updateAvailable && pinnedHash !== "" ? (
+              <button type="button" disabled={busy} onClick={() => onRequestUpdate(skill)}>
                 {`Update ${skill.name}`}
               </button>
             ) : null}
@@ -130,6 +155,8 @@ export function Skills({ workspaceId, request }: SkillsProps) {
   const [installScope, setInstallScope] = useState<"global" | "project">("project");
   // Keyed `scope|name`, because one name can live in both scopes under different pins.
   const [updateHashes, setUpdateHashes] = useState<Record<string, string>>({});
+  // The row whose old → new hash is on screen; one confirmation at a time, keyed the same way.
+  const [confirming, setConfirming] = useState<string | undefined>(undefined);
 
   // Any workspace switch bumps this, so a list or body that resolves late is dropped instead of
   // being shown for the wrong workspace.
@@ -166,6 +193,7 @@ export function Skills({ workspaceId, request }: SkillsProps) {
     setSelected(undefined);
     setBody(undefined);
     setUpdateHashes({});
+    setConfirming(undefined);
     if (workspaceId === "") return;
     void load(generation.current, workspaceId);
   }, [workspaceId, load]);
@@ -278,8 +306,21 @@ export function Skills({ workspaceId, request }: SkillsProps) {
       if (generation.current !== ticket) return;
       setError(errorMessage(updateError));
     } finally {
+      // Both outcomes close this row's confirmation, so a failed update leaves no dead prompt behind.
+      setConfirming((current) => (current === key ? undefined : current));
       setBusy(false);
     }
+  }
+
+  function requestUpdate(skill: SkillView): void {
+    const key = `${skill.scope}|${skill.name}`;
+    // Nothing fetched means nothing to confirm; the button only renders when a pin exists anyway.
+    if ((updateHashes[key] ?? "") === "") return;
+    setConfirming(key);
+  }
+
+  function cancelUpdate(): void {
+    setConfirming(undefined);
   }
 
   async function install(): Promise<void> {
@@ -363,18 +404,25 @@ export function Skills({ workspaceId, request }: SkillsProps) {
                 {`${name} (shadowed by a project skill)`}
               </li>
             ))}
-            {globalSkills.map((skill) => (
-              <SkillRow
-                key={`global-${skill.name}`}
-                skill={skill}
-                busy={busy}
-                selected={sameSkill(selected, skill)}
-                onView={view}
-                onToggle={(candidate) => void toggle(candidate)}
-                onCheckUpdate={(candidate) => void checkUpdate(candidate)}
-                onUpdate={(candidate) => void update(candidate)}
-              />
-            ))}
+            {globalSkills.map((skill) => {
+              const key = `${skill.scope}|${skill.name}`;
+              return (
+                <SkillRow
+                  key={`global-${skill.name}`}
+                  skill={skill}
+                  busy={busy}
+                  selected={sameSkill(selected, skill)}
+                  pinned={updateHashes[key]}
+                  confirming={confirming === key}
+                  onView={view}
+                  onToggle={(candidate) => void toggle(candidate)}
+                  onCheckUpdate={(candidate) => void checkUpdate(candidate)}
+                  onRequestUpdate={requestUpdate}
+                  onConfirmUpdate={(candidate) => void update(candidate)}
+                  onCancelUpdate={cancelUpdate}
+                />
+              );
+            })}
             {list !== undefined && globalSkills.length === 0 && shadowed.length === 0 ? (
               <li className="skills-empty">No global skills</li>
             ) : null}
@@ -383,18 +431,25 @@ export function Skills({ workspaceId, request }: SkillsProps) {
         <section aria-label="Project skills">
           <h3>Project skills</h3>
           <ul className="skills-list">
-            {projectSkills.map((skill) => (
-              <SkillRow
-                key={`project-${skill.name}`}
-                skill={skill}
-                busy={busy}
-                selected={sameSkill(selected, skill)}
-                onView={view}
-                onToggle={(candidate) => void toggle(candidate)}
-                onCheckUpdate={(candidate) => void checkUpdate(candidate)}
-                onUpdate={(candidate) => void update(candidate)}
-              />
-            ))}
+            {projectSkills.map((skill) => {
+              const key = `${skill.scope}|${skill.name}`;
+              return (
+                <SkillRow
+                  key={`project-${skill.name}`}
+                  skill={skill}
+                  busy={busy}
+                  selected={sameSkill(selected, skill)}
+                  pinned={updateHashes[key]}
+                  confirming={confirming === key}
+                  onView={view}
+                  onToggle={(candidate) => void toggle(candidate)}
+                  onCheckUpdate={(candidate) => void checkUpdate(candidate)}
+                  onRequestUpdate={requestUpdate}
+                  onConfirmUpdate={(candidate) => void update(candidate)}
+                  onCancelUpdate={cancelUpdate}
+                />
+              );
+            })}
             {list !== undefined && projectSkills.length === 0 ? (
               <li className="skills-empty">No project skills</li>
             ) : null}
