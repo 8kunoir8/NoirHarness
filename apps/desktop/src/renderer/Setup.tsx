@@ -76,6 +76,8 @@ export function Setup({ request, onOpenChat }: SetupProps) {
   const [engineDir, setEngineDir] = useState("");
   const [error, setError] = useState<string | undefined>(undefined);
   const [mcpServers, setMcpServers] = useState<McpServerView[]>([]);
+  /** The server id the form is editing, or `undefined` when it is creating a new one. */
+  const [mcpEditing, setMcpEditing] = useState<string | undefined>(undefined);
   const [mcpName, setMcpName] = useState("");
   const [mcpCommand, setMcpCommand] = useState("");
   const [mcpArgs, setMcpArgs] = useState("");
@@ -199,7 +201,7 @@ export function Setup({ request, onOpenChat }: SetupProps) {
     }
   }
 
-  async function addMcpServer(event: FormEvent): Promise<void> {
+  async function saveMcpServer(event: FormEvent): Promise<void> {
     event.preventDefault();
     if (busy) return;
     const trimmed = mcpName.trim();
@@ -216,27 +218,30 @@ export function Setup({ request, onOpenChat }: SetupProps) {
       setMcpError("Each environment line must be KEY=value");
       return;
     }
+    const definition = {
+      name: trimmed,
+      command: mcpCommand.trim(),
+      args: parseArgs(mcpArgs),
+      env,
+    };
     setBusy(true);
     try {
-      await request(
-        "mcp.create",
-        McpServerCreateParams.parse({
-          name: trimmed,
-          command: mcpCommand.trim(),
-          args: parseArgs(mcpArgs),
-          env,
-          enabled: true,
-        }),
-      );
-      setMcpName("");
-      setMcpCommand("");
-      setMcpArgs("");
-      setMcpEnv("");
-      setMcpError(undefined);
+      if (mcpEditing === undefined) {
+        await request("mcp.create", McpServerCreateParams.parse({ ...definition, enabled: true }));
+      } else {
+        await request("mcp.update", McpServerUpdateParams.parse({ id: mcpEditing, ...definition }));
+        // The probe described the old settings; a saved edit invalidates it.
+        setMcpProbes((current) => {
+          const next = { ...current };
+          delete next[mcpEditing];
+          return next;
+        });
+      }
+      resetMcpForm();
       await load();
-    } catch (createError) {
+    } catch (saveError) {
       // Keep the typed definition so a rejected name can be corrected without retyping.
-      setMcpError(errorMessage(createError));
+      setMcpError(errorMessage(saveError));
     } finally {
       setBusy(false);
     }
@@ -293,6 +298,25 @@ export function Setup({ request, onOpenChat }: SetupProps) {
     } finally {
       setBusy(false);
     }
+  }
+
+  /** Loads a row into the form; saving then `mcp.update`s it instead of creating a second server. */
+  function editMcpServer(server: McpServerView): void {
+    setMcpEditing(server.id);
+    setMcpName(server.name);
+    setMcpCommand(server.command);
+    setMcpArgs(server.args.join(" "));
+    setMcpEnv(envText(server.env));
+    setMcpError(undefined);
+  }
+
+  function resetMcpForm(): void {
+    setMcpEditing(undefined);
+    setMcpName("");
+    setMcpCommand("");
+    setMcpArgs("");
+    setMcpEnv("");
+    setMcpError(undefined);
   }
 
   return (
@@ -453,6 +477,9 @@ export function Setup({ request, onOpenChat }: SetupProps) {
                   />
                   Enabled {server.name}
                 </label>
+                <button type="button" disabled={busy} onClick={() => editMcpServer(server)}>
+                  Edit {server.name}
+                </button>
                 <button type="button" disabled={busy} onClick={() => void testMcpServer(server)}>
                   Test {server.name}
                 </button>
@@ -469,7 +496,7 @@ export function Setup({ request, onOpenChat }: SetupProps) {
           })}
         </ul>
         {mcpServers.length === 0 ? <p className="hint">No MCP servers configured.</p> : null}
-        <form onSubmit={(event) => void addMcpServer(event)}>
+        <form onSubmit={(event) => void saveMcpServer(event)}>
           <label>
             Server name
             <input
@@ -503,7 +530,14 @@ export function Setup({ request, onOpenChat }: SetupProps) {
               onChange={(event) => setMcpEnv(event.target.value)}
             />
           </label>
-          <button type="submit" disabled={busy}>Add MCP server</button>
+          <button type="submit" disabled={busy}>
+            {mcpEditing === undefined ? "Add MCP server" : "Save MCP server"}
+          </button>
+          {mcpEditing === undefined ? null : (
+            <button type="button" disabled={busy} onClick={resetMcpForm}>
+              Cancel
+            </button>
+          )}
         </form>
       </section>
 

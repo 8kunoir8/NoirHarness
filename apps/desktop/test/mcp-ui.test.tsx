@@ -167,6 +167,56 @@ describe("Setup MCP panel", () => {
     expect(await within(panel).findByText(/lowercase letters, digits, _ or -/i)).toBeTruthy();
     expect(calls(request, "mcp.create")).toHaveLength(0);
   });
+
+  it("loads a row into the form and saves it through mcp.update", async () => {
+    const request = setupRequest({
+      "mcp.list": () => ({ servers: [CALC] }),
+      "mcp.update": () => ({ ...CALC, args: ["server.js", "--verbose"], env: { MODE: "slow" } }),
+    });
+    render(<Setup request={request as unknown as RequestFn} onOpenChat={() => undefined} />);
+
+    const panel = await screen.findByRole("region", { name: "MCP Servers" });
+    await userEvent.click(within(panel).getByRole("button", { name: "Edit calc" }));
+
+    const name = within(panel).getByLabelText("Server name") as HTMLInputElement;
+    await waitFor(() => expect(name.value).toBe("calc"));
+    expect((within(panel).getByLabelText("Arguments") as HTMLInputElement).value).toBe("server.js");
+    expect((within(panel).getByLabelText("Environment") as HTMLTextAreaElement).value).toBe("MODE=fast");
+
+    await userEvent.clear(within(panel).getByLabelText("Arguments"));
+    await userEvent.type(within(panel).getByLabelText("Arguments"), "server.js --verbose");
+    await userEvent.clear(within(panel).getByLabelText("Environment"));
+    await userEvent.type(within(panel).getByLabelText("Environment"), "MODE=slow");
+    await userEvent.click(within(panel).getByRole("button", { name: "Save MCP server" }));
+
+    await waitFor(() => expect(calls(request, "mcp.update")).toHaveLength(1));
+    expect(calls(request, "mcp.update")[0]?.[1]).toEqual({
+      id: "mcp-1",
+      name: "calc",
+      command: "node",
+      args: ["server.js", "--verbose"],
+      env: { MODE: "slow" },
+    });
+    expect(calls(request, "mcp.create")).toHaveLength(0);
+    // The form returns to create mode after a successful save.
+    expect(await within(panel).findByRole("button", { name: "Add MCP server" })).toBeTruthy();
+  });
+
+  it("abandons an edit when cancelled", async () => {
+    const request = setupRequest({ "mcp.list": () => ({ servers: [CALC] }) });
+    render(<Setup request={request as unknown as RequestFn} onOpenChat={() => undefined} />);
+
+    const panel = await screen.findByRole("region", { name: "MCP Servers" });
+    await userEvent.click(within(panel).getByRole("button", { name: "Edit calc" }));
+    await waitFor(() =>
+      expect((within(panel).getByLabelText("Server name") as HTMLInputElement).value).toBe("calc"),
+    );
+    await userEvent.click(await within(panel).findByRole("button", { name: "Cancel" }));
+
+    expect((within(panel).getByLabelText("Server name") as HTMLInputElement).value).toBe("");
+    expect(within(panel).getByRole("button", { name: "Add MCP server" })).toBeTruthy();
+    expect(calls(request, "mcp.update")).toHaveLength(0);
+  });
 });
 
 const AGENT: AgentView = {
