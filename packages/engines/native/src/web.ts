@@ -95,6 +95,8 @@ export interface FetchPageResult {
   body: string;
   /** Bytes received on the wire, which is what a binary refusal should report. */
   bytes: number;
+  /** The 2 MiB cap stopped the body: what came back is a prefix, not the page. */
+  truncated: boolean;
   /** After redirects: the URL the body came from, so relative links resolve correctly. */
   finalUrl: string;
 }
@@ -106,6 +108,7 @@ interface RawResponse {
   /** Empty for a type that is not textual: its bytes were counted, not kept. */
   body: Buffer;
   bytes: number;
+  truncated: boolean;
 }
 
 /** The length the server declared, when it declared one that is larger than what arrived. */
@@ -265,6 +268,7 @@ function requestOnce(
             body: keep ? Buffer.concat(chunks) : Buffer.alloc(0),
             // A capped body is shorter than the response: report what the server declared.
             bytes: Math.max(bytes, declaredLength(response.headers["content-length"])),
+            truncated: stopped,
           });
         }
       };
@@ -363,6 +367,7 @@ export async function fetchPage(
       contentType: type,
       body: isTextual(type) ? decodeBody(response.body, charsetOf(declared)) : "",
       bytes: response.bytes,
+      truncated: response.truncated,
       finalUrl: target.toString(),
     };
   }
@@ -409,4 +414,15 @@ export function formatPage(result: FetchPageResult): string {
   }
   if (TEXTUAL.test(type)) return result.body;
   return `${type === "" ? "unknown type" : type}, ${result.bytes} bytes \u2014 binary content is not returned`;
+}
+
+/**
+ * What the model is told about a body the 2 MiB cap cut. Without it a page longer than the cap
+ * reads as a complete page that simply ends, and the model has no reason to reach it another way.
+ * Applied after the output cap, or the very truncation this describes would cut off the notice.
+ */
+export function truncationNote(result: FetchPageResult): string {
+  return result.truncated
+    ? `\n\n[The body stopped at ${MAX_BODY_BYTES} bytes; the rest of the page was not read.]`
+    : "";
 }

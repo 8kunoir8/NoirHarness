@@ -2,7 +2,14 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { describe, expect, it, vi } from "vitest";
 import type { EnginePermissionRequest } from "@noir/engine-core";
 import { PERMISSION_DENIED, runTool, toolKind, toolTitle, type ToolContext } from "../src/tools.js";
-import { fetchPage, formatPage, guardedLookup, isPrivateAddress, type FetchPageResult } from "../src/web.js";
+import {
+  fetchPage,
+  formatPage,
+  guardedLookup,
+  isPrivateAddress,
+  truncationNote,
+  type FetchPageResult,
+} from "../src/web.js";
 
 describe("isPrivateAddress", () => {
   it.each([
@@ -458,7 +465,9 @@ describe("fetchPage limits", () => {
         timeouts: { idleMs: 2_000 },
       });
       expect(page.bytes).toBe(declared);
-      expect(formatPage(page)).toBe(`image/png, ${declared} bytes — binary content is not returned`);
+      expect(formatPage(page)).toContain(`image/png, ${declared} bytes — binary content is not returned`);
+      // The cap stopped the body, so the model is told the size is the server's claim, not what came.
+      expect(page.truncated).toBe(true);
     } finally {
       await site.close();
     }
@@ -520,6 +529,7 @@ describe("formatPage", () => {
       contentType: "text/html",
       body,
       bytes: Buffer.byteLength(body),
+      truncated: false,
       finalUrl: "https://example.test/page",
       ...overrides,
     };
@@ -563,6 +573,11 @@ describe("formatPage", () => {
     );
   });
 
+  it("says when the body stopped at the cap, and says nothing when it did not", () => {
+    expect(truncationNote(page({ truncated: true }))).toContain("stopped at 2097152 bytes");
+    expect(truncationNote(page())).toBe("");
+  });
+
   it("reports a binary content type instead of returning its bytes", () => {
     expect(formatPage(page({ contentType: "image/png", body: "\u0089PNG" }))).toBe(
       "image/png, 5 bytes — binary content is not returned",
@@ -577,6 +592,7 @@ describe("web.fetch", () => {
     contentType: "text/html",
     body: "<h1>Doc</h1><p>body</p>",
     bytes: 22,
+    truncated: false,
     finalUrl: "https://example.test/page",
     ...overrides,
   });
@@ -606,6 +622,18 @@ describe("web.fetch", () => {
         toolCall: expect.objectContaining({ kind: "fetch", title: "Fetch https://example.test/page" }),
       }),
     );
+  });
+
+  it("tells the model the body was cut, after the 64 KiB cut rather than inside it", async () => {
+    const body = "<p>" + "x".repeat(70 * 1024) + "</p>";
+    const out = await runTool(
+      "web.fetch",
+      { url: "https://example.test/big" },
+      context(okay({ body, bytes: body.length, truncated: true })),
+    );
+    // Both caps cut this page. The note survives because it is appended after truncation.
+    expect(out).toContain("The body stopped at 2097152 bytes");
+    expect(out.endsWith("]")).toBe(true);
   });
 
   it("does not fetch when the user rejects", async () => {

@@ -4,7 +4,7 @@ import { lstat, open, readFile, readdir, realpath, stat, unlink, writeFile } fro
 import { dirname, isAbsolute, join, matchesGlob, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import type { EngineMcpTool, EnginePermissionRequest, EngineStartOptions, PermissionDecision } from "@noir/engine-core";
-import { fetchPage, formatPage, type FetchPageResult } from "./web.js";
+import { fetchPage, formatPage, truncationNote, type FetchPageResult } from "./web.js";
 
 /** The result every tool returns when its approval was not granted. The loop marks it failed. */
 export const PERMISSION_DENIED = "Permission denied by the user";
@@ -517,9 +517,11 @@ const TOOL_SPECS: Record<string, ToolSpec> = {
       const get = ctx.fetchPage ?? fetchPage;
       const page = await get(args.url, ctx.signal);
       const body = formatPage(page);
-      return page.status >= 200 && page.status < 300
-        ? truncate(body)
-        : truncate(`HTTP ${page.status} ${page.statusText}\n\n${body}`);
+      const text = page.status >= 200 && page.status < 300
+        ? body
+        : `HTTP ${page.status} ${page.statusText}\n\n${body}`;
+      // The cap note goes after the cut, or a long page loses the line that explains it.
+      return truncate(text) + truncationNote(page);
     },
   },
 

@@ -141,7 +141,8 @@ keep their targets resolved against the final URL, nested lists and tables survi
 binary type is refused with its name and size — the size the server declared — instead of its bytes,
 and its body is counted rather than buffered. Text is decoded as its declared charset — the header, a
 BOM, then a `<meta charset>` — and falls back to UTF-8. The text is capped at 64 KiB, and a non-2xx
-status is prefixed as `HTTP 404 Not Found`.
+status is prefixed as `HTTP 404 Not Found`. A page longer than the 2 MiB download cap ends with a
+line saying the body stopped there, so a cut page does not read as a complete one.
 
 Targets are refused before the request leaves the machine, or by the socket's own DNS answer: only
 `http` and `https`; no `localhost`, `.local`, `.internal`, or `home.arpa` name; and no private,
