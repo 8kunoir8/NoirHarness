@@ -126,8 +126,9 @@ only forwards the list there and spawns nothing.
 
 ## Reaching the web
 
-The native engine has one outbound tool, `web.fetch`: a single `GET` of a public URL, no request
-headers and no request body, following at most five redirects. It is approved as the `network`
+The native engine has one outbound tool, `web.fetch`: a single `GET` of a public URL, with no
+request body, no cookies, and no caller-chosen headers, following at most five redirects. A URL that
+carries credentials is refused rather than turned into `Authorization: Basic`. It is approved as the `network`
 category, so a `network: allow` policy skips the card, `reject` refuses without one, and nothing is
 fetched before the decision.
 
