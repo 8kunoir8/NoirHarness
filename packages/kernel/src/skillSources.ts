@@ -157,6 +157,31 @@ async function stagedSkillRoot(checkout: string): Promise<string> {
   return join(checkout, only);
 }
 
+/**
+ * Copies a local source into staging, refusing any symbolic link: `measure` and `hashSkillDir` both
+ * skip links, so a staged link would carry bytes the recorded hash cannot pin. `.git` at the source
+ * root is skipped, as the git branch deletes it.
+ */
+async function copySource(source: string, checkout: string): Promise<void> {
+  const copy = async (current: string, relative: string): Promise<void> => {
+    for (const entry of await readdir(current, { withFileTypes: true })) {
+      if (relative === "" && entry.name === ".git") continue;
+      const path = join(relative, entry.name);
+      if (entry.isSymbolicLink()) {
+        throw new RpcFault(ErrorCodes.invalidParams, `The source contains a symbolic link: ${path}`);
+      }
+      const from = join(current, entry.name);
+      if (entry.isDirectory()) {
+        await mkdir(join(checkout, path), { recursive: true });
+        await copy(from, path);
+      } else if (entry.isFile()) {
+        await cp(from, join(checkout, path));
+      }
+    }
+  };
+  await copy(source, "");
+}
+
 export async function fetchSkill(target: FetchTarget, stagingRoot: string): Promise<FetchedSource> {
   const staging = join(stagingRoot, uuidv7());
   await mkdir(staging, { recursive: true });
@@ -175,10 +200,7 @@ export async function fetchSkill(target: FetchTarget, stagingRoot: string): Prom
     } else {
       checkout = join(staging, "checkout");
       await mkdir(checkout, { recursive: true });
-      for (const entry of await readdir(target.path, { withFileTypes: true })) {
-        if (entry.isSymbolicLink()) continue;
-        await cp(join(target.path, entry.name), join(checkout, entry.name), { recursive: entry.isDirectory() });
-      }
+      await copySource(target.path, checkout);
     }
     await measure(checkout);
     const dir = await stagedSkillRoot(checkout);

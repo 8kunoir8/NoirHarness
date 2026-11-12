@@ -10,6 +10,9 @@ export const git = (cwd: string, args: string[]): string => {
   return result.stdout;
 };
 
+/** True when the fixture can drive a git binary at all; callers skip the git-kind tests otherwise. */
+export const gitAvailable = (): boolean => spawnSync("git", ["--version"], { encoding: "utf8" }).status === 0;
+
 /** A repo at `dir` containing one skill directory, committed. */
 export function skillRepo(dir: string, name: string, body = "BODY"): void {
   mkdirSync(join(dir, name), { recursive: true });
@@ -39,9 +42,15 @@ export async function serveSmartHttp(bareDir: string): Promise<{ url: string; cl
         CONTENT_LENGTH: String(req.headers["content-length"] ?? ""),
       },
     });
-    req.pipe(child.stdin);
+    if (child.stdin !== null) req.pipe(child.stdin);
     let headersDone = false;
     let buffer = Buffer.alloc(0);
+    // A missing `git` reports here; without this the worker dies on an unhandled error event.
+    child.on("error", () => {
+      headersDone = true;
+      if (!res.headersSent) res.writeHead(500);
+      res.end();
+    });
     child.stdout.on("data", (chunk: Buffer) => {
       if (headersDone) return void res.write(chunk);
       buffer = Buffer.concat([buffer, chunk]);

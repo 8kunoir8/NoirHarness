@@ -4,7 +4,7 @@ import { join, resolve, sep } from "node:path";
 import { ErrorCodes } from "@noir/protocol";
 import { afterAll, describe, expect, it } from "vitest";
 import { fetchSkill, parseGitTarget, parseLocalTarget } from "../src/skillSources.js";
-import { git, serveSmartHttp, skillRepo } from "./smartHttp.js";
+import { git, gitAvailable, serveSmartHttp, skillRepo } from "./smartHttp.js";
 
 const root = mkdtempSync(join(tmpdir(), "noir src "));
 const realDir = join(root, "real");
@@ -75,7 +75,7 @@ describe("fetch target validation", () => {
 const scratch = (): string => mkdtempSync(join(tmpdir(), "noir fetch "));
 
 describe("fetching a skill", () => {
-  it("clones a git source, pins its commit, and reads the manifest", async () => {
+  it.skipIf(!gitAvailable())("clones a git source, pins its commit, and reads the manifest", async () => {
     const work = scratch();
     const repo = join(work, "repo");
     mkdirSync(repo);
@@ -106,8 +106,27 @@ describe("fetching a skill", () => {
     const fetched = await fetchSkill(await parseLocalTarget(source), join(work, "staging"));
     expect(fetched.commit).toBeNull();
     expect(fetched.dir.startsWith(source)).toBe(false);
+    // The source is a working copy; its `.git` is skipped, exactly as the git branch deletes it.
+    expect(readdirSync(join(fetched.dir, ".."))).toEqual(["local-skill"]);
     await fetched.cleanup();
     expect(existsSync(fetched.dir)).toBe(false);
+  });
+
+  it("refuses a symlink inside a local source and removes the staging copy", async () => {
+    const work = scratch();
+    const source = join(work, "src");
+    const skill = join(source, "linked");
+    mkdirSync(skill, { recursive: true });
+    writeFileSync(join(skill, "SKILL.md"), "---\nname: linked\ndescription: d\n---\n\nBODY\n");
+    const outside = join(work, "outside");
+    mkdirSync(outside);
+    // A link inside the tree would stage bytes the recorded hash cannot cover.
+    if (process.platform === "win32") symlinkSync(outside, join(skill, "escape"), "junction");
+    else symlinkSync(outside, join(skill, "escape"), "dir");
+    await expect(fetchSkill(await parseLocalTarget(source), join(work, "staging"))).rejects.toThrow(
+      /contains a symbolic link: linked[\\/]escape/,
+    );
+    expect(existsSync(join(work, "staging")) ? readdirSync(join(work, "staging")) : []).toEqual([]);
   });
 
   it("refuses a source over the file cap and removes the staging copy", async () => {
@@ -121,6 +140,21 @@ describe("fetching a skill", () => {
     await expect(fetchSkill(await parseLocalTarget(source), join(work, "staging"))).rejects.toThrow(/more than 200 files/);
     expect(existsSync(join(work, "staging")) ? readdirSync(join(work, "staging")) : []).toEqual([]);
   });
+
+  it("refuses a source over the staging cap and removes the staging copy", async () => {
+    const work = scratch();
+    const source = join(work, "src");
+    mkdirSync(join(source, "skill"), { recursive: true });
+    writeFileSync(join(source, "skill", "SKILL.md"), "---\nname: skill\ndescription: d\n---\n\nBODY\n");
+    const junk = join(source, "junk");
+    mkdirSync(junk);
+    // 2001 files take seconds to create on Windows, longer than the default test timeout.
+    for (let index = 0; index < 2001; index += 1) {
+      writeFileSync(join(junk, `f${index}.txt`), "x");
+    }
+    await expect(fetchSkill(await parseLocalTarget(source), join(work, "staging"))).rejects.toThrow(/more than 2000 files/);
+    expect(existsSync(join(work, "staging")) ? readdirSync(join(work, "staging")) : []).toEqual([]);
+  }, 30_000);
 });
 
 it("refuses ext:: without starting any process", async () => {
