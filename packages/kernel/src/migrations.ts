@@ -134,6 +134,24 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
       ALTER TABLE agents ADD COLUMN mcp_server_ids TEXT NOT NULL DEFAULT '[]';
     `,
   },
+  {
+    id: 8,
+    sql: `
+      CREATE TABLE skill_sources (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL DEFAULT '',
+        scope TEXT NOT NULL,
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        url TEXT,
+        ref TEXT,
+        commit_sha TEXT,
+        hash TEXT NOT NULL,
+        installed_at INTEGER NOT NULL,
+        UNIQUE (workspace_id, scope, name)
+      );
+    `,
+  },
 ];
 
 export function migrate(db: Database.Database): void {

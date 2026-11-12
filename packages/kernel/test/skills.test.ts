@@ -422,3 +422,23 @@ describe("skill enabled state and materialization", () => {
     expect(existsSync(project)).toBe(false);
   });
 });
+
+describe("skill sources table", () => {
+  it("stores one provenance row per workspace, scope and name", () => {
+    const { db } = service();
+    const insert = db.prepare(
+      "INSERT INTO skill_sources (id, workspace_id, scope, name, kind, url, ref, commit_sha, hash, installed_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+    );
+    insert.run("a", "", "global", "shared", "git", "https://e.test/r.git", "main", "abc", "h1", 1);
+    insert.run("b", "ws-1", "project", "shared", "local", "/tmp/shared", null, null, "h2", 2);
+    const rows = db.prepare("SELECT workspace_id, scope, name FROM skill_sources ORDER BY id").all();
+    expect(rows).toEqual([
+      { workspace_id: "", scope: "global", name: "shared" },
+      { workspace_id: "ws-1", scope: "project", name: "shared" },
+    ]);
+    // The same triple twice is the same skill's provenance, not a second row.
+    expect(() =>
+      insert.run("c", "", "global", "shared", "git", "https://e.test/r.git", "main", "def", "h3", 3),
+    ).toThrow(/UNIQUE/);
+  });
+});

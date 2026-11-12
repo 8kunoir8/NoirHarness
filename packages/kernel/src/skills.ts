@@ -26,10 +26,10 @@ export interface SkillScan {
   warnings: string[];
 }
 
-const MAX_SKILL_FILE_BYTES = 1024 * 1024;
-const MAX_SKILL_FILES = 200;
-const MAX_SKILL_BYTES = 8 * 1024 * 1024;
-const SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+export const MAX_SKILL_FILE_BYTES = 1024 * 1024;
+export const MAX_SKILL_FILES = 200;
+export const MAX_SKILL_BYTES = 8 * 1024 * 1024;
+export const SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 /** Code-unit order, so output does not move with the machine's locale. */
 const compareCodeUnits = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);

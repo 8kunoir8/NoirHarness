@@ -48,6 +48,10 @@ export const Methods = {
   skillList: "skill.list",
   skillSetEnabled: "skill.setEnabled",
   skillRead: "skill.read",
+  skillInstall: "skill.install",
+  skillCheckUpdate: "skill.checkUpdate",
+  skillUpdate: "skill.update",
+  skillRemove: "skill.remove",
   mcpList: "mcp.list",
   mcpCreate: "mcp.create",
   mcpUpdate: "mcp.update",
@@ -313,12 +317,27 @@ export type AnnotationDeleteResult = z.infer<typeof AnnotationDeleteResult>;
 export const SkillScopeSchema = z.enum(["global", "project"]);
 export type SkillScopeSchema = z.infer<typeof SkillScopeSchema>;
 
+export const SkillSourceKindSchema = z.enum(["git", "local"]);
+export type SkillSourceKindSchema = z.infer<typeof SkillSourceKindSchema>;
+
+/** Where an installed skill came from. `null` on a skill placed on disk by hand. */
+export const SkillSourceView = z.object({
+  kind: SkillSourceKindSchema,
+  url: z.string(),
+  ref: z.string().nullable(),
+  commit: z.string().nullable(),
+  hash: z.string(),
+  updateAvailable: z.boolean(),
+});
+export type SkillSourceView = z.infer<typeof SkillSourceView>;
+
 export const SkillView = z.object({
   scope: SkillScopeSchema,
   name: z.string(),
   description: z.string(),
   hash: z.string(),
   enabled: z.boolean(),
+  source: SkillSourceView.nullable().optional(),
 });
 export type SkillView = z.infer<typeof SkillView>;
 
@@ -349,6 +368,52 @@ export const SkillReadParams = z.object({
 export type SkillReadParams = z.infer<typeof SkillReadParams>;
 export const SkillReadResult = z.object({ content: z.string(), hash: z.string(), truncated: z.literal(false) });
 export type SkillReadResult = z.infer<typeof SkillReadResult>;
+
+export const SkillInstallParams = z.object({
+  workspaceId: z.string().min(1).optional(),
+  scope: SkillScopeSchema,
+  kind: SkillSourceKindSchema,
+  /** An `https:`/loopback-`http:` git URL, or an absolute directory path for `local`. */
+  source: z.string().min(1),
+  ref: z.string().min(1).optional(),
+});
+export type SkillInstallParams = z.infer<typeof SkillInstallParams>;
+
+export const SkillInstallResult = z.object({ ok: z.literal(true), name: z.string(), hash: z.string() });
+export type SkillInstallResult = z.infer<typeof SkillInstallResult>;
+
+export const SkillCheckUpdateParams = z.object({
+  workspaceId: z.string().min(1).optional(),
+  scope: SkillScopeSchema,
+  name: z.string().min(1),
+});
+export type SkillCheckUpdateParams = z.infer<typeof SkillCheckUpdateParams>;
+
+export const SkillCheckUpdateResult = z.object({
+  commit: z.string().nullable(),
+  hash: z.string(),
+  changed: z.boolean(),
+});
+export type SkillCheckUpdateResult = z.infer<typeof SkillCheckUpdateResult>;
+
+export const SkillUpdateParams = z.object({
+  workspaceId: z.string().min(1).optional(),
+  scope: SkillScopeSchema,
+  name: z.string().min(1),
+  /** The hash the user was shown; a fetch that no longer matches is refused. */
+  expectHash: z.string().min(1),
+});
+export type SkillUpdateParams = z.infer<typeof SkillUpdateParams>;
+
+export const SkillRemoveParams = z.object({
+  workspaceId: z.string().min(1).optional(),
+  scope: SkillScopeSchema,
+  name: z.string().min(1),
+});
+export type SkillRemoveParams = z.infer<typeof SkillRemoveParams>;
+
+export const SkillRemoveResult = z.object({ ok: z.literal(true) });
+export type SkillRemoveResult = z.infer<typeof SkillRemoveResult>;
 /** A configured MCP server. `args` and `env` are decoded from the row's JSON columns. */
 export const McpServerView = z.object({
   id: z.string(),

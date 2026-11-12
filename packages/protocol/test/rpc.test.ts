@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { PayloadSchemas } from "../src/events.js";
-import { ModelCreateParams, ProviderCreateParams, RpcFault, SessionPromptParams, SkillListParams, SkillReadParams, SkillSetEnabledParams, toRpcFailure } from "../src/rpc.js";
+import { ModelCreateParams, ProviderCreateParams, RpcFault, SessionPromptParams, SkillListParams, SkillReadParams, SkillSetEnabledParams, SkillUpdateParams, SkillView, toRpcFailure } from "../src/rpc.js";
 
 describe("provider params", () => {
   it("trims and accepts a valid provider", () => {
@@ -112,5 +112,24 @@ describe("skill params", () => {
     expect(() => SkillListParams.parse({ workspaceId: "" })).toThrow();
     expect(() => SkillSetEnabledParams.parse({ ...valid, workspaceId: "" })).toThrow();
     expect(() => SkillReadParams.parse({ scope: "global", name: "demo", workspaceId: "" })).toThrow();
+  });
+});
+
+describe("skill source schemas", () => {
+  it("accepts a git source on SkillView and rejects an unknown kind", () => {
+    const base = { scope: "global" as const, name: "s", description: "", hash: "h", enabled: true };
+    expect(SkillView.parse({ ...base, source: null }).source).toBeNull();
+    expect(
+      SkillView.parse({
+        ...base,
+        source: { kind: "git", url: "https://e.test/r.git", ref: "main", commit: "abc", hash: "h", updateAvailable: false },
+      }).source?.commit,
+    ).toBe("abc");
+    expect(() => SkillView.parse({ ...base, source: { kind: "http", url: "x", ref: null, commit: null, hash: "h", updateAvailable: false } })).toThrow();
+  });
+
+  it("requires expectHash for an update", () => {
+    expect(SkillUpdateParams.safeParse({ scope: "global", name: "s", expectHash: "h" }).success).toBe(true);
+    expect(SkillUpdateParams.safeParse({ scope: "global", name: "s" }).success).toBe(false);
   });
 });
