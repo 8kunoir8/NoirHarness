@@ -693,7 +693,12 @@ export class EngineManager {
       // The profile's bindings are read once per engine start: enabling a server mid-session
       // would change the tool list the provider was already told about.
       const bound = this.deps.mcp.forAgent(this.deps.agents.view(state.agentId).mcpServerIds);
-      const sessionMcp = bound.length === 0 ? undefined : new SessionMcpManager(bound, state.workspaceRoot);
+      // Only the native engine gets the kernel's own clients; an ACP agent spawns the servers from
+      // `session/new`, so spawning them here too would run every server twice.
+      const sessionMcp =
+        state.engineKind === "native" && bound.length > 0
+          ? new SessionMcpManager(bound, state.workspaceRoot)
+          : undefined;
       if (sessionMcp !== undefined) {
         await sessionMcp.initialize();
         state.mcp = sessionMcp;
@@ -713,17 +718,22 @@ export class EngineManager {
         history,
         skills,
         turnTimeoutMs: this.turnTimeoutMs,
-        ...(sessionMcp === undefined
+        // ACP needs the server list; the native engine needs the aggregate plus the call bridge.
+        ...(bound.length === 0
           ? {}
           : {
-              mcpTools: sessionMcp.tools,
-              callMcpTool: (name: string, args: Record<string, unknown>) => sessionMcp.executeTool(name, args),
               mcpServers: bound.map((server) => ({
                 name: server.name,
                 command: server.command,
                 args: server.args,
                 env: server.env,
               })),
+            }),
+        ...(sessionMcp === undefined
+          ? {}
+          : {
+              mcpTools: sessionMcp.tools,
+              callMcpTool: (name: string, args: Record<string, unknown>) => sessionMcp.executeTool(name, args),
             }),
       });
     } catch (error) {
