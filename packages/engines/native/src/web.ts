@@ -2,6 +2,7 @@ import { lookup as dnsLookup } from "node:dns";
 import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { BlockList, isIPv4, isIPv6, type LookupFunction } from "node:net";
+import { htmlToText } from "./htmlText.js";
 
 /**
  * Addresses a fetch may not reach. The kernel runs on the user's machine, so the interesting
@@ -50,8 +51,21 @@ const USER_AGENT = "NoirHarness/0.1";
 const ACCEPT = "text/html,application/xhtml+xml,text/plain,application/json;q=0.9,*/*;q=0.8";
 
 export interface FetchPageOptions {
-  /** Tests talk to a loopback server; the tool never sets this. */
-  allowPrivate?: boolean;
+  /**
+   * The tests talk to a server on 127.0.0.1; everything else stays refused. The tool never sets
+   * this, so a caller cannot widen the guard by passing a flag.
+   */
+  allowLoopback?: boolean;
+  /** Shrunk by the timeout tests. The tool never sets it. */
+  timeouts?: { totalMs?: number; idleMs?: number };
+}
+
+/** Names that point at the local machine or its network, refused before DNS. */
+const REFUSED_HOSTS: Record<string, true> = { localhost: true, "home.arpa": true };
+const REFUSED_SUFFIXES = [".local", ".localhost", ".internal", ".home.arpa"];
+
+function isLoopback(address: string): boolean {
+  return address === "::1" || /^127\./.test(address) || /^::ffff:127\./i.test(address);
 }
 
 export interface FetchPageResult {
@@ -59,6 +73,8 @@ export interface FetchPageResult {
   statusText: string;
   contentType: string;
   body: string;
+  /** Bytes received on the wire, which is what a binary refusal should report. */
+  bytes: number;
   /** After redirects: the URL the body came from, so relative links resolve correctly. */
   finalUrl: string;
 }
@@ -75,7 +91,7 @@ interface RawResponse {
  * connection uses that same answer. Validating separately and then connecting with `fetch` would
  * leave a window in which a second resolution returns something else.
  */
-function guardedLookup(allowPrivate: boolean): LookupFunction {
+function guardedLookup(allowLoopback: boolean): LookupFunction {
   return (hostname, options, callback) => {
     dnsLookup(hostname, { family: options.family, all: true }, (error, addresses) => {
       if (error !== null) {
@@ -87,19 +103,17 @@ function guardedLookup(allowPrivate: boolean): LookupFunction {
         callback(new Error(`No address for ${hostname}`), "", 0);
         return;
       }
-      if (!allowPrivate) {
-        const blocked = addresses.find((entry) => isPrivateAddress(entry.address));
-        if (blocked !== undefined) {
-          callback(new Error(`${hostname} resolves to a private address`), "", 0);
-          return;
-        }
+      const blocked = addresses.find((entry) => isPrivateAddress(entry.address) && !(allowLoopback && isLoopback(entry.address)));
+      if (blocked !== undefined) {
+        callback(new Error(`${hostname} resolves to a private address`), "", 0);
+        return;
       }
       callback(null, first.address, first.family);
     });
   };
 }
 
-function requestOnce(target: URL, signal: AbortSignal, allowPrivate: boolean): Promise<RawResponse> {
+function requestOnce(target: URL, signal: AbortSignal, options: FetchPageOptions): Promise<RawResponse> {
   const { promise, resolve, reject } = Promise.withResolvers<RawResponse>();
   const send = target.protocol === "https:" ? httpsRequest : httpRequest;
   let settled = false;
@@ -122,7 +136,7 @@ function requestOnce(target: URL, signal: AbortSignal, allowPrivate: boolean): P
         // No compression: decompression is a second way to exceed the cap, and a decompression bomb.
         "accept-encoding": "identity",
       },
-      lookup: guardedLookup(allowPrivate),
+      lookup: guardedLookup(options.allowLoopback === true),
     },
     (response) => {
       const chunks: Buffer[] = [];
@@ -161,12 +175,14 @@ function requestOnce(target: URL, signal: AbortSignal, allowPrivate: boolean): P
     },
   );
 
+  const totalMs = options.timeouts?.totalMs ?? REQUEST_TIMEOUT_MS;
+  const idleMs = options.timeouts?.idleMs ?? IDLE_TIMEOUT_MS;
   const overall = setTimeout(() => {
-    fail(new Error(`No response from ${target.host} within ${REQUEST_TIMEOUT_MS / 1000} s`));
-  }, REQUEST_TIMEOUT_MS);
+    fail(new Error(`No response from ${target.host} within ${totalMs / 1000} s`));
+  }, totalMs);
 
-  request.setTimeout(IDLE_TIMEOUT_MS, () => {
-    fail(new Error(`The response from ${target.host} stalled for ${IDLE_TIMEOUT_MS / 1000} s`));
+  request.setTimeout(idleMs, () => {
+    fail(new Error(`The response from ${target.host} stalled for ${idleMs / 1000} s`));
   });
   request.on("error", (error: Error) => {
     fail(error);
@@ -193,7 +209,8 @@ export async function fetchPage(
 ): Promise<FetchPageResult> {
   let target = new URL(url);
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    const response = await requestOnce(target, signal, options.allowPrivate === true);
+    assertFetchable(target, options.allowLoopback === true);
+    const response = await requestOnce(target, signal, options);
     const location = response.headers.location;
     if (response.status >= 300 && response.status < 400 && typeof location === "string" && location !== "") {
       target = new URL(location, target);
@@ -204,8 +221,46 @@ export async function fetchPage(
       statusText: response.statusText,
       contentType: (response.headers["content-type"] ?? "").split(";")[0]?.trim().toLowerCase() ?? "",
       body: response.body.toString("utf8"),
+      bytes: response.body.length,
       finalUrl: target.toString(),
     };
   }
   throw new Error(`More than ${MAX_REDIRECTS} redirects from ${url}`);
+}
+
+/**
+ * Refuses a URL the tool must not reach, before a socket exists. The `lookup` guard cannot see an
+ * IP literal — `net.connect` skips DNS when the host is already an address — so the literal case is
+ * decided here, and a redirect is checked by the same function on every hop.
+ */
+function assertFetchable(target: URL, allowLoopback: boolean): void {
+  if (target.protocol !== "http:" && target.protocol !== "https:") {
+    throw new Error(`Only http and https URLs can be fetched, not ${target.protocol}`);
+  }
+  const host = target.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (REFUSED_HOSTS[host] === true || REFUSED_SUFFIXES.some((suffix) => host.endsWith(suffix))) {
+    throw new Error(`${host} is a local name and cannot be fetched`);
+  }
+  if ((isIPv4(host) || isIPv6(host)) && isPrivateAddress(host) && !(allowLoopback && isLoopback(host))) {
+    throw new Error(`${host} is a private address and cannot be fetched`);
+  }
+}
+
+const TEXTUAL = /^(text\/|application\/(json|xml|xhtml\+xml)|[a-z-]+\/[a-z0-9.+-]*\+(json|xml))/i;
+
+/** Turns a response into what the model reads: extracted HTML, pretty JSON, or a refusal. */
+export function formatPage(result: FetchPageResult): string {
+  const type = result.contentType;
+  if (type === "text/html" || type === "application/xhtml+xml") {
+    return htmlToText(result.body, { baseUrl: result.finalUrl });
+  }
+  if (type === "application/json" || type.endsWith("+json")) {
+    try {
+      return JSON.stringify(JSON.parse(result.body) as unknown, null, 2);
+    } catch {
+      return result.body;
+    }
+  }
+  if (TEXTUAL.test(type)) return result.body;
+  return `${type === "" ? "unknown type" : type}, ${result.bytes} bytes \u2014 binary content is not returned`;
 }
