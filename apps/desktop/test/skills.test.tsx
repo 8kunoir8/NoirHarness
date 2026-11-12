@@ -168,6 +168,7 @@ describe("Skills", () => {
   it("installs from a path, shows the source, and gates an update on the checked hash", async () => {
     const calls: Array<{ method: string; params: unknown }> = [];
     let installed = false;
+    let body = "OLD_BODY";
     const request = vi.fn(async (method: string, params: unknown): Promise<unknown> => {
       calls.push({ method, params });
       if (method === "skill.list") {
@@ -187,7 +188,11 @@ describe("Skills", () => {
         return { ok: true, name: "new", hash: "n".repeat(64) };
       }
       if (method === "skill.checkUpdate") return { commit: null, hash: "m".repeat(64), changed: true };
-      if (method === "skill.update") return { commit: null, hash: "m".repeat(64) };
+      if (method === "skill.update") {
+        body = "NEW_BODY";
+        return { commit: null, hash: "m".repeat(64) };
+      }
+      if (method === "skill.read") return { content: body, hash: "n".repeat(64), truncated: false };
       throw new Error(method);
     }) as unknown as RequestFn;
 
@@ -199,6 +204,15 @@ describe("Skills", () => {
     await waitFor(() => expect(project.textContent).toContain("new"));
     // The row shows a label; the path it came from is the element's title, so both are observable.
     expect(within(project).getByTitle("/seed/new")).toBeDefined();
+    // The install is asserted exactly: a hardcoded kind, a dropped source, or the default scope fails.
+    expect(calls).toContainEqual({
+      method: "skill.install",
+      params: { workspaceId: "ws-1", scope: "project", kind: "local", source: "/seed/new" },
+    });
+    // Have the pane open, so the update has something stale to replace.
+    await userEvent.click(within(project).getByRole("button", { name: "View new" }));
+    const bodyPane = screen.getByRole("region", { name: "Skill body" });
+    await waitFor(() => expect(bodyPane.textContent).toContain("OLD_BODY"));
 
     await userEvent.click(within(project).getByRole("button", { name: "Check for updates new" }));
     // Opening the update only shows what would change; nothing is written yet.
@@ -216,6 +230,9 @@ describe("Skills", () => {
       params: { workspaceId: "ws-1", scope: "project", name: "new", expectHash: "m".repeat(64) },
     });
     expect(calls.filter((call) => call.method === "skill.update")).toHaveLength(1);
+    // The update replaced the files, so the open pane must show what is now on disk.
+    await waitFor(() => expect(bodyPane.textContent).toContain("NEW_BODY"));
+    expect(bodyPane.textContent).not.toContain("OLD_BODY");
   });
 
   it("keys the badge, the pin, and a hand-placed row on their own scope", async () => {
@@ -273,5 +290,68 @@ describe("Skills", () => {
     // The update reloads the list, which again claims an update; the spent pin stays silent.
     await waitFor(() => expect(calls.filter((call) => call.method === "skill.list")).toHaveLength(2));
     expect(screen.queryByRole("button", { name: "Update dup" })).toBeNull();
+  });
+
+  it("installs into the scope the user selected and refuses an empty source", async () => {
+    const calls: Array<{ method: string; params: unknown }> = [];
+    const request = vi.fn(async (method: string, params: unknown): Promise<unknown> => {
+      calls.push({ method, params });
+      if (method === "skill.list") return { skills: [], shadowed: [], warnings: [] };
+      if (method === "skill.install") return { ok: true, name: "g", hash: "g".repeat(64) };
+      throw new Error(method);
+    }) as unknown as RequestFn;
+
+    render(<Skills workspaceId="ws-1" request={request} />);
+    const install = screen.getByRole("button", { name: "Install skill" });
+    // An empty source cannot install, and whitespace is not a source either.
+    await userEvent.click(install);
+    await userEvent.type(screen.getByLabelText("Skill source"), "   ");
+    await userEvent.click(install);
+    expect(calls.some((call) => call.method === "skill.install")).toBe(false);
+    await userEvent.clear(screen.getByLabelText("Skill source"));
+
+    await userEvent.selectOptions(screen.getByLabelText("Scope"), "global");
+    await userEvent.type(screen.getByLabelText("Skill source"), "https://host/g.git");
+    await userEvent.click(screen.getByRole("button", { name: "Install skill" }));
+    await waitFor(() =>
+      expect(calls).toContainEqual({
+        method: "skill.install",
+        params: { workspaceId: "ws-1", scope: "global", kind: "git", source: "https://host/g.git" },
+      }),
+    );
+  });
+
+  it("drops a refused update's pin so the row cannot resend the same failing hash", async () => {
+    const calls: Array<{ method: string; params: unknown }> = [];
+    const request = vi.fn(async (method: string, params: unknown): Promise<unknown> => {
+      calls.push({ method, params });
+      if (method === "skill.list") {
+        return {
+          skills: [{
+            scope: "project", name: "stale", description: "d", hash: "s".repeat(64), enabled: true,
+            source: { kind: "local", url: "/seed/stale", ref: null, commit: null, hash: "s".repeat(64), updateAvailable: false },
+          }],
+          shadowed: [],
+          warnings: [],
+        };
+      }
+      if (method === "skill.checkUpdate") return { commit: null, hash: "t".repeat(64), changed: true };
+      if (method === "skill.update") throw new Error("conflict: the installed hash moved");
+      throw new Error(method);
+    }) as unknown as RequestFn;
+
+    render(<Skills workspaceId="ws-1" request={request} />);
+    const project = screen.getByRole("region", { name: "Project skills" });
+    await userEvent.click(
+      await within(project).findByRole("button", { name: "Check for updates stale" }),
+    );
+    await userEvent.click(await within(project).findByRole("button", { name: "Update stale" }));
+    await userEvent.click(within(project).getByRole("button", { name: "Confirm update stale" }));
+
+    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("conflict"));
+    // The refused pin is gone, so neither the badge nor a second confirmation survives it.
+    expect(within(project).queryByRole("button", { name: "Update stale" })).toBeNull();
+    expect(within(project).queryByRole("button", { name: "Confirm update stale" })).toBeNull();
+    expect(calls.filter((call) => call.method === "skill.update")).toHaveLength(1);
   });
 });

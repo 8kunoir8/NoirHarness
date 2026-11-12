@@ -278,6 +278,19 @@ export function Skills({ workspaceId, request }: SkillsProps) {
     }
   }
 
+  /**
+   * A pin is worth exactly one confirmation: after the kernel acted on it, or refused it, the row
+   * must not offer the same `expectHash` again without a fresh check.
+   */
+  function forgetUpdate(key: string, skill: SkillView): void {
+    setUpdateHashes((current) => {
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+    setList((current) => (current === undefined ? current : withUpdateBadge(current, skill, false)));
+  }
+
   async function update(skill: SkillView): Promise<void> {
     const key = `${skill.scope}|${skill.name}`;
     const expectHash = updateHashes[key];
@@ -295,15 +308,15 @@ export function Skills({ workspaceId, request }: SkillsProps) {
       });
       if (generation.current !== ticket) return;
       // The kernel replaced that hash, so the pin is spent: forget it before the row can offer again.
-      setUpdateHashes((current) => {
-        const next = { ...current };
-        delete next[key];
-        return next;
-      });
-      setList((current) => (current === undefined ? current : withUpdateBadge(current, skill, false)));
+      forgetUpdate(key, skill);
       await load(ticket, workspace);
+      if (generation.current !== ticket) return;
+      // The files on disk changed, so a pane showing this skill would otherwise keep the old text.
+      if (sameSkill(selection.current, skill)) void readBody(skill, ticket, workspace);
     } catch (updateError) {
       if (generation.current !== ticket) return;
+      // A refused pin cannot become valid by retrying it, so the row loses both the pin and its badge.
+      forgetUpdate(key, skill);
       setError(errorMessage(updateError));
     } finally {
       // Both outcomes close this row's confirmation, so a failed update leaves no dead prompt behind.
