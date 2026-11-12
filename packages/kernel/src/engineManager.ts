@@ -471,14 +471,10 @@ export class EngineManager {
           } catch {
             // The engine may already be gone.
           }
-          try {
-            await state.engineSession.dispose();
-          } catch {
-            // Teardown is best effort; the process is reaped by its own exit handler.
-          }
-          state.engineSession = undefined;
-          state.engine = undefined;
         }
+        // The engine and the MCP children it was started with go together: a closed session must
+        // not leave a server process behind until the app quits.
+        await this.disposeEngine(state);
       }
 
       // Re-read with no await in between: a concurrent close may have won the race.

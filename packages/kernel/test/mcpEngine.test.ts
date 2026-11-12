@@ -1,8 +1,8 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentEvent, PermissionPolicy } from "@noir/protocol";
 import { startFakeOpenAiServer, type FakeOpenAiServer } from "../../engines/native/test/fakeOpenAiServer.js";
 import { AgentService } from "../src/agents.js";
@@ -49,10 +49,20 @@ function memorySecrets(): Secrets {
     delete: (id) => void store.delete(id),
   };
 }
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 
 /** A real MCP server process: one `add` tool over stdio JSON-RPC. */
 const CALC_SERVER = `
 process.stdin.setEncoding("utf8");
+if (process.env.NOIR_MCP_PID_FILE) require("node:fs").writeFileSync(process.env.NOIR_MCP_PID_FILE, String(process.pid));
 let buffer = "";
 const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
 process.stdin.on("data", (chunk) => {
@@ -98,7 +108,7 @@ async function waitForEvent(
   }
 }
 
-async function harness(server: FakeOpenAiServer, policy: PermissionPolicy) {
+async function harness(server: FakeOpenAiServer, policy: PermissionPolicy, pidFile?: string) {
   const root = tempDir();
   const dataDir = tempDir();
   const db = openDb(join(dataDir, "noir.db"));
@@ -116,7 +126,7 @@ async function harness(server: FakeOpenAiServer, policy: PermissionPolicy) {
     name: "calc",
     command: process.execPath,
     args: ["-e", CALC_SERVER],
-    env: {},
+    env: pidFile === undefined ? {} : { NOIR_MCP_PID_FILE: pidFile },
     enabled: true,
   });
 
@@ -246,5 +256,21 @@ describe("EngineManager MCP broker", () => {
 
     const tools = server.requests[0]?.body.tools as Array<{ function: { name: string } }>;
     expect(tools.map((tool) => tool.function.name).some((name) => name.startsWith("mcp__"))).toBe(false);
+  });
+
+  it("reaps the session's MCP children when the session closes", async () => {
+    const server = await startFakeOpenAiServer([{ text: "ok" }]);
+    servers.push(server);
+    const pidFile = join(tempDir(), "mcp.pid");
+    const { events, manager, session } = await harness(server, { mcp: "allow" }, pidFile);
+
+    await manager.prompt({ sessionId: session.id, requestId: "mcp-close", content: [{ type: "text", text: "hi" }] });
+    await waitForEvent(events, session.id, (event) => event.type === "turn.completed");
+    await vi.waitFor(() => expect(existsSync(pidFile)).toBe(true), { timeout: 10_000 });
+    const pid = Number(readFileSync(pidFile, "utf8"));
+    expect(isAlive(pid)).toBe(true);
+
+    await manager.closeSession(session.id);
+    expect(isAlive(pid)).toBe(false);
   });
 });
