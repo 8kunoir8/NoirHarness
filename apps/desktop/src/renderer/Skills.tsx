@@ -309,8 +309,9 @@ export function Skills({ workspaceId, request }: SkillsProps) {
       if (generation.current !== ticket) return;
       // The kernel replaced that hash, so the pin is spent: forget it before the row can offer again.
       forgetUpdate(key, skill);
-      await load(ticket, workspace);
-      if (generation.current !== ticket) return;
+      const next = await load(ticket, workspace);
+      // A failed reload already reported the stale list; re-reading would clear that error.
+      if (next === undefined || generation.current !== ticket) return;
       // The files on disk changed, so a pane showing this skill would otherwise keep the old text.
       if (sameSkill(selection.current, skill)) void readBody(skill, ticket, workspace);
     } catch (updateError) {

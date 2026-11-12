@@ -354,4 +354,46 @@ describe("Skills", () => {
     expect(within(project).queryByRole("button", { name: "Confirm update stale" })).toBeNull();
     expect(calls.filter((call) => call.method === "skill.update")).toHaveLength(1);
   });
+
+  it("keeps a stale-list error after a successful update instead of re-reading the body", async () => {
+    const calls: Array<{ method: string; params: unknown }> = [];
+    let lists = 0;
+    const request = vi.fn(async (method: string, params: unknown): Promise<unknown> => {
+      calls.push({ method, params });
+      if (method === "skill.list") {
+        lists += 1;
+        if (lists > 1) throw new Error("skills directory unreadable");
+        return {
+          skills: [{
+            scope: "project", name: "moved", description: "d", hash: "s".repeat(64), enabled: true,
+            source: { kind: "local", url: "/seed/moved", ref: null, commit: null, hash: "s".repeat(64), updateAvailable: false },
+          }],
+          shadowed: [],
+          warnings: [],
+        };
+      }
+      if (method === "skill.read") return { content: "OLD_BODY", hash: "s".repeat(64), truncated: false };
+      if (method === "skill.checkUpdate") return { commit: null, hash: "t".repeat(64), changed: true };
+      if (method === "skill.update") return { commit: null, hash: "t".repeat(64) };
+      throw new Error(method);
+    }) as unknown as RequestFn;
+
+    render(<Skills workspaceId="ws-1" request={request} />);
+    const project = screen.getByRole("region", { name: "Project skills" });
+    await userEvent.click(await within(project).findByRole("button", { name: "View moved" }));
+    const bodyPane = screen.getByRole("region", { name: "Skill body" });
+    await waitFor(() => expect(bodyPane.textContent).toContain("OLD_BODY"));
+
+    await userEvent.click(within(project).getByRole("button", { name: "Check for updates moved" }));
+    await userEvent.click(await within(project).findByRole("button", { name: "Update moved" }));
+    await userEvent.click(within(project).getByRole("button", { name: "Confirm update moved" }));
+
+    // The update landed but the list did not: the error stands, and the pane is not re-read over it.
+    await waitFor(() =>
+      expect(screen.getByRole("status").textContent).toContain("skills directory unreadable"),
+    );
+    expect(calls.filter((call) => call.method === "skill.read")).toHaveLength(1);
+    expect(bodyPane.textContent).toContain("OLD_BODY");
+    expect(calls.filter((call) => call.method === "skill.update")).toHaveLength(1);
+  });
 });
