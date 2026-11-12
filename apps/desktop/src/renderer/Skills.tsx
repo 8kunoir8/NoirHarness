@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  SkillCheckUpdateResult,
   SkillListResult,
   SkillReadResult,
   type SkillScopeSchema,
+  type SkillSourceView,
   type SkillView,
 } from "@noir/protocol";
 import type { RequestFn } from "./api.js";
@@ -22,19 +24,58 @@ function sameSkill(left: SkillRef | undefined, right: SkillRef): boolean {
   return left !== undefined && left.scope === right.scope && left.name === right.name;
 }
 
+/** The badge is a verdict from the source, never a fact of the listing, so a fresh list clears it. */
+function withoutUpdateBadges(result: SkillListResult): SkillListResult {
+  return {
+    ...result,
+    skills: result.skills.map((skill) => {
+      const source = skill.source ?? null;
+      return source === null ? skill : { ...skill, source: { ...source, updateAvailable: false } };
+    }),
+  };
+}
+
+/** Only the row a check answered for carries its verdict, and the check is the only writer. */
+function withUpdateBadge(
+  list: SkillListResult,
+  skill: SkillRef,
+  updateAvailable: boolean,
+): SkillListResult {
+  return {
+    ...list,
+    skills: list.skills.map((row) => {
+      const source = row.source ?? null;
+      if (source === null || row.scope !== skill.scope || row.name !== skill.name) return row;
+      return { ...row, source: { ...source, updateAvailable } };
+    }),
+  };
+}
+
+/** The row label: the short commit for a git source, the word itself for a directory. */
+function sourceLabel(source: SkillSourceView): string {
+  if (source.kind === "local") return "local";
+  // A commit-less git row cannot be pinned, so it names no revision rather than claiming to be local.
+  return source.commit === null ? "git" : `git ${source.commit.slice(0, 7)}`;
+}
+
 function SkillRow({
   skill,
   busy,
   selected,
   onView,
   onToggle,
+  onCheckUpdate,
+  onUpdate,
 }: {
   skill: SkillView;
   busy: boolean;
   selected: boolean;
   onView: (skill: SkillRef) => void;
   onToggle: (skill: SkillView) => void;
+  onCheckUpdate: (skill: SkillView) => void;
+  onUpdate: (skill: SkillView) => void;
 }) {
+  const source = skill.source ?? null;
   return (
     <li className={`skills-row${selected ? " skills-row-selected" : ""}`}>
       <div className="skills-row-head">
@@ -49,9 +90,26 @@ function SkillRow({
         <code className="skills-hash" title={skill.hash}>
           {skill.hash.slice(0, 12)}
         </code>
+        {source === null ? null : (
+          <span className="skills-source" title={source.url}>
+            {sourceLabel(source)}
+          </span>
+        )}
         <button type="button" disabled={busy} onClick={() => onToggle(skill)}>
           {`${skill.enabled ? "Disable" : "Enable"} ${skill.name}`}
         </button>
+        {source === null ? null : (
+          <>
+            <button type="button" disabled={busy} onClick={() => onCheckUpdate(skill)}>
+              {`Check for updates ${skill.name}`}
+            </button>
+            {source.updateAvailable ? (
+              <button type="button" disabled={busy} onClick={() => onUpdate(skill)}>
+                {`Update ${skill.name}`}
+              </button>
+            ) : null}
+          </>
+        )}
       </div>
       {skill.description === "" ? null : <p className="skills-description">{skill.description}</p>}
     </li>
@@ -68,6 +126,10 @@ export function Skills({ workspaceId, request }: SkillsProps) {
   const [selected, setSelected] = useState<SkillRef | undefined>(undefined);
   const [body, setBody] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(false);
+  const [sourceInput, setSourceInput] = useState("");
+  const [installScope, setInstallScope] = useState<"global" | "project">("project");
+  // Keyed `scope|name`, because one name can live in both scopes under different pins.
+  const [updateHashes, setUpdateHashes] = useState<Record<string, string>>({});
 
   // Any workspace switch bumps this, so a list or body that resolves late is dropped instead of
   // being shown for the wrong workspace.
@@ -75,10 +137,14 @@ export function Skills({ workspaceId, request }: SkillsProps) {
   const selectionTicket = useRef(0);
   const selection = useRef<SkillRef | undefined>(undefined);
 
+  // `skill.remove` answers with the listing too, but this panel has no remove control, so every
+  // refresh goes through here — and a refreshed list never carries a badge of its own.
   const load = useCallback(
     async (ticket: number, workspace: string): Promise<SkillListResult | undefined> => {
       try {
-        const result = SkillListResult.parse(await request<unknown>("skill.list", { workspaceId: workspace }));
+        const result = withoutUpdateBadges(
+          SkillListResult.parse(await request<unknown>("skill.list", { workspaceId: workspace })),
+        );
         if (generation.current !== ticket) return undefined;
         setList(result);
         setError(undefined);
@@ -99,6 +165,7 @@ export function Skills({ workspaceId, request }: SkillsProps) {
     setError(undefined);
     setSelected(undefined);
     setBody(undefined);
+    setUpdateHashes({});
     if (workspaceId === "") return;
     void load(generation.current, workspaceId);
   }, [workspaceId, load]);
@@ -154,6 +221,93 @@ export function Skills({ workspaceId, request }: SkillsProps) {
     }
   }
 
+  async function checkUpdate(skill: SkillView): Promise<void> {
+    const ticket = generation.current;
+    const workspace = workspaceId;
+    const key = `${skill.scope}|${skill.name}`;
+    setBusy(true);
+    try {
+      const result = SkillCheckUpdateResult.parse(
+        await request<unknown>("skill.checkUpdate", {
+          workspaceId: workspace,
+          scope: skill.scope,
+          name: skill.name,
+        }),
+      );
+      if (generation.current !== ticket) return;
+      // The pin the user will confirm. An unchanged source stores an empty pin, so nothing updates it.
+      setUpdateHashes((current) => ({ ...current, [key]: result.changed ? result.hash : "" }));
+      // A changed hash is only a badge until the user updates, so the list keeps the old pin.
+      setList((current) =>
+        current === undefined ? current : withUpdateBadge(current, skill, result.changed),
+      );
+      setError(undefined);
+    } catch (checkError) {
+      if (generation.current !== ticket) return;
+      setError(errorMessage(checkError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function update(skill: SkillView): Promise<void> {
+    const key = `${skill.scope}|${skill.name}`;
+    const expectHash = updateHashes[key];
+    // No check, or a check that found nothing: the row has no pin to confirm, so it is not updatable.
+    if (expectHash === undefined || expectHash === "") return;
+    const ticket = generation.current;
+    const workspace = workspaceId;
+    setBusy(true);
+    try {
+      await request<unknown>("skill.update", {
+        workspaceId: workspace,
+        scope: skill.scope,
+        name: skill.name,
+        expectHash,
+      });
+      if (generation.current !== ticket) return;
+      // The kernel replaced that hash, so the pin is spent: forget it before the row can offer again.
+      setUpdateHashes((current) => {
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+      setList((current) => (current === undefined ? current : withUpdateBadge(current, skill, false)));
+      await load(ticket, workspace);
+    } catch (updateError) {
+      if (generation.current !== ticket) return;
+      setError(errorMessage(updateError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function install(): Promise<void> {
+    const value = sourceInput.trim();
+    if (value === "") return;
+    // A drive path, a POSIX absolute path, or a UNC share is a local directory; anything else is a URL.
+    const kind = /^(?:[A-Za-z]:[\\/]|\/|\\\\)/.test(value) ? "local" : "git";
+    const ticket = generation.current;
+    const workspace = workspaceId;
+    setBusy(true);
+    try {
+      await request<unknown>("skill.install", {
+        workspaceId: workspace,
+        scope: installScope,
+        kind,
+        source: value,
+      });
+      if (generation.current !== ticket) return;
+      setSourceInput("");
+      await load(ticket, workspace);
+    } catch (installError) {
+      if (generation.current !== ticket) return;
+      setError(errorMessage(installError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (workspaceId === "") {
     return (
       <section className="skills" aria-label="Skills">
@@ -179,6 +333,27 @@ export function Skills({ workspaceId, request }: SkillsProps) {
           {warnings.join(" · ")}
         </p>
       )}
+      <section className="skills-install" aria-label="Install a skill">
+        <label htmlFor="skill-source">Skill source</label>
+        <input
+          id="skill-source"
+          value={sourceInput}
+          onChange={(event) => setSourceInput(event.target.value)}
+          placeholder="https://host/repo.git or an absolute path"
+        />
+        <label htmlFor="skill-scope">Scope</label>
+        <select
+          id="skill-scope"
+          value={installScope}
+          onChange={(event) => setInstallScope(event.target.value as "global" | "project")}
+        >
+          <option value="project">project</option>
+          <option value="global">global</option>
+        </select>
+        <button type="button" disabled={busy || sourceInput.trim() === ""} onClick={() => void install()}>
+          Install skill
+        </button>
+      </section>
       <div className="skills-sections">
         <section aria-label="Global skills">
           <h3>Global skills</h3>
@@ -196,6 +371,8 @@ export function Skills({ workspaceId, request }: SkillsProps) {
                 selected={sameSkill(selected, skill)}
                 onView={view}
                 onToggle={(candidate) => void toggle(candidate)}
+                onCheckUpdate={(candidate) => void checkUpdate(candidate)}
+                onUpdate={(candidate) => void update(candidate)}
               />
             ))}
             {list !== undefined && globalSkills.length === 0 && shadowed.length === 0 ? (
@@ -214,6 +391,8 @@ export function Skills({ workspaceId, request }: SkillsProps) {
                 selected={sameSkill(selected, skill)}
                 onView={view}
                 onToggle={(candidate) => void toggle(candidate)}
+                onCheckUpdate={(candidate) => void checkUpdate(candidate)}
+                onUpdate={(candidate) => void update(candidate)}
               />
             ))}
             {list !== undefined && projectSkills.length === 0 ? (
