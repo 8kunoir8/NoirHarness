@@ -61,6 +61,12 @@ const MAX_BODY_BYTES = 2 * 1024 * 1024;
  */
 const MAX_PRETTY_BYTES = 64 * 1024;
 const MAX_REDIRECTS = 5;
+/**
+ * The statuses that mean "this resource is somewhere else". A bare `3xx` range would also follow
+ * `304 Not Modified`, which carries no new resource, and `305 Use Proxy`, which names a proxy to
+ * route through and is not a target to fetch.
+ */
+const REDIRECTS: Record<number, true> = { 301: true, 302: true, 303: true, 307: true, 308: true };
 const USER_AGENT = "NoirHarness/0.1";
 const ACCEPT = "text/html,application/xhtml+xml,text/plain,application/json;q=0.9,*/*;q=0.8";
 
@@ -235,7 +241,10 @@ function requestOnce(
         fail(new Error(`${target.host} sent the page ${encoding}-compressed after identity was asked for`));
         return;
       }
-      const keep = isTextual(bareType(response.headers["content-type"] ?? ""));
+      // A redirect's body is never returned, so it is counted and dropped like a binary one: six
+      // hops would otherwise each hold up to 2 MiB of a page nobody reads.
+      const redirect = REDIRECTS[response.statusCode ?? 0] === true && typeof response.headers.location === "string";
+      const keep = !redirect && isTextual(bareType(response.headers["content-type"] ?? ""));
       // A binary body is never returned, so its bytes are counted and dropped rather than held.
       const chunks: Buffer[] = [];
       let bytes = 0;
@@ -259,6 +268,12 @@ function requestOnce(
           });
         }
       };
+      if (redirect) {
+        // Nothing in a redirect body is returned and nothing in it is read: settle on the headers
+        // so a body that trickles, or never ends, cannot hold the fetch.
+        finish();
+        return;
+      }
       response.on("data", (chunk: Buffer) => {
         if (bytes >= MAX_BODY_BYTES) return;
         const room = MAX_BODY_BYTES - bytes;
@@ -332,7 +347,7 @@ export async function fetchPage(
     if (Date.now() >= deadline) throw new Error(`No response from ${target.host} within the fetch deadline`);
     const response = await requestOnce(target, signal, options, deadline);
     const location = response.headers.location;
-    if (response.status >= 300 && response.status < 400 && typeof location === "string" && location !== "") {
+    if (REDIRECTS[response.status] === true && typeof location === "string" && location !== "") {
       try {
         target = new URL(location, target);
       } catch {

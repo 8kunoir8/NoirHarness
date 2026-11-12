@@ -248,6 +248,48 @@ describe("fetchPage refusals", () => {
     }
   });
 
+  it("does not follow a 3xx that is not a redirect", async () => {
+    // 304 carries no new resource and 305 names a proxy: following either fetches a page the
+    // server did not point at.
+    for (const status of [300, 304, 305]) {
+      const site = await serve((_req, res) => {
+        res.writeHead(status, { location: "http://10.0.0.1/" });
+        res.end();
+      });
+      try {
+        const page = await fetchPage(site.url, new AbortController().signal, { allowLoopback: true });
+        expect(page.status).toBe(status);
+      } finally {
+        await site.close();
+      }
+    }
+  });
+
+  it("does not read a redirect's body before following it", async () => {
+    // The body of a redirect is never returned, so holding it means six hops of up to 2 MiB each.
+    const site = await serve((req, res) => {
+      if (req.url === "/") {
+        res.writeHead(302, { location: "/done", "content-type": "text/html" });
+        // A body that never finishes: reading it would stall to the idle timeout.
+        res.write("<p>" + "x".repeat(64 * 1024));
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end("arrived");
+    });
+    try {
+      const started = Date.now();
+      const page = await fetchPage(site.url, new AbortController().signal, {
+        allowLoopback: true,
+        timeouts: { idleMs: 5_000 },
+      });
+      expect(page.body).toBe("arrived");
+      expect(Date.now() - started).toBeLessThan(2_000);
+    } finally {
+      await site.close();
+    }
+  });
+
   it("holds one deadline across the whole redirect chain", async () => {
     // Each hop used to get its own 20 s budget, so six hops could hold a turn for two minutes.
     let hop = 0;
