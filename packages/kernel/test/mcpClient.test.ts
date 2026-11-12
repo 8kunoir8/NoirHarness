@@ -1,4 +1,7 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { McpClient } from "../src/mcp/client.js";
 
 /** A minimal MCP server: initialize, tools/list, tools/call over newline-delimited JSON-RPC. */
@@ -32,6 +35,7 @@ process.stdin.on("data", (chunk) => {
 `;
 
 const clients: McpClient[] = [];
+const dirs: string[] = [];
 
 function clientFor(script: string, overrides: { callTimeoutMs?: number; startupTimeoutMs?: number } = {}): McpClient {
   const client = new McpClient({
@@ -44,8 +48,25 @@ function clientFor(script: string, overrides: { callTimeoutMs?: number; startupT
   return client;
 }
 
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+
 afterEach(async () => {
   for (const client of clients.splice(0)) await client.stop();
+  for (const dir of dirs.splice(0)) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Windows may briefly hold a handle on a killed child's cwd.
+    }
+  }
 });
 
 describe("McpClient", () => {
@@ -122,5 +143,32 @@ process.stdin.on("data", (chunk) => {
     expect(client.pid).toBeTypeOf("number");
     await client.stop();
     expect(client.pid).toBeUndefined();
+  });
+
+  it.skipIf(process.platform !== "win32")("runs a .cmd shim, which Node cannot spawn itself", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "noir mcp shim "));
+    dirs.push(dir);
+    const pidFile = join(dir, "server.pid");
+    writeFileSync(
+      join(dir, "server.js"),
+      `${ECHO_SERVER}
+require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+`,
+    );
+    // `npx` ships as this kind of shim, and it forwards its arguments to the real server.
+    const shim = join(dir, "server.cmd");
+    writeFileSync(shim, `@echo off\r\n"${process.execPath}" "%~dp0server.js" %*\r\n`);
+    const client = new McpClient({ command: shim, args: ["C:\\Program Files\\x"], env: {} });
+    clients.push(client);
+
+    await client.start();
+    await expect(client.callTool("echo", { text: "a b" })).resolves.toBe("Echo: a b");
+
+    await vi.waitFor(() => expect(existsSync(pidFile)).toBe(true), { timeout: 10_000 });
+    const serverPid = Number(readFileSync(pidFile, "utf8"));
+    expect(isAlive(serverPid)).toBe(true);
+    // Stopping the wrapper must take the server itself down, not orphan it.
+    await client.stop();
+    expect(isAlive(serverPid)).toBe(false);
   });
 });

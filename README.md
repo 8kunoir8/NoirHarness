@@ -102,7 +102,7 @@ the transcript the model sees matches the transcript on screen. A session freeze
 **Setup** carries an `MCP servers` panel: a list of configured servers with a live `Enabled`
 switch, `Test`, `Edit`, `Cancel`, and `Remove` actions, and one form for name, command, arguments,
 and `KEY=value` environment lines. The name becomes part of a tool name, so it is `[a-z0-9_-]{1,40}`
-and unique; arguments are one whitespace-separated line, not shell syntax. `Test` starts the real
+and unique; arguments are one per line, not shell syntax. `Test` starts the real
 command, completes the handshake, lists the tools, and reports `n tools` or the server's own error —
 the probe is discarded when the row is edited or removed. `Edit` loads the row into the same form and
 saves through `mcp.update`.
@@ -113,8 +113,9 @@ approved by the `mcp` permission category, the sixth alongside `shell`, `delete`
 change applies to the next session. The kernel speaks MCP over stdio itself
 (`packages/kernel/src/mcp/`): newline-delimited JSON-RPC with a 10 s handshake and a 120 s call
 deadline, 64 KiB of server stderr kept for diagnostics, and `SIGTERM` then `SIGKILL` after 3 s on
-dispose. A server that fails to start does not fail the session; its tools are absent and the
-transcript carries `name: reason`.
+dispose; a server process dies with the session that started it. On Windows a command like `npx` is
+a `.cmd` shim, so it is run through `cmd.exe` and killed with its process tree. A server that fails
+to start does not fail the session; its tools are absent and the transcript carries `name: reason`.
 
 For the native engine the kernel spawns the session's servers, aggregates their tools as
 `mcp__<server>__<tool>` with the server's own JSON schema, and routes `tools/call` back through the

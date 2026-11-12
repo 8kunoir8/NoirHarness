@@ -25,6 +25,30 @@ const DEFAULT_CALL_TIMEOUT_MS = 120_000;
 const STDERR_LIMIT = 64 * 1024;
 const STOP_GRACE_MS = 3_000;
 
+/**
+ * Windows ships `npx` and friends as `.cmd` shims, and Node refuses to spawn one directly
+ * (`npx` is ENOENT, `npx.cmd` is EINVAL). `cmd.exe /c` is the only way to run it, so the command
+ * line is quoted here the way cmd reads it: an argument with spaces or metacharacters is wrapped
+ * and its inner quotes doubled. `%NAME%` inside an argument still expands — cmd offers no escape
+ * on a command line — which is the same deal a shell gives the user.
+ */
+function windowsCommandLine(command: string, args: string[]): string {
+  const quote = (value: string): string => {
+    if (value === "") return '""';
+    if (!/[\s"&|<>^]/.test(value)) return value;
+    return `"${value.replace(/"/g, '""')}"`;
+  };
+  return [command, ...args].map(quote).join(" ");
+}
+
+/** cmd.exe resolves a bare `npx` to its `.cmd`; a native executable is spawned directly. */
+function isWindowsShim(command: string): boolean {
+  if (process.platform !== "win32") return false;
+  if (/\.(cmd|bat)$/i.test(command)) return true;
+  // A bare name that is not an executable resolves to a shim on PATH; cmd.exe is what finds it.
+  return !/\.(exe|com)$/i.test(command);
+}
+
 /** Server answers are untrusted JSON-RPC: a malformed one is a broken server, not a crash here. */
 const IncomingMessage = z.object({
   jsonrpc: z.literal("2.0"),
@@ -97,12 +121,26 @@ export class McpClient {
 
   async start(): Promise<void> {
     if (this.#child !== undefined) return;
-    const child = spawn(this.options.command, this.options.args, {
-      ...(this.options.cwd === undefined ? {} : { cwd: this.options.cwd }),
-      env: { ...process.env, ...this.options.env },
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    });
+    const shim = isWindowsShim(this.options.command);
+    const child = shim
+      ? spawn(
+          process.env["ComSpec"] ?? "cmd.exe",
+          ["/d", "/s", "/c", `"${windowsCommandLine(this.options.command, this.options.args)}"`],
+          {
+            ...(this.options.cwd === undefined ? {} : { cwd: this.options.cwd }),
+            env: { ...process.env, ...this.options.env },
+            stdio: ["pipe", "pipe", "pipe"],
+            windowsHide: true,
+            // The line is already quoted for cmd; Node must not quote it again.
+            windowsVerbatimArguments: true,
+          },
+        )
+      : spawn(this.options.command, this.options.args, {
+          ...(this.options.cwd === undefined ? {} : { cwd: this.options.cwd }),
+          env: { ...process.env, ...this.options.env },
+          stdio: ["pipe", "pipe", "pipe"],
+          windowsHide: true,
+        });
     this.#child = child;
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
@@ -174,6 +212,18 @@ export class McpClient {
     this.#child = undefined;
     this.#rejectAll("MCP client stopped");
     if (child.exitCode !== null || child.signalCode !== null) return;
+    if (isWindowsShim(this.options.command) && child.pid !== undefined) {
+      // The server is a grandchild of cmd.exe; killing the wrapper alone would orphan it.
+      await new Promise<void>((resolve) => {
+        const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
+          windowsHide: true,
+          stdio: "ignore",
+        });
+        killer.once("exit", () => resolve());
+        killer.once("error", () => resolve());
+      });
+      return;
+    }
     child.kill("SIGTERM");
     await new Promise<void>((resolve) => {
       const timer = setTimeout(() => {
