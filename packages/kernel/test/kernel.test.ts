@@ -284,4 +284,57 @@ describe("startKernel", () => {
       await kernel.close();
     }
   });
+
+  it("attaches provenance per scope and never another workspace's source", async () => {
+    const dir = tempDir();
+    const rootA = tempDir();
+    const rootB = tempDir();
+    const kernel = await startKernel({ dataDir: dir });
+    try {
+      const addWorkspace = async (root: string): Promise<string> => {
+        const project = await call(kernel.port, kernel.token, "project.add", { path: root });
+        const workspace = await call(kernel.port, kernel.token, "workspace.create", { projectId: project.result.id });
+        return workspace.result.id as string;
+      };
+      const seed = (label: string): string => {
+        const path = join(dir, `seed-${label}`);
+        mkdirSync(join(path, "dup"), { recursive: true });
+        writeFileSync(join(path, "dup", "SKILL.md"), `---\nname: dup\ndescription: d\n---\n\n${label}\n`);
+        return path;
+      };
+      const workspaceA = await addWorkspace(rootA);
+      const workspaceB = await addWorkspace(rootB);
+
+      const globalInstall = await call(kernel.port, kernel.token, "skill.install", {
+        scope: "global", kind: "local", source: seed("global"),
+      });
+      const installA = await call(kernel.port, kernel.token, "skill.install", {
+        workspaceId: workspaceA, scope: "project", kind: "local", source: seed("a"),
+      });
+      const installB = await call(kernel.port, kernel.token, "skill.install", {
+        workspaceId: workspaceB, scope: "project", kind: "local", source: seed("b"),
+      });
+      for (const installed of [globalInstall, installA, installB]) expect(installed.error).toBeUndefined();
+      // Three distinct bodies, so an attaching row from the wrong scope or workspace is visibly wrong.
+      expect(new Set([globalInstall.result.hash, installA.result.hash, installB.result.hash]).size).toBe(3);
+
+      const listedA = (await call(kernel.port, kernel.token, "skill.list", { workspaceId: workspaceA })).result;
+      expect(listedA.skills).toHaveLength(1);
+      expect(listedA.skills[0]).toMatchObject({ scope: "project", name: "dup" });
+      expect(listedA.skills[0].source.hash).toBe(installA.result.hash);
+      expect(listedA.shadowed).toEqual(["dup"]);
+
+      const listedGlobal = (await call(kernel.port, kernel.token, "skill.list")).result;
+      expect(listedGlobal.skills).toHaveLength(1);
+      expect(listedGlobal.skills[0]).toMatchObject({ scope: "global", name: "dup" });
+      expect(listedGlobal.skills[0].source.hash).toBe(globalInstall.result.hash);
+      expect(listedGlobal.shadowed).toEqual([]);
+
+      const listedB = (await call(kernel.port, kernel.token, "skill.list", { workspaceId: workspaceB })).result;
+      expect(listedB.skills).toHaveLength(1);
+      expect(listedB.skills[0].source.hash).toBe(installB.result.hash);
+    } finally {
+      await kernel.close();
+    }
+  });
 });
