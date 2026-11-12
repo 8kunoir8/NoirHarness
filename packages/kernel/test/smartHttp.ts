@@ -10,8 +10,10 @@ export const git = (cwd: string, args: string[]): string => {
   return result.stdout;
 };
 
-/** True when the fixture can drive a git binary at all; callers skip the git-kind tests otherwise. */
-export const gitAvailable = (): boolean => spawnSync("git", ["--version"], { encoding: "utf8" }).status === 0;
+/** True when the fixture can drive a git binary and its CGI backend; callers skip the git-kind tests otherwise. */
+export const gitAvailable = (): boolean =>
+  spawnSync("git", ["--version"], { encoding: "utf8" }).status === 0 &&
+  spawnSync("git", ["http-backend"], { encoding: "utf8", input: "" }).status === 0;
 
 /** A repo at `dir` containing one skill directory, committed. */
 export function skillRepo(dir: string, name: string, body = "BODY"): void {
@@ -20,6 +22,12 @@ export function skillRepo(dir: string, name: string, body = "BODY"): void {
   git(dir, ["init", "-q", "-b", "main", "."]);
   git(dir, ["add", "-A"]);
   git(dir, ["commit", "-qm", "one"]);
+}
+
+/** A directory holding one skill and no repository; the `local` kind must never need git. */
+export function plainSkill(dir: string, name: string, body = "BODY"): void {
+  mkdirSync(join(dir, name), { recursive: true });
+  writeFileSync(join(dir, name, "SKILL.md"), `---\nname: ${name}\ndescription: d\n---\n\n${body}\n`);
 }
 
 /**

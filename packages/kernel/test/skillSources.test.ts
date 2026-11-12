@@ -4,7 +4,7 @@ import { join, resolve, sep } from "node:path";
 import { ErrorCodes } from "@noir/protocol";
 import { afterAll, describe, expect, it } from "vitest";
 import { fetchSkill, parseGitTarget, parseLocalTarget } from "../src/skillSources.js";
-import { git, gitAvailable, serveSmartHttp, skillRepo } from "./smartHttp.js";
+import { git, gitAvailable, plainSkill, serveSmartHttp, skillRepo } from "./smartHttp.js";
 
 const root = mkdtempSync(join(tmpdir(), "noir src "));
 const realDir = join(root, "real");
@@ -101,12 +101,13 @@ describe("fetching a skill", () => {
   it("copies a local directory without linking to it", async () => {
     const work = scratch();
     const source = join(work, "src");
-    mkdirSync(source);
-    skillRepo(source, "local-skill");
+    plainSkill(source, "local-skill");
+    // A working copy's `.git` is skipped, as the git branch deletes it; building it needs no git binary.
+    mkdirSync(join(source, ".git"));
+    writeFileSync(join(source, ".git", "config"), "");
     const fetched = await fetchSkill(await parseLocalTarget(source), join(work, "staging"));
     expect(fetched.commit).toBeNull();
     expect(fetched.dir.startsWith(source)).toBe(false);
-    // The source is a working copy; its `.git` is skipped, exactly as the git branch deletes it.
     expect(readdirSync(join(fetched.dir, ".."))).toEqual(["local-skill"]);
     await fetched.cleanup();
     expect(existsSync(fetched.dir)).toBe(false);
@@ -115,9 +116,8 @@ describe("fetching a skill", () => {
   it("refuses a symlink inside a local source and removes the staging copy", async () => {
     const work = scratch();
     const source = join(work, "src");
+    plainSkill(source, "linked");
     const skill = join(source, "linked");
-    mkdirSync(skill, { recursive: true });
-    writeFileSync(join(skill, "SKILL.md"), "---\nname: linked\ndescription: d\n---\n\nBODY\n");
     const outside = join(work, "outside");
     mkdirSync(outside);
     // A link inside the tree would stage bytes the recorded hash cannot cover.
@@ -132,8 +132,7 @@ describe("fetching a skill", () => {
   it("refuses a source over the file cap and removes the staging copy", async () => {
     const work = scratch();
     const source = join(work, "src");
-    mkdirSync(source);
-    skillRepo(source, "big");
+    plainSkill(source, "big");
     for (let index = 0; index < 201; index += 1) {
       writeFileSync(join(source, "big", `f${index}.txt`), "x");
     }
@@ -144,8 +143,7 @@ describe("fetching a skill", () => {
   it("refuses a source over the staging cap and removes the staging copy", async () => {
     const work = scratch();
     const source = join(work, "src");
-    mkdirSync(join(source, "skill"), { recursive: true });
-    writeFileSync(join(source, "skill", "SKILL.md"), "---\nname: skill\ndescription: d\n---\n\nBODY\n");
+    plainSkill(source, "skill");
     const junk = join(source, "junk");
     mkdirSync(junk);
     // 2001 files take seconds to create on Windows, longer than the default test timeout.
@@ -155,6 +153,20 @@ describe("fetching a skill", () => {
     await expect(fetchSkill(await parseLocalTarget(source), join(work, "staging"))).rejects.toThrow(/more than 2000 files/);
     expect(existsSync(join(work, "staging")) ? readdirSync(join(work, "staging")) : []).toEqual([]);
   }, 30_000);
+
+  it("fetches a local source without a git binary at all", async () => {
+    const work = scratch();
+    const source = join(work, "src");
+    plainSkill(source, "gitless");
+    process.env.NOIR_GIT_COMMAND = join(work, "no-such-git");
+    try {
+      const fetched = await fetchSkill(await parseLocalTarget(source), join(work, "staging"));
+      expect(fetched.name).toBe("gitless");
+      await fetched.cleanup();
+    } finally {
+      delete process.env.NOIR_GIT_COMMAND;
+    }
+  });
 });
 
 it("refuses ext:: without starting any process", async () => {
