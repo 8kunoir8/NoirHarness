@@ -94,6 +94,29 @@ describe("reduceChat", () => {
     expect(unknown.messages).toHaveLength(1);
   });
 
+  it("shows an MCP server's startup failure once and ignores other raw payloads", () => {
+    const warning = { engine: "mcp", payload: { warning: "calc: spawn ENOENT" } };
+    let state = reduceChat(emptyChatState(), makeEvent(1, "engine.raw", warning));
+    state = reduceChat(state, makeEvent(2, "engine.raw", warning));
+    state = reduceChat(state, makeEvent(3, "engine.raw", { engine: "native", payload: { trimmedTurns: 1 } }));
+
+    expect(state.notices).toEqual(["calc: spawn ENOENT"]);
+  });
+
+  it("renders an MCP startup failure as a notice in the transcript", async () => {
+    const request = vi.fn(async (method: string): Promise<unknown> => {
+      if (method !== "session.subscribe") throw new Error(method);
+      return {
+        events: [makeEvent(1, "engine.raw", { engine: "mcp", payload: { warning: "calc: spawn ENOENT" } })],
+        lastSeq: 1,
+      };
+    });
+    render(<ChatHarness request={request as unknown as RequestFn} />);
+
+    expect(await screen.findByText("calc: spawn ENOENT")).toBeTruthy();
+    expect(screen.getByRole("status", { name: "Setup notices" })).toBeTruthy();
+  });
+
   it("surfaces a file ref once and ignores a repeated path", () => {
     let state = reduceChat(emptyChatState(), makeEvent(1, "message.delta", {
       messageId: "m1", role: "assistant", block: { type: "file_ref", path: "notes.md" },

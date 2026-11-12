@@ -188,6 +188,15 @@ export function Chat({
         </div>
       )}
 
+      {state.notices.length === 0 ? null : (
+        <ul className="chat-notices" role="status" aria-label="Setup notices">
+          {state.notices.map((notice) => (
+            <li key={notice}>{notice}</li>
+          ))}
+        </ul>
+      )}
+
+
       {state.status === "error" ? (
         <p role="status" className="session-stopped">
           Session stopped. Send a prompt to resume.

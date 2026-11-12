@@ -81,11 +81,13 @@ export interface ChatState {
   files: ChatFile[];
   plan: ChatPlanItem[];
   skillsLoaded: LoadedSkillState[];
+  /** Kernel-side failures a turn did not stop for, e.g. an MCP server that would not start. */
+  notices: string[];
   lastSeq: number;
 }
 
 export function emptyChatState(sessionId?: string): ChatState {
-  const base: ChatState = { messages: [], tools: [], files: [], plan: [], skillsLoaded: [], status: "idle", lastSeq: 0 };
+  const base: ChatState = { messages: [], tools: [], files: [], plan: [], skillsLoaded: [], notices: [], status: "idle", lastSeq: 0 };
   return sessionId === undefined ? base : { ...base, sessionId };
 }
 
@@ -306,6 +308,19 @@ export function reduceChat(state: ChatState, event: AgentEvent): ChatState {
       const { name, scope, hash } = parsed.data;
       if (next.skillsLoaded.some((skill) => skill.name === name)) return next;
       return { ...next, skillsLoaded: [...next.skillsLoaded, { name, scope, hash }] };
+    }
+    case "engine.raw": {
+      // Only the broker's warnings carry a message worth showing; every other engine's raw
+      // payload is diagnostic noise the transcript must not grow a bubble for.
+      const parsed = PayloadSchemas["engine.raw"].safeParse(event.payload);
+      if (!parsed.success || parsed.data.engine !== "mcp") return next;
+      const payload = parsed.data.payload;
+      const warning =
+        typeof payload === "object" && payload !== null && "warning" in payload && typeof payload.warning === "string"
+          ? payload.warning
+          : undefined;
+      if (warning === undefined || next.notices.includes(warning)) return next;
+      return { ...next, notices: [...next.notices, warning] };
     }
     default:
       return next;

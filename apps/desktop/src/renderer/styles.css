@@ -331,6 +331,13 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; colo
   font-size: 0.72rem;
 }
 
+.chat-notices {
+  margin: 0 0 10px;
+  padding: 0 0 0 18px;
+  color: var(--danger);
+  font-size: 0.8rem;
+}
+
 .messages { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; flex: 1; }
 .message {
   border: 1px solid var(--border);
