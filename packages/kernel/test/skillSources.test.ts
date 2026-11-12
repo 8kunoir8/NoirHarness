@@ -568,4 +568,76 @@ describe("skill sources", () => {
     expect(existsSync(join(workspace, ".noir", "skills", "by-hand"))).toBe(false);
     expect((await skills.list("ws-1", workspace)).skills).toEqual([]);
   });
+
+  it("removes the directory whose manifest name differs from its directory name", async () => {
+    const { db, service: skills, dataDir } = service();
+    const sources = new SkillSourceService(db, skills, dataDir);
+    const work = scratch();
+    const workspace = join(work, "ws");
+    mkdirSync(join(workspace, ".noir", "skills"), { recursive: true });
+    plainSkill(join(workspace, ".noir", "skills"), "cool-skill");
+    writeFileSync(join(workspace, ".noir", "skills", "cool-skill", "SKILL.md"), "---\nname: cool_skill\ndescription: d\n---\n\nX\n");
+    expect((await skills.list("ws-1", workspace)).skills.map((skill) => skill.name)).toEqual(["cool_skill"]);
+
+    await sources.remove("ws-1", workspace, "project", "cool_skill");
+
+    expect(existsSync(join(workspace, ".noir", "skills", "cool-skill"))).toBe(false);
+    expect((await skills.list("ws-1", workspace)).skills).toEqual([]);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM skills").get()).toEqual({ n: 0 });
+  });
+
+  it("refuses an install for a name the scan already reports under another directory", async () => {
+    const { db, service: skills, dataDir } = service();
+    const sources = new SkillSourceService(db, skills, dataDir);
+    const work = scratch();
+    const source = join(work, "src");
+    mkdirSync(source);
+    plainSkill(source, "dup");
+    const workspace = join(work, "ws");
+    mkdirSync(join(workspace, ".noir", "skills"), { recursive: true });
+    plainSkill(join(workspace, ".noir", "skills"), "foo");
+    writeFileSync(join(workspace, ".noir", "skills", "foo", "SKILL.md"), "---\nname: dup\ndescription: d\n---\n\nX\n");
+
+    await expect(sources.install("ws-1", workspace, "project", "local", source, undefined)).rejects.toThrow(/already installed/);
+
+    expect(readFileSync(join(workspace, ".noir", "skills", "foo", "SKILL.md"), "utf8")).toContain("X");
+    expect(existsSync(join(workspace, ".noir", "skills", "dup"))).toBe(false);
+    expect(sources.sourcesFor("ws-1").size).toBe(0);
+  });
+
+  it("refuses when the workspace directory was deleted, and does not recreate it", async () => {
+    const { db, service: skills, dataDir } = service();
+    const sources = new SkillSourceService(db, skills, dataDir);
+    const work = scratch();
+    const source = join(work, "src");
+    mkdirSync(source);
+    plainSkill(source, "vanished");
+    const workspace = join(work, "ws");
+    mkdirSync(workspace);
+    rmSync(workspace, { recursive: true });
+
+    await expect(skills.rootFor("ws-1", "project", workspace)).rejects.toMatchObject({
+      code: ErrorCodes.invalidParams,
+      message: "Workspace root is not a directory",
+    });
+    await expect(sources.install("ws-1", workspace, "project", "local", source, undefined))
+      .rejects.toThrow(/Workspace root is not a directory/);
+    expect(existsSync(workspace)).toBe(false);
+  });
+
+  it("refuses a project install with no workspace", async () => {
+    const { db, service: skills, dataDir } = service();
+    const sources = new SkillSourceService(db, skills, dataDir);
+    const work = scratch();
+    const source = join(work, "src");
+    mkdirSync(source);
+    plainSkill(source, "homed");
+
+    await expect(sources.install("ws-1", undefined, "project", "local", source, undefined)).rejects.toMatchObject({
+      code: ErrorCodes.invalidParams,
+      message: "A project skill needs a workspace",
+    });
+    // The guard is what keeps a project install out of the global root.
+    expect(existsSync(join(dataDir, "skills"))).toBe(false);
+  });
 });

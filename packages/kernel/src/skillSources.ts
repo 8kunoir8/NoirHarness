@@ -298,8 +298,13 @@ export class SkillSourceService {
     const destination = await this.skills.rootFor(workspaceId, scope, root);
     const fetched = await fetchSkill(target, this.stagingRoot);
     try {
-      const existing = await lstat(join(destination, fetched.name)).catch(() => undefined);
-      if (existing !== undefined) {
+      // A name is taken when the scan reports it for this scope, whatever directory holds it; a
+      // path check alone misses a hand-placed `foo/SKILL.md` that declares `name: dup`.
+      const listed = await this.skills.list(workspaceId, root);
+      const taken =
+        listed.skills.some((skill) => skill.scope === scope && skill.name === fetched.name) ||
+        (await lstat(join(destination, fetched.name)).catch(() => undefined)) !== undefined;
+      if (taken) {
         throw new RpcFault(ErrorCodes.conflict, `${fetched.name} is already installed in ${scope}; update it instead`);
       }
       await this.place(fetched.dir, join(destination, fetched.name));
@@ -415,18 +420,18 @@ export class SkillSourceService {
 
   async remove(workspaceId: string, root: string | undefined, scope: SkillScope, name: string): Promise<void> {
     if (!SKILL_NAME.test(name)) throw new RpcFault(ErrorCodes.invalidParams, `"${name}" is not a valid skill name`);
-    if (this.row(workspaceId, scope, name) === undefined) {
-      // No provenance row: a skill placed by hand must still be removable, an unknown name must not
-      // report success. `list` is the same lookup `setEnabled` uses for notFound, and it never
-      // writes into the workspace, so a refusal cannot create the scope root on the way.
-      const listed = await this.skills.list(workspaceId, root);
-      const present =
-        listed.skills.some((skill) => skill.scope === scope && skill.name === name) ||
-        (scope === "global" && listed.shadowed.includes(name));
-      if (!present) throw new RpcFault(ErrorCodes.notFound, `Skill not found: ${name}`);
+    // The scan keys a skill by its manifest name and keeps the directory it was found in, so that
+    // directory is the only right thing to delete: `join(root, name)` is just the layout `install`
+    // writes, and a hand-placed or renamed directory can sit anywhere under the scope root.
+    const scanned = await this.skills.dirFor(workspaceId, scope, name, root);
+    if (scanned === undefined) {
+      // Absent from the scan: a provenance row or a shadowed global still names a directory under
+      // the scope root, and nothing else does. Refusing must not create that root.
+      const row = this.row(workspaceId, scope, name);
+      const shadowed = scope === "global" && (await this.skills.list(workspaceId, root)).shadowed.includes(name);
+      if (row === undefined && !shadowed) throw new RpcFault(ErrorCodes.notFound, `Skill not found: ${name}`);
     }
-    const destination = join(await this.skills.rootFor(workspaceId, scope, root), name);
-    await rm(destination, { recursive: true, force: true });
+    await rm(scanned ?? join(await this.skills.rootFor(workspaceId, scope, root), name), { recursive: true, force: true });
     this.db
       .prepare("DELETE FROM skill_sources WHERE workspace_id = ? AND scope = ? AND name = ?")
       .run(scope === "global" ? "" : workspaceId, scope, name);

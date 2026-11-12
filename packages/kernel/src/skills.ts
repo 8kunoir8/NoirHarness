@@ -271,12 +271,27 @@ export class SkillService {
   async rootFor(workspaceId: string, scope: SkillScope, root: string | undefined): Promise<string> {
     if (scope === "global") return this.globalRoot;
     if (root === undefined) throw new RpcFault(ErrorCodes.invalidParams, "A project skill needs a workspace");
+    // A workspace whose directory is gone is never recreated here; `materialize` refuses it too.
+    const marker = await stat(root).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (marker?.isDirectory() !== true) {
+      throw new RpcFault(ErrorCodes.invalidParams, "Workspace root is not a directory");
+    }
     if (await hasUntrustedNoir(root)) throw new RpcFault(ErrorCodes.invalidParams, "Workspace .noir is not a directory");
     const dir = join(root, ".noir", "skills");
     // A linked leaf is refused, not followed: an install, update, or remove must never operate on
     // bytes outside the workspace just because a cloned repo carried `<root>/.noir/skills`.
     await ensureRealDirectory(dir, "Workspace .noir/skills", (message) => new RpcFault(ErrorCodes.invalidParams, message));
     return dir;
+  }
+
+  /** The directory the scan resolved for a name, or undefined when no scope root holds it. */
+  async dirFor(workspaceId: string, scope: SkillScope, name: string, root: string | undefined): Promise<string | undefined> {
+    const projectDir = root === undefined || (await hasUntrustedNoir(root)) ? undefined : join(root, ".noir", "skills");
+    const scan = await discoverSkills(this.globalRoot, projectDir);
+    return scan.skills.find((skill) => skill.scope === scope && skill.name === name)?.dir;
   }
 
   private readEnabled(workspaceId: string): Map<string, boolean> {
