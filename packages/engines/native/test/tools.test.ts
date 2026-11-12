@@ -214,6 +214,38 @@ describe("shell.exec", () => {
   });
 });
 
+describe("mcp tools", () => {
+  it("caps a server's output like every other tool", async () => {
+    const root = tempDir();
+    const huge = "x".repeat(200_000);
+    const result = await runTool("mcp__calc__dump", {}, context(root, { callMcpTool: async () => huge }));
+    expect(Buffer.byteLength(result)).toBeLessThanOrEqual(64 * 1024 + "\n[truncated]".length);
+    expect(result.endsWith("[truncated]")).toBe(true);
+  });
+
+  it("settles an in-flight call when the turn is aborted", async () => {
+    const root = tempDir();
+    const controller = new AbortController();
+    let started = false;
+    // The broker call never settles: only the abort can end the wait, and the turn must not hang.
+    const running = runTool(
+      "mcp__calc__slow",
+      {},
+      context(root, {
+        signal: controller.signal,
+        callMcpTool: () => {
+          started = true;
+          return new Promise<string>(() => undefined);
+        },
+      }),
+    );
+    // Abort after the call is in flight, so the race — not the pre-check — is what settles it.
+    await vi.waitFor(() => expect(started).toBe(true));
+    controller.abort();
+    await expect(running).rejects.toThrow(/aborted/i);
+  });
+});
+
 describe("skill tools", () => {
   it("lists the enabled skills the engine was started with", async () => {
     const root = tempDir();
