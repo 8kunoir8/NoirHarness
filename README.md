@@ -137,8 +137,10 @@ What comes back is readable text, not the document. HTML goes through the engine
 landmarks scope the content when a page has one, navigation and hidden subtrees are dropped, links
 keep their targets resolved against the final URL, nested lists and tables survive as text, and
 `<code>` is marked with backticks. JSON is pretty-printed, other textual types pass through, and a
-binary type is refused with its name and size instead of its bytes. The text is capped at 64 KiB,
-and a non-2xx status is prefixed as `HTTP 404 Not Found`.
+binary type is refused with its name and size instead of its bytes, and its body is counted rather
+than buffered. Text is decoded as its declared charset — the header, a BOM, then a `<meta charset>`
+— and falls back to UTF-8. The text is capped at 64 KiB, and a non-2xx status is prefixed as
+`HTTP 404 Not Found`.
 
 Targets are refused before the request leaves the machine, or by the socket's own DNS answer: only
 `http` and `https`; no `localhost`, `.local`, `.internal`, or `home.arpa` name; and no private,
