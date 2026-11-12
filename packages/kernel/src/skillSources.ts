@@ -1,8 +1,9 @@
 import { execFile } from "node:child_process";
-import { cp, lstat, mkdir, readdir, readFile, rm, stat } from "node:fs/promises";
+import { cp, lstat, mkdir, readdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { ErrorCodes, RpcFault } from "@noir/protocol";
+import type Database from "better-sqlite3";
+import { ErrorCodes, RpcFault, type SkillSourceView } from "@noir/protocol";
 import { v7 as uuidv7 } from "uuid";
 import {
   MAX_SKILL_BYTES,
@@ -11,6 +12,8 @@ import {
   SKILL_NAME,
   hashSkillDir,
   parseSkillFrontmatter,
+  type SkillScope,
+  type SkillService,
 } from "./skills.js";
 
 export type FetchTarget =
@@ -209,5 +212,196 @@ export async function fetchSkill(target: FetchTarget, stagingRoot: string): Prom
   } catch (error) {
     await cleanup();
     throw error;
+  }
+}
+
+interface SourceRow {
+  workspace_id: string;
+  scope: SkillScope;
+  name: string;
+  kind: "git" | "local";
+  url: string | null;
+  ref: string | null;
+  commit_sha: string | null;
+  hash: string;
+}
+
+export class SkillSourceService {
+  constructor(
+    private readonly db: Database.Database,
+    private readonly skills: SkillService,
+    private readonly dataDir: string,
+  ) {}
+
+  private get stagingRoot(): string {
+    return join(this.dataDir, "skill-staging");
+  }
+
+  private row(workspaceId: string, scope: SkillScope, name: string): SourceRow | undefined {
+    return this.db
+      .prepare(
+        "SELECT workspace_id, scope, name, kind, url, ref, commit_sha, hash FROM skill_sources " +
+          "WHERE workspace_id = ? AND scope = ? AND name = ?",
+      )
+      .get(scope === "global" ? "" : workspaceId, scope, name) as SourceRow | undefined;
+  }
+
+  /** Every provenance row visible to one workspace, keyed `"<scope>|<name>"`. */
+  sourcesFor(workspaceId: string): Map<string, SkillSourceView> {
+    const rows = this.db
+      .prepare(
+        "SELECT workspace_id, scope, name, kind, url, ref, commit_sha, hash FROM skill_sources WHERE workspace_id IN ('', ?)",
+      )
+      .all(workspaceId) as SourceRow[];
+    const map = new Map<string, SkillSourceView>();
+    for (const row of rows) {
+      const visible = row.workspace_id === "" ? row.scope === "global" : row.scope === "project";
+      if (!visible) continue;
+      map.set(`${row.scope}|${row.name}`, {
+        kind: row.kind,
+        url: row.url ?? "",
+        ref: row.ref,
+        commit: row.commit_sha,
+        hash: row.hash,
+        updateAvailable: false,
+      });
+    }
+    return map;
+  }
+
+  private record(workspaceId: string, scope: SkillScope, name: string, target: FetchTarget, fetched: FetchedSource): void {
+    this.db
+      .prepare(
+        "INSERT INTO skill_sources (id, workspace_id, scope, name, kind, url, ref, commit_sha, hash, installed_at) " +
+          "VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT (workspace_id, scope, name) DO UPDATE SET " +
+          "kind = excluded.kind, url = excluded.url, ref = excluded.ref, commit_sha = excluded.commit_sha, " +
+          "hash = excluded.hash, installed_at = excluded.installed_at",
+      )
+      .run(
+        uuidv7(),
+        scope === "global" ? "" : workspaceId,
+        scope,
+        name,
+        target.kind,
+        target.kind === "git" ? target.url : target.path,
+        target.kind === "git" ? (target.ref ?? null) : null,
+        fetched.commit,
+        fetched.hash,
+        Date.now(),
+      );
+  }
+
+  async install(
+    workspaceId: string, root: string | undefined, scope: SkillScope, kind: "git" | "local", source: string, ref: string | undefined,
+  ): Promise<{ name: string; hash: string }> {
+    const target: FetchTarget = kind === "local" ? await parseLocalTarget(source) : parseGitTarget(source, ref);
+    const destination = await this.skills.rootFor(workspaceId, scope, root);
+    const fetched = await fetchSkill(target, this.stagingRoot);
+    try {
+      const existing = await lstat(join(destination, fetched.name)).catch(() => undefined);
+      if (existing !== undefined) {
+        throw new RpcFault(ErrorCodes.conflict, `${fetched.name} is already installed in ${scope}; update it instead`);
+      }
+      await this.place(fetched.dir, join(destination, fetched.name));
+      this.record(workspaceId, scope, fetched.name, target, fetched);
+      if (root !== undefined) await this.skills.materialize(workspaceId, root);
+      return { name: fetched.name, hash: fetched.hash };
+    } finally {
+      await fetched.cleanup();
+    }
+  }
+
+  /**
+   * Copies a staged directory into a root through a temp sibling and a rename, never a partial
+   * write. Symbolic links are dropped at any depth: `fetchSkill` refuses them today, but the rule
+   * that every installed byte is covered by the recorded hash must not depend on that caller.
+   */
+  private async place(staged: string, destination: string): Promise<void> {
+    const temp = `${destination}.installing-${uuidv7()}`;
+    const copy = async (from: string, to: string): Promise<void> => {
+      await mkdir(to, { recursive: true });
+      for (const entry of await readdir(from, { withFileTypes: true })) {
+        if (entry.isSymbolicLink()) continue;
+        const source = join(from, entry.name);
+        const target = join(to, entry.name);
+        if (entry.isDirectory()) await copy(source, target);
+        else if (entry.isFile()) await cp(source, target);
+      }
+    };
+    try {
+      await copy(staged, temp);
+      await rename(temp, destination);
+    } catch (error) {
+      await rm(temp, { recursive: true, force: true });
+      throw error;
+    }
+  }
+
+  async checkUpdate(workspaceId: string, scope: SkillScope, name: string): Promise<{ commit: string | null; hash: string; changed: boolean }> {
+    const row = this.row(workspaceId, scope, name);
+    if (row === undefined) throw new RpcFault(ErrorCodes.notFound, `${name} was not installed from a source`);
+    const target = await this.targetOf(row);
+    const fetched = await fetchSkill(target, this.stagingRoot);
+    try {
+      const commit = fetched.commit;
+      const changed = fetched.hash !== row.hash || (commit !== null && commit !== row.commit_sha);
+      return { commit, hash: fetched.hash, changed };
+    } finally {
+      await fetched.cleanup();
+    }
+  }
+
+  async update(
+    workspaceId: string, root: string | undefined, scope: SkillScope, name: string, expectHash: string,
+  ): Promise<{ commit: string | null; hash: string }> {
+    const row = this.row(workspaceId, scope, name);
+    if (row === undefined) throw new RpcFault(ErrorCodes.notFound, `${name} was not installed from a source`);
+    const target = await this.targetOf(row);
+    const fetched = await fetchSkill(target, this.stagingRoot);
+    try {
+      // The pin is checked before anything is touched: a stale view must leave disk and row alone.
+      if (fetched.hash !== expectHash) {
+        throw new RpcFault(ErrorCodes.conflict, `${name} changed since it was shown: expected ${expectHash}, fetched ${fetched.hash}`);
+      }
+      const destination = join(await this.skills.rootFor(workspaceId, scope, root), name);
+      const aside = `${destination}.previous-${uuidv7()}`;
+      let moved = false;
+      try {
+        await rename(destination, aside);
+        moved = true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      try {
+        await this.place(fetched.dir, destination);
+      } catch (error) {
+        if (moved) await rename(aside, destination).catch(() => undefined);
+        throw error;
+      }
+      if (moved) await rm(aside, { recursive: true, force: true });
+      this.record(workspaceId, scope, name, target, fetched);
+      if (root !== undefined) await this.skills.materialize(workspaceId, root);
+      return { commit: fetched.commit, hash: fetched.hash };
+    } finally {
+      await fetched.cleanup();
+    }
+  }
+
+  async remove(workspaceId: string, root: string | undefined, scope: SkillScope, name: string): Promise<void> {
+    if (!SKILL_NAME.test(name)) throw new RpcFault(ErrorCodes.invalidParams, `"${name}" is not a valid skill name`);
+    const destination = join(await this.skills.rootFor(workspaceId, scope, root), name);
+    await rm(destination, { recursive: true, force: true });
+    this.db
+      .prepare("DELETE FROM skill_sources WHERE workspace_id = ? AND scope = ? AND name = ?")
+      .run(scope === "global" ? "" : workspaceId, scope, name);
+    this.db
+      .prepare("DELETE FROM skills WHERE workspace_id = ? AND scope = ? AND name = ?")
+      .run(scope === "global" ? "" : workspaceId, scope, name);
+    if (root !== undefined) await this.skills.materialize(workspaceId, root);
+  }
+
+  private async targetOf(row: SourceRow): Promise<FetchTarget> {
+    if (row.kind === "local") return parseLocalTarget(row.url ?? "");
+    return parseGitTarget(row.url ?? "", row.ref ?? undefined);
   }
 }

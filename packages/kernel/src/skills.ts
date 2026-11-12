@@ -260,6 +260,16 @@ export class SkillService {
     return join(this.dataDir, "skills");
   }
 
+  /** The directory a scope installs into and scans: the data dir for global, `<ws>/.noir/skills` for project. */
+  async rootFor(workspaceId: string, scope: SkillScope, root: string | undefined): Promise<string> {
+    if (scope === "global") return this.globalRoot;
+    if (root === undefined) throw new RpcFault(ErrorCodes.invalidParams, "A project skill needs a workspace");
+    if (await hasUntrustedNoir(root)) throw new RpcFault(ErrorCodes.invalidParams, "Workspace .noir is not a directory");
+    const dir = join(root, ".noir", "skills");
+    await mkdir(dir, { recursive: true });
+    return dir;
+  }
+
   private readEnabled(workspaceId: string): Map<string, boolean> {
     const rows = this.db
       .prepare("SELECT workspace_id, scope, name, enabled FROM skills")
