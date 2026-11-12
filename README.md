@@ -81,9 +81,9 @@ visible without opening the form.
 
 The native engine runs inside the kernel process. It posts to the provider's
 `/chat/completions` and reads the SSE stream itself, reassembling tool-call deltas that arrive split
-across frames. It exposes nine built-in tools — `fs.read`, `fs.list`, `fs.search`, `fs.write`,
-`fs.replace`, `fs.delete`, `shell.exec`, `skill.list`, `skill.read` — plus the session's MCP tools
-(see [MCP servers](#mcp-servers)), and allows at most 24 tool rounds per turn.
+across frames. It exposes ten built-in tools — `fs.read`, `fs.list`, `fs.search`, `fs.write`,
+`fs.replace`, `fs.delete`, `shell.exec`, `skill.list`, `skill.read`, `web.fetch` — plus the
+session's MCP tools (see [MCP servers](#mcp-servers)), and allows at most 24 tool rounds per turn.
 Every tool call is an approval card (`Allow once` / `Reject`) unless the session's permission policy
 allows that category; `shell.exec` is never sandboxed, so the approval is the only gate. Writes,
 deletes, and renames are checked against the workspace with the resolved real path before they run,
@@ -123,6 +123,32 @@ For the native engine the kernel spawns the session's servers, aggregates their 
 `mcp__<server>__<tool>` with the server's own JSON schema, and routes `tools/call` back through the
 approval card. An ACP agent spawns the servers itself from the `session/new` payload, so the kernel
 only forwards the list there and spawns nothing.
+
+## Reaching the web
+
+The native engine has one outbound tool, `web.fetch`: a single `GET` of a public URL, no request
+headers and no request body, following at most five redirects. It is approved as the `network`
+category, so a `network: allow` policy skips the card, `reject` refuses without one, and nothing is
+fetched before the decision.
+
+What comes back is readable text, not the document. HTML goes through the engine's own tokenizer
+(`packages/engines/native/src/htmlText.ts`): `<title>` becomes the first heading, `<main>`-like
+landmarks scope the content when a page has one, navigation and hidden subtrees are dropped, links
+keep their targets resolved against the final URL, nested lists and tables survive as text, and
+`<code>` is marked with backticks. JSON is pretty-printed, other textual types pass through, and a
+binary type is refused with its name and size instead of its bytes. The text is capped at 64 KiB,
+and a non-2xx status is prefixed as `HTTP 404 Not Found`.
+
+Targets are refused before the request leaves the machine, or by the socket's own DNS answer: only
+`http` and `https`; no `localhost`, `.local`, `.internal`, or `home.arpa` name; and no private,
+loopback, link-local, or multicast address. The `lookup` handed to `net.connect` validates every
+address the host resolves to and connects to that same answer, so a second resolution cannot point
+back at the local machine. The check runs again on every redirect hop, and a literal address in the
+URL is checked directly — `net.connect` never asks DNS for one. `Accept-Encoding: identity` keeps
+compression out of the path, a body stops at 2 MiB, a request at 20 s, a stalled response at 10 s,
+and an interrupt aborts the socket.
+
+Only the native engine has it. An ACP agent reaches the network through whatever tools it brings.
 
 ## The chat shell
 
