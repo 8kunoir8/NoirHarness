@@ -304,18 +304,19 @@ a warning and skipped; a symlinked `SKILL.md` is reported as a warning; symlinke
 and links inside a skill are skipped silently and do not enter the hash.
 
 **Installing a skill.** A skill comes from an `https` git URL or a local directory, and installs into
-either the machine's skill root or the workspace's. Every install is pinned twice: to the commit it
-was fetched at, and to the SHA-256 of its files. Updating is not automatic — the panel asks the source
-what it now has, shows the old and new hashes, and only then offers the update, which the kernel
-accepts only if the fetched hash matches the one you were shown. A git source is cloned shallow, with
-submodules and the `ext` transport disabled, and without a credential prompt: plain `http` is
-accepted only for loopback addresses, so a test or a local mirror works without a certificate, while
-`ssh`, `git`, `file`, and `ext` are refused. `ext::` is remote command execution, and the rest cannot
-be fetched without credentials this harness does not collect. A fetched tree is capped at 200 files,
-8 MiB, and 1 MiB per `SKILL.md`; the install is refused and its staging copy deleted otherwise. A
-local source must be an absolute path and may not contain a symbolic link anywhere in its tree —
-the scan below skips links, but an install refuses them rather than copying bytes its hash would not
-cover.
+either the machine's skill root or the workspace's. Every install is pinned to the SHA-256 of its
+files, and a git install is pinned to its commit as well. Updating is not automatic — the panel asks
+the source what it now has, shows the old and new hashes, and only then offers the update, which the
+kernel accepts only if the fetched hash matches the one you were shown. A git source is cloned
+shallow, with submodules and the `ext` transport disabled, and without a credential prompt: plain
+`http` is accepted only for loopback addresses, so a test or a local mirror works without a
+certificate, while `ssh`, `git`, `file`, and `ext` are refused. `ext::` is remote command execution,
+and the rest cannot be fetched without credentials this harness does not collect. The fetched tree is
+capped at 2000 entries and 32 MiB, and the skill directory it yields at 200 files, 8 MiB, and 1 MiB
+per `SKILL.md`; past any cap the install is refused and its staging copy deleted. A local source must
+be an absolute path that is itself a real directory, and it may not contain a symbolic link anywhere
+in its tree — scanning skips links, but an install refuses them rather than copying bytes its hash
+would not cover.
 
 ## Agents and the office
 
