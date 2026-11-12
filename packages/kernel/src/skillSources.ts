@@ -363,6 +363,12 @@ export class SkillSourceService {
       if (fetched.hash !== expectHash) {
         throw new RpcFault(ErrorCodes.conflict, `${name} changed since it was shown: expected ${expectHash}, fetched ${fetched.hash}`);
       }
+      // `name` comes from the row and drives both the destination and the record, while the bytes
+      // come from the fetched directory. After an upstream rename the two would disagree, and the
+      // row would key a name `list` never reports, so a later checkUpdate or remove finds nothing.
+      if (fetched.name !== name) {
+        throw new RpcFault(ErrorCodes.invalidParams, `${name} now declares the name "${fetched.name}"; install it instead`);
+      }
       const destination = join(await this.skills.rootFor(workspaceId, scope, root), name);
       const aside = `${destination}.previous-${uuidv7()}`;
       let moved = false;
@@ -375,10 +381,30 @@ export class SkillSourceService {
       try {
         await this.place(fetched.dir, destination);
       } catch (error) {
-        if (moved) await rename(aside, destination).catch(() => undefined);
+        if (moved) {
+          try {
+            await rename(aside, destination);
+          } catch (restore) {
+            throw new RpcFault(
+              ErrorCodes.internal,
+              `${name} was not updated and its previous copy is stranded at ${aside}: ` +
+                `${restore instanceof Error ? restore.message : String(restore)}`,
+            );
+          }
+        }
         throw error;
       }
-      if (moved) await rm(aside, { recursive: true, force: true });
+      if (moved) {
+        try {
+          await rm(aside, { recursive: true, force: true });
+        } catch (error) {
+          throw new RpcFault(
+            ErrorCodes.internal,
+            `${name} was updated but the previous copy at ${aside} could not be removed, so its ` +
+              `source row still records the old hash: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
       this.record(workspaceId, scope, name, target, fetched);
       if (root !== undefined) await this.skills.materialize(workspaceId, root);
       return { commit: fetched.commit, hash: fetched.hash };
@@ -389,6 +415,16 @@ export class SkillSourceService {
 
   async remove(workspaceId: string, root: string | undefined, scope: SkillScope, name: string): Promise<void> {
     if (!SKILL_NAME.test(name)) throw new RpcFault(ErrorCodes.invalidParams, `"${name}" is not a valid skill name`);
+    if (this.row(workspaceId, scope, name) === undefined) {
+      // No provenance row: a skill placed by hand must still be removable, an unknown name must not
+      // report success. `list` is the same lookup `setEnabled` uses for notFound, and it never
+      // writes into the workspace, so a refusal cannot create the scope root on the way.
+      const listed = await this.skills.list(workspaceId, root);
+      const present =
+        listed.skills.some((skill) => skill.scope === scope && skill.name === name) ||
+        (scope === "global" && listed.shadowed.includes(name));
+      if (!present) throw new RpcFault(ErrorCodes.notFound, `Skill not found: ${name}`);
+    }
     const destination = join(await this.skills.rootFor(workspaceId, scope, root), name);
     await rm(destination, { recursive: true, force: true });
     this.db

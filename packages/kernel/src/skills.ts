@@ -228,8 +228,15 @@ async function copySkill(src: string, dest: string): Promise<void> {
   }
 }
 
-/** Ensures `path` is a real directory, creating it only when nothing exists there yet. */
-async function ensureRealDirectory(path: string, label: string): Promise<void> {
+/**
+ * Ensures `path` is a real directory, creating it only when nothing exists there yet. `makeFault`
+ * lets a caller that owes an `RpcFault` report the refusal with its own code and message.
+ */
+async function ensureRealDirectory(
+  path: string,
+  label: string,
+  makeFault: (message: string) => Error = (message) => new Error(message),
+): Promise<void> {
   const marker = await lstat(path).catch((error: unknown) => {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
@@ -238,8 +245,8 @@ async function ensureRealDirectory(path: string, label: string): Promise<void> {
     await mkdir(path, { recursive: true });
     return;
   }
-  if (marker.isSymbolicLink()) throw new Error(`${label} is a symlink`);
-  if (!marker.isDirectory()) throw new Error(`${label} is not a directory`);
+  if (marker.isSymbolicLink()) throw makeFault(`${label} is a symlink`);
+  if (!marker.isDirectory()) throw makeFault(`${label} is not a directory`);
 }
 
 /** True when `<root>/.noir` exists but is a symlink or not a directory; it is never followed. */
@@ -266,7 +273,9 @@ export class SkillService {
     if (root === undefined) throw new RpcFault(ErrorCodes.invalidParams, "A project skill needs a workspace");
     if (await hasUntrustedNoir(root)) throw new RpcFault(ErrorCodes.invalidParams, "Workspace .noir is not a directory");
     const dir = join(root, ".noir", "skills");
-    await mkdir(dir, { recursive: true });
+    // A linked leaf is refused, not followed: an install, update, or remove must never operate on
+    // bytes outside the workspace just because a cloned repo carried `<root>/.noir/skills`.
+    await ensureRealDirectory(dir, "Workspace .noir/skills", (message) => new RpcFault(ErrorCodes.invalidParams, message));
     return dir;
   }
 
