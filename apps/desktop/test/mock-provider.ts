@@ -166,6 +166,39 @@ export async function startMockProvider(): Promise<MockProvider> {
           return;
         }
 
+        // `mtool` owns the MCP round trip; it must precede the `tool` branches that it contains.
+        if (prompt.includes("mtool")) {
+          if (hasToolMessage) {
+            res.write(chunk({ role: "assistant", content: "mcp tool finished" }, null));
+            res.write(chunk({}, "stop"));
+            res.write("data: [DONE]\n\n");
+            res.end();
+            return;
+          }
+          res.write(
+            chunk(
+              {
+                role: "assistant",
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call_mcp_1",
+                    type: "function",
+                    function: {
+                      name: "mcp__calc__add",
+                      arguments: JSON.stringify({ a: 4, b: 5 }),
+                    },
+                  },
+                ],
+              },
+              "tool_calls",
+            ),
+          );
+          res.write("data: [DONE]\n\n");
+          res.end();
+          return;
+        }
+
         if (prompt.includes("slow")) {
           // Stream long enough for a spec to queue a second prompt and interrupt this turn.
           res.write(chunk({ role: "assistant", content: "slow " }, null));
