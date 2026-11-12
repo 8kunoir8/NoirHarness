@@ -135,6 +135,20 @@ describe("fetchPage refusals", () => {
     }
   });
 
+  it("names a redirect it cannot follow", async () => {
+    const site = await serve((_req, res) => {
+      res.writeHead(302, { location: "http://[::zz]/" });
+      res.end();
+    });
+    try {
+      await expect(fetchPage(site.url, new AbortController().signal, { allowLoopback: true })).rejects.toThrow(
+        /unusable location/,
+      );
+    } finally {
+      await site.close();
+    }
+  });
+
   it("stops after five redirects instead of chasing a loop", async () => {
     let hop = 0;
     const site = await serve((_req, res) => {

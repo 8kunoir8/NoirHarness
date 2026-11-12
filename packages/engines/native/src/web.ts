@@ -233,7 +233,11 @@ export async function fetchPage(
     const response = await requestOnce(target, signal, options);
     const location = response.headers.location;
     if (response.status >= 300 && response.status < 400 && typeof location === "string" && location !== "") {
-      target = new URL(location, target);
+      try {
+        target = new URL(location, target);
+      } catch {
+        throw new Error(`${target.host} redirected to an unusable location: ${location}`);
+      }
       continue;
     }
     return {
