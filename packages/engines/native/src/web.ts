@@ -142,8 +142,12 @@ function decodeBody(body: Buffer, charset: string | undefined): string {
  * The `lookup` given to `net.connect`: every address the host resolves to is checked, and the
  * connection uses that same answer. Validating separately and then connecting with `fetch` would
  * leave a window in which a second resolution returns something else.
+ *
+ * `net.connect` asks with `all: true` and expects the array back in that shape; handing it a single
+ * address instead fails every real hostname with `Invalid IP address`, which is why the loopback
+ * tests (literal addresses, where `lookup` is never called) could not see it.
  */
-function guardedLookup(allowLoopback: boolean): LookupFunction {
+export function guardedLookup(allowLoopback: boolean): LookupFunction {
   return (hostname, options, callback) => {
     dnsLookup(hostname, { family: options.family, all: true }, (error, addresses) => {
       if (error !== null) {
@@ -160,6 +164,10 @@ function guardedLookup(allowLoopback: boolean): LookupFunction {
       );
       if (blocked !== undefined) {
         callback(new Error(`${hostname} resolves to a private address`), "", 0);
+        return;
+      }
+      if (options.all === true) {
+        callback(null, addresses.map((entry) => ({ address: entry.address, family: entry.family })), 0);
         return;
       }
       callback(null, first.address, first.family);

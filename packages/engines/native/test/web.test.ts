@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { describe, expect, it, vi } from "vitest";
 import type { EnginePermissionRequest } from "@noir/engine-core";
 import { PERMISSION_DENIED, runTool, toolKind, toolTitle, type ToolContext } from "../src/tools.js";
-import { fetchPage, formatPage, isPrivateAddress, type FetchPageResult } from "../src/web.js";
+import { fetchPage, formatPage, guardedLookup, isPrivateAddress, type FetchPageResult } from "../src/web.js";
 
 describe("isPrivateAddress", () => {
   it.each([
@@ -56,6 +56,47 @@ async function serve(handler: (req: IncomingMessage, res: ServerResponse) => voi
     },
   };
 }
+
+describe("guardedLookup", () => {
+  // Every other test talks to an address literal, and `net.connect` never calls `lookup` for one.
+  // That is how a callback shape Node rejects ("Invalid IP address") reached a commit: the shape is
+  // only exercised by a name, so it is asserted here against `localhost`, which resolves offline.
+  function resolve(options: { all?: boolean; family?: number }): Promise<{
+    error: Error | null;
+    address: unknown;
+    family: number | undefined;
+  }> {
+    const done = Promise.withResolvers<{ error: Error | null; address: unknown; family: number | undefined }>();
+    guardedLookup(true)("localhost", options, (error, address, family) => {
+      done.resolve({ error: error ?? null, address, family });
+    });
+    return done.promise;
+  }
+
+  it("answers the array shape when net.connect asks for all addresses", async () => {
+    const { error, address } = await resolve({ all: true });
+    expect(error).toBeNull();
+    expect(Array.isArray(address)).toBe(true);
+    const entries = address as Array<{ address: string; family: number }>;
+    expect(entries.length).toBeGreaterThan(0);
+    expect(entries.every((entry) => typeof entry.address === "string" && typeof entry.family === "number")).toBe(
+      true,
+    );
+  });
+
+  it("answers a single address when it is not asked for all", async () => {
+    const { error, address, family } = await resolve({ family: 4 });
+    expect(error).toBeNull();
+    expect(typeof address).toBe("string");
+    expect(family).toBe(4);
+  });
+
+  it("refuses a name that resolves to a private address", async () => {
+    const done = Promise.withResolvers<Error | null>();
+    guardedLookup(false)("localhost", { all: true }, (error) => done.resolve(error ?? null));
+    expect((await done.promise)?.message).toMatch(/private address/);
+  });
+});
 
 describe("fetchPage", () => {
   it("returns the body and status of a request", async () => {
