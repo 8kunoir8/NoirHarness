@@ -1,5 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { EnginePermissionRequest } from "@noir/engine-core";
+import { PERMISSION_DENIED, runTool, toolKind, toolTitle, type ToolContext } from "../src/tools.js";
 import { fetchPage, formatPage, isPrivateAddress, type FetchPageResult } from "../src/web.js";
 
 describe("isPrivateAddress", () => {
@@ -224,5 +226,91 @@ describe("formatPage", () => {
     expect(formatPage(page({ contentType: "image/png", body: "\u0089PNG" }))).toBe(
       "image/png, 5 bytes — binary content is not returned",
     );
+  });
+});
+
+describe("web.fetch", () => {
+  const okay = (overrides: Partial<FetchPageResult> = {}): FetchPageResult => ({
+    status: 200,
+    statusText: "OK",
+    contentType: "text/html",
+    body: "<h1>Doc</h1><p>body</p>",
+    bytes: 22,
+    finalUrl: "https://example.test/page",
+    ...overrides,
+  });
+
+  function context(fetched: FetchPageResult, overrides: Partial<ToolContext> = {}): ToolContext {
+    return {
+      sessionId: "session-1",
+      workspaceRoot: process.cwd(),
+      signal: new AbortController().signal,
+      onPermission: async () => "allow_once",
+      skills: [],
+      readSkill: async (name) => {
+        throw new Error(`no skill ${name}`);
+      },
+      // The tool order: approve, then fetch. Injecting the fetch keeps runTool's own path guarded.
+      fetchPage: async () => fetched,
+      ...overrides,
+    };
+  }
+
+  it("asks for network approval and returns the page as readable text", async () => {
+    const onPermission = vi.fn(async (_request: EnginePermissionRequest) => "allow_once" as const);
+    const out = await runTool("web.fetch", { url: "https://example.test/page" }, context(okay(), { onPermission }));
+    expect(out).toBe("# Doc\n\nbody");
+    expect(onPermission).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolCall: expect.objectContaining({ kind: "fetch", title: "Fetch https://example.test/page" }),
+      }),
+    );
+  });
+
+  it("does not fetch when the user rejects", async () => {
+    const fetchSpy = vi.fn(async () => okay());
+    const out = await runTool(
+      "web.fetch",
+      { url: "https://example.test/page" },
+      context(okay(), { onPermission: async () => "reject" as const, fetchPage: fetchSpy }),
+    );
+    expect(out).toBe(PERMISSION_DENIED);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("prefixes a non-2xx status so the model sees it", async () => {
+    const out = await runTool(
+      "web.fetch",
+      { url: "https://example.test/gone" },
+      context(okay({ status: 404, statusText: "Not Found", contentType: "text/plain", body: "no page" })),
+    );
+    expect(out).toBe("HTTP 404 Not Found\n\nno page");
+  });
+
+  it("caps the text it returns at 64 KiB", async () => {
+    const body = "x".repeat(70 * 1024);
+    const out = await runTool(
+      "web.fetch",
+      { url: "https://example.test/big" },
+      context(okay({ contentType: "text/plain", body, bytes: body.length })),
+    );
+    expect(Buffer.byteLength(out)).toBe(64 * 1024 + "\n[truncated]".length);
+    expect(out.endsWith("[truncated]")).toBe(true);
+  });
+
+  it("refuses a private target even after the user allows the fetch", async () => {
+    const site = await serve((_req, res) => res.end("secret"));
+    try {
+      // No injected page: the tool takes the guarded path, which a private URL cannot pass.
+      const { fetchPage: _omit, ...withoutSeam } = context(okay());
+      await expect(runTool("web.fetch", { url: site.url }, withoutSeam)).rejects.toThrow(/private address/);
+    } finally {
+      await site.close();
+    }
+  });
+
+  it("titles the tool call with the URL", () => {
+    expect(toolTitle("web.fetch", { url: "https://example.test/a" })).toBe("Fetch https://example.test/a");
+    expect(toolKind("web.fetch")).toBe("fetch");
   });
 });

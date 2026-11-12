@@ -1357,6 +1357,34 @@ describe("EngineManager with the native engine", () => {
   );
 
   it(
+    "asks for network approval when the engine calls web.fetch",
+    async () => {
+      const server = await startFakeOpenAiServer([
+        { toolCall: { id: "call_fetch", name: "web.fetch", args: JSON.stringify({ url: "https://example.test/a" }) } },
+        { text: "done" },
+      ]);
+      try {
+        const { events, manager, session } = setup({ baseUrl: server.baseUrl, engine: "native" });
+        await manager.prompt({ sessionId: session.id, requestId: "native-fetch", content: [{ type: "text", text: "fetch" }] });
+        const requested = await waitForEvent(events, session.id, (event) => event.type === "permission.requested");
+        expect(eventPayload(requested, "permission.requested")).toMatchObject({
+          category: "network",
+          title: "Fetch https://example.test/a",
+        });
+
+        await manager.respond(eventPayload(requested, "permission.requested").approvalId, "reject");
+        const failed = await waitForEvent(events, session.id, (event) => event.type === "tool.failed");
+        expect(eventPayload(failed, "tool.failed").message).toContain("Permission denied");
+        await waitForEvent(events, session.id, (event) => event.type === "turn.completed");
+        await manager.closeSession(session.id);
+      } finally {
+        await server.close();
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
     "reports the exit code native appends, not one the command printed",
     async () => {
       const server = await startFakeOpenAiServer([

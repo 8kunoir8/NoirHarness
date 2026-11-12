@@ -4,6 +4,7 @@ import { lstat, open, readFile, readdir, realpath, stat, unlink, writeFile } fro
 import { dirname, isAbsolute, join, matchesGlob, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import type { EngineMcpTool, EnginePermissionRequest, EngineStartOptions, PermissionDecision } from "@noir/engine-core";
+import { fetchPage, formatPage, type FetchPageResult } from "./web.js";
 
 /** The result every tool returns when its approval was not granted. The loop marks it failed. */
 export const PERMISSION_DENIED = "Permission denied by the user";
@@ -38,12 +39,18 @@ export interface ToolContext {
   readSkill(name: string): Promise<string>;
   /** Runs a namespaced `mcp__<server>__<tool>` call on the session's MCP servers. */
   callMcpTool?: (name: string, args: Record<string, unknown>) => Promise<string>;
+  /**
+   * How `web.fetch` reaches the network. The loop leaves it unset, so the guarded `fetchPage` is
+   * the only path a tool call can take; a test injects a page to exercise the shaping.
+   */
+  fetchPage?: (url: string, signal: AbortSignal) => Promise<FetchPageResult>;
 }
 
 /** The ACP tool-call kinds `EngineManager.permissionCategory` maps to approval categories. */
-type ApprovalKind = "edit" | "delete" | "execute" | "mcp";
+type ApprovalKind = "edit" | "delete" | "execute" | "mcp" | "fetch";
 
-type ToolKind = "read" | "write" | "shell" | "search" | "skill" | "other";
+/** `fetch` reaches the network; the kernel projects it as `other` for the office view. */
+type ToolKind = "read" | "write" | "shell" | "search" | "skill" | "fetch" | "other";
 
 interface Target {
   /** The workspace root after symlinks, so every comparison uses one spelling. */
@@ -332,6 +339,7 @@ const ReplaceSchema = z.object({ path: z.string().min(1), find: z.string().min(1
 const DeleteSchema = z.object({ path: z.string().min(1) });
 const ShellSchema = z.object({ command: z.string().min(1), timeoutMs: z.number().int().positive().optional() });
 const SkillReadSchema = z.object({ name: z.string().min(1) });
+const FetchSchema = z.object({ url: z.string().min(1).max(2_048) });
 
 interface ToolSpec {
   kind: ToolKind;
@@ -492,6 +500,29 @@ const TOOL_SPECS: Record<string, ToolSpec> = {
     },
   },
 
+  "web.fetch": {
+    kind: "fetch",
+    description:
+      "Fetch a public URL over HTTP(S) and return readable text. HTML becomes Markdown-ish text; JSON is pretty-printed. Binary content is refused. Output is capped at 64 KiB.",
+    parameters: {
+      type: "object",
+      properties: { url: { type: "string", description: "An absolute http or https URL" } },
+      required: ["url"],
+      additionalProperties: false,
+    },
+    async run(raw, ctx) {
+      const args = FetchSchema.parse(raw);
+      if (!(await approve(ctx, `Fetch ${args.url}`, "fetch", args))) return PERMISSION_DENIED;
+      if (ctx.signal.aborted) throw new Error("Fetch aborted before it started.");
+      const get = ctx.fetchPage ?? fetchPage;
+      const page = await get(args.url, ctx.signal);
+      const body = formatPage(page);
+      return page.status >= 200 && page.status < 300
+        ? truncate(body)
+        : truncate(`HTTP ${page.status} ${page.statusText}\n\n${body}`);
+    },
+  },
+
   "skill.list": {
     kind: "skill",
     description: "List the enabled skills with their scope and description.",
@@ -566,6 +597,8 @@ export function toolTitle(name: string, args: unknown): string {
       return `Read skill ${text("name")}`;
     case "skill.list":
       return "List skills";
+    case "web.fetch":
+      return `Fetch ${text("url")}`;
     default:
       return name;
   }
