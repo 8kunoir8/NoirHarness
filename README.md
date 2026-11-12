@@ -146,13 +146,14 @@ line saying the body stopped there, so a cut page does not read as a complete on
 
 Targets are refused before the request leaves the machine, or by the socket's own DNS answer: only
 `http` and `https`; no `localhost`, `.local`, `.internal`, or `home.arpa` name; and no private,
-loopback, link-local, or multicast address. The `lookup` handed to `net.connect` validates every
+loopback, link-local, multicast, reserved, or IPv4-in-IPv6 address. The `lookup` handed to `net.connect` validates every
 address the host resolves to and connects to that same answer, so a second resolution cannot point
 back at the local machine. The check runs again on every redirect hop, and a literal address in the
 URL is checked directly — `net.connect` never asks DNS for one. Compression is kept out of the
 path: `Accept-Encoding: identity` is sent and there is no decoding code, so a page that arrives
 compressed anyway is refused by name rather than returned as bytes. A body stops at 2 MiB, a fetch
 at 20 s in total across redirects, a stalled response at 10 s, and an interrupt aborts the socket.
+Only `301`, `302`, `303`, `307`, and `308` are followed, and a redirect's body is never read.
 
 Only the native engine has it. An ACP agent reaches the network through whatever tools it brings.
 
