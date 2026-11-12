@@ -27,6 +27,8 @@ describe("htmlToText structure", () => {
   it("keeps inline code and fenced code verbatim", () => {
     expect(text("<p>use <code>a  b</code></p>")).toBe("use `a b`");
     expect(text("<pre>line 1\n    indented\n</pre>")).toBe("```\nline 1\n    indented\n```");
+    // The first line's indentation is the code too: a Python snippet starts at the margin.
+    expect(text("<pre>\n    def f():\n        pass\n</pre>")).toBe("```\n    def f():\n        pass\n```");
   });
 
   it("wraps links and resolves them against the page URL", () => {
@@ -39,6 +41,21 @@ describe("htmlToText structure", () => {
   it("drops a link target that would execute or carry data", () => {
     expect(text('<a href="javascript:alert(1)">click</a>')).toBe("click");
     expect(text('<a href="data:text/html,<b>x</b>">d</a>')).toBe("d");
+  });
+
+  it("drops an execution target however the URL parser normalizes it", () => {
+    // `new URL` strips control characters and tabs before reading the scheme, so a filter that
+    // tests the raw text sees a value the parser will not.
+    expect(text('<a href="&#1;javascript:alert(1)">click</a>', "https://e.test/")).toBe("click");
+    expect(text('<a href="java\tscript:alert(1)">click</a>', "https://e.test/")).toBe("click");
+    expect(text('<a href="java&#x09;script:alert(1)">click</a>', "https://e.test/")).toBe("click");
+    expect(text('<a href=" JAVASCRIPT:alert(1)">click</a>', "https://e.test/")).toBe("click");
+    expect(text('<a href="vbscript:x">click</a>', "https://e.test/")).toBe("click");
+    expect(text('<a href="data:text/html,x">click</a>', "https://e.test/")).toBe("click");
+  });
+
+  it("keeps a mail link, which is a target and not a script", () => {
+    expect(text('<a href="mailto:a@b.test">mail</a>', "https://e.test/")).toBe("[mail](mailto:a@b.test)");
   });
 
   it("keeps image alt text", () => {
@@ -56,6 +73,40 @@ describe("htmlToText structure", () => {
 
   it("keeps text inside an unclosed element and ignores a stray close tag", () => {
     expect(text("</div><p>kept")).toBe("kept");
+  });
+
+  it("stays fast when a page buries content under unmatched close tags", () => {
+    // A 960 KB page is inside the fetch cap. A scan of the open-element stack per unmatched close
+    // would take seconds and block the kernel, since the engine runs in its process.
+    const html = `<div>${"<div>".repeat(80_000)}${"</span>".repeat(80_000)}</div>text`;
+    const started = Date.now();
+    const out = htmlToText(html);
+    expect(out).toContain("text");
+    expect(Date.now() - started).toBeLessThan(1_500);
+  });
+
+  it("stays fast on a page of bare angle brackets", () => {
+    // `/<[^>]*>/g` rescans to the end of the input from every `<` with no `>`: 200 KB took 24.7 s
+    // before this was a scan. The body cap allows 2 MiB, and extraction runs on the kernel thread.
+    const html = `<title>${"<".repeat(200_000)}`;
+    const started = Date.now();
+    const out = htmlToText(html);
+    expect(Date.now() - started).toBeLessThan(1_500);
+    expect(typeof out).toBe("string");
+  });
+
+  it("stays fast when a tag end is missing everywhere", () => {
+    const html = "<p>start" + "<a ".repeat(150_000);
+    const started = Date.now();
+    const out = htmlToText(html);
+    expect(Date.now() - started).toBeLessThan(1_500);
+    expect(out).toContain("start");
+  });
+
+  it("reads the title only from the document head", () => {
+    expect(text("<!-- <title>Fake</title> --><p>real</p>")).toBe("real");
+    expect(text("<svg><title>Icon</title></svg><p>real</p>")).toBe("real");
+    expect(text("<script>var t = '<title>Fake</title>';</script><p>real</p>")).toBe("real");
   });
 
   it("treats a bare less-than as text", () => {

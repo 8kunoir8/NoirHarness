@@ -237,6 +237,45 @@ function parseAttributes(html: string, from: number): { attrs: Map<string, strin
   return { attrs, end: html.length, selfClosing };
 }
 
+/**
+ * The document's `<title>`, skipping the ones a script, a comment, or inline SVG contains. It is
+ * read from the whole document rather than the content landmark because it lives in the head.
+ */
+function documentTitle(html: string): string {
+  let i = 0;
+  while (i < html.length) {
+    const lt = html.indexOf("<", i);
+    if (lt === -1) return "";
+    if (html.startsWith("<!--", lt)) {
+      const end = html.indexOf("-->", lt + 4);
+      i = end === -1 ? html.length : end + 3;
+      continue;
+    }
+    if (html.startsWith("<!", lt) || html.startsWith("<?", lt)) {
+      const end = html.indexOf(">", lt + 2);
+      i = end === -1 ? html.length : end + 1;
+      continue;
+    }
+    const nameMatch = TAG_NAME.exec(html.slice(lt + 1, lt + 65));
+    const name = nameMatch === null ? "" : nameMatch[0].toLowerCase();
+    if (name === "") {
+      i = lt + 1;
+      continue;
+    }
+    const parsed = parseAttributes(html, lt + 1 + name.length);
+    if (SKIPPED[name] === true) {
+      i = VOID[name] === true ? parsed.end : findEndTag(html, parsed.end, name).end;
+      continue;
+    }
+    if (name === "title") {
+      const end = findEndTag(html, parsed.end, name);
+      return stripTags(html.slice(parsed.end, end.start)).replace(/\s+/g, " ").trim();
+    }
+    i = parsed.end;
+  }
+  return "";
+}
+
 /** Index range of `</name ...>`, or the end of the document when it never closes. */
 function findEndTag(html: string, from: number, name: string): { start: number; end: number } {
   const pattern = new RegExp(`</${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b[^>]*>`, "gi");
@@ -245,9 +284,31 @@ function findEndTag(html: string, from: number, name: string): { start: number; 
   return match === null ? { start: html.length, end: html.length } : { start: match.index, end: match.index + match[0].length };
 }
 
-/** Inline markup gone, text and entities kept: for `title`, `pre`, and other text-only contexts. */
+/**
+ * Inline markup gone, text and entities kept: for `title`, `pre`, and other text-only contexts.
+ * A `/<[^>]*>/g` replace rescans to the end of the document from every `<` that has no `>`, which
+ * a 200 KB page of bare `<` turns into 25 s of blocked event loop; the tag end is found with
+ * `indexOf` instead, so every character is visited once.
+ */
 function stripTags(html: string): string {
-  return decodeEntities(html.replace(/<[^>]*>/g, ""));
+  let out = "";
+  let i = 0;
+  for (;;) {
+    const lt = html.indexOf("<", i);
+    if (lt === -1) {
+      out += html.slice(i);
+      break;
+    }
+    out += html.slice(i, lt);
+    const gt = html.indexOf(">", lt + 1);
+    if (gt === -1) {
+      // No tag end anywhere: the rest is text, as the browser's own error recovery treats it.
+      out += html.slice(lt);
+      break;
+    }
+    i = gt + 1;
+  }
+  return decodeEntities(out);
 }
 
 /**
@@ -385,13 +446,19 @@ function findContentRange(html: string): { start: number; end: number } | undefi
       continue;
     }
     const closing = html.charAt(lt + 1) === "/";
+    if (!closing && !/[A-Za-z]/.test(html.charAt(lt + 1))) {
+      // Not a tag: `parseAttributes` would scan to the next `>` and discard the result, so a page
+      // of bare `<` would rescan itself once per character.
+      i = lt + 1;
+      continue;
+    }
     const nameMatch = TAG_NAME.exec(html.slice(lt + (closing ? 2 : 1), lt + 66));
     const name = nameMatch === null ? "" : nameMatch[0].toLowerCase();
-    const parsed = parseAttributes(html, lt + (closing ? 2 : 1) + name.length);
     if (name === "") {
       i = lt + 1;
       continue;
     }
+    const parsed = parseAttributes(html, lt + (closing ? 2 : 1) + name.length);
 
     if (closing) {
       i = parsed.end;
@@ -425,15 +492,11 @@ export function htmlToText(html: string, options: HtmlTextOptions = {}): string 
   const lists: Array<{ ordered: boolean; index: number }> = [];
   let hiddenDepth = 0;
   let rowCells = 0;
+  /** How many of each name are open, so an unmatched close tag costs nothing to reject. */
+  const openCounts = new Map<string, number>();
   // The title sits in the head, so it is read from the whole document even when the body is
   // restricted to the content landmark.
-  const titleTag = /<title\b/i.exec(html);
-  const title =
-    titleTag === null
-      ? ""
-      : stripTags(html.slice(titleTag.index, findEndTag(html, titleTag.index, "title").start))
-          .replace(/\s+/g, " ")
-          .trim();
+  const title = documentTitle(html);
   const content = findContentRange(html);
   const limit = content?.end ?? html.length;
   let i = content?.start ?? 0;
@@ -448,17 +511,27 @@ export function htmlToText(html: string, options: HtmlTextOptions = {}): string 
     return blocks.length - 1;
   };
 
+  const SAFE_SCHEMES: Record<string, true> = { "http:": true, "https:": true, "mailto:": true };
+
+  /**
+   * The link target, or `undefined` when it is not a destination worth printing. The decision is
+   * made on the parsed URL, not on the raw text: `new URL` strips tabs, newlines and control
+   * characters before it reads the scheme, so `java\tscript:` passes a text filter and still runs.
+   */
   const resolveHref = (href: string): string | undefined => {
     const value = decodeEntities(href).trim();
-    if (value === "" || /^(javascript|data|vbscript|file):/i.test(value)) return undefined;
+    if (value === "") return undefined;
     // A same-page anchor is navigation inside the document, not a target to fetch later.
     if (value.startsWith("#")) return undefined;
-    if (options.baseUrl === undefined) return value;
+    let url: URL;
     try {
-      return new URL(value, options.baseUrl).toString();
+      url = new URL(value, options.baseUrl ?? "https://relative.invalid/");
     } catch {
       return undefined;
     }
+    if (SAFE_SCHEMES[url.protocol] !== true) return undefined;
+    if (options.baseUrl === undefined) return url.protocol === "mailto:" ? value : url.toString();
+    return url.toString();
   };
 
   const closeElement = (open: OpenElement): void => {
@@ -586,6 +659,9 @@ export function htmlToText(html: string, options: HtmlTextOptions = {}): string 
       const end = html.indexOf(">", start);
       i = end === -1 ? html.length : end + 1;
       if (name === "") continue;
+      // A close tag for an element that is not open is common on the web and would otherwise walk
+      // the whole stack: a page of 80,000 nested divs followed by 80,000 `</span>` took 13.8 s.
+      if ((openCounts.get(name) ?? 0) === 0) continue;
       let index = -1;
       for (let k = stack.length - 1; k >= 0; k--) {
         if (stack[k]?.name === name) {
@@ -596,6 +672,7 @@ export function htmlToText(html: string, options: HtmlTextOptions = {}): string 
       while (index !== -1 && stack.length > index) {
         const open = stack.pop();
         if (open === undefined) break;
+        openCounts.set(open.name, (openCounts.get(open.name) ?? 1) - 1);
         if (open.hidden) hiddenDepth--;
         else closeElement(open);
       }
@@ -609,9 +686,12 @@ export function htmlToText(html: string, options: HtmlTextOptions = {}): string 
 
     const match = TAG_NAME.exec(html.slice(i + 1, i + 65));
     const name = match === null ? "" : match[0].toLowerCase();
+    if (name === "") {
+      i++;
+      continue;
+    }
     const parsed = parseAttributes(html, i + 1 + name.length);
     i = parsed.end;
-    if (name === "") continue;
     const attrs = parsed.attrs;
 
     if (SKIPPED[name] === true) {
@@ -624,7 +704,12 @@ export function htmlToText(html: string, options: HtmlTextOptions = {}): string 
     }
     if (name === "pre") {
       const end = findEndTag(html, i, name);
-      const inner = stripTags(html.slice(i, end.start)).replace(/\r\n?/g, "\n").trim();
+      // Only the newline the markup adds around the block is dropped: `trim()` would also eat the
+      // indentation of the first line, which for a code block is part of the code.
+      const inner = stripTags(html.slice(i, end.start))
+        .replace(/\r\n?/g, "\n")
+        .replace(/^\n+/, "")
+        .replace(/\s+$/, "");
       i = end.end;
       if (inner === "") continue;
       writer.breakBlock();
@@ -637,6 +722,7 @@ export function htmlToText(html: string, options: HtmlTextOptions = {}): string 
       if (VOID[name] !== true && !parsed.selfClosing) {
         stack.push({ name, hidden: true });
         hiddenDepth++;
+        openCounts.set(name, (openCounts.get(name) ?? 0) + 1);
       }
       continue;
     }
@@ -650,13 +736,16 @@ export function htmlToText(html: string, options: HtmlTextOptions = {}): string 
       const top = stack.at(-1);
       if (top === undefined || top.hidden || implied[top.name] !== true) break;
       stack.pop();
+      openCounts.set(top.name, (openCounts.get(top.name) ?? 1) - 1);
       closeElement(top);
     }
     const open: OpenElement = { name, hidden: false };
     stack.push(open);
+    openCounts.set(name, (openCounts.get(name) ?? 0) + 1);
     openElement(open, attrs);
     if (parsed.selfClosing) {
       stack.pop();
+      openCounts.set(name, (openCounts.get(name) ?? 1) - 1);
       closeElement(open);
     }
   }

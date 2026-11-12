@@ -19,7 +19,9 @@ for (const [network, prefix] of [
   ["169.254.0.0", 16],
   ["172.16.0.0", 12],
   ["192.168.0.0", 16],
+  ["198.18.0.0", 15],
   ["224.0.0.0", 4],
+  ["240.0.0.0", 4],
   ["255.255.255.255", 32],
 ] as const) {
   PRIVATE_RANGES.addSubnet(network, prefix, "ipv4");
@@ -30,6 +32,11 @@ for (const [network, prefix] of [
   ["fc00::", 7],
   ["fe80::", 10],
   ["ff00::", 8],
+  // Wrappers that carry an IPv4 target: a translator or relay on the host's path would reach it,
+  // and refusing them costs a page nothing. `::ffff:0:0/96` is deliberately absent — it is how
+  // `BlockList` itself represents every IPv4 address, so listing it refuses the whole internet.
+  ["64:ff9b::", 96],
+  ["2002::", 16],
 ] as const) {
   PRIVATE_RANGES.addSubnet(network, prefix, "ipv6");
 }
@@ -47,6 +54,12 @@ export function isPrivateAddress(address: string): boolean {
 const REQUEST_TIMEOUT_MS = 20_000;
 const IDLE_TIMEOUT_MS = 10_000;
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
+/**
+ * Pretty-printing indents by nesting depth, so a 6 KB body nested 3,000 deep builds about 18 MB
+ * before the 64 KiB cap is applied — on the kernel thread, from a page nobody reviewed. Past this
+ * budget the body is returned as it arrived, which is still the JSON it was.
+ */
+const MAX_PRETTY_BYTES = 64 * 1024;
 const MAX_REDIRECTS = 5;
 const USER_AGENT = "NoirHarness/0.1";
 const ACCEPT = "text/html,application/xhtml+xml,text/plain,application/json;q=0.9,*/*;q=0.8";
@@ -87,6 +100,13 @@ interface RawResponse {
   /** Empty for a type that is not textual: its bytes were counted, not kept. */
   body: Buffer;
   bytes: number;
+}
+
+/** The length the server declared, when it declared one that is larger than what arrived. */
+function declaredLength(header: string | undefined): number {
+  if (header === undefined) return 0;
+  const value = Number(header);
+  return Number.isSafeInteger(value) && value > 0 ? value : 0;
 }
 
 /** The type without its parameters: `text/html; charset=iso-8859-1` becomes `text/html`. */
@@ -175,7 +195,12 @@ export function guardedLookup(allowLoopback: boolean): LookupFunction {
   };
 }
 
-function requestOnce(target: URL, signal: AbortSignal, options: FetchPageOptions): Promise<RawResponse> {
+function requestOnce(
+  target: URL,
+  signal: AbortSignal,
+  options: FetchPageOptions,
+  deadline: number,
+): Promise<RawResponse> {
   const { promise, resolve, reject } = Promise.withResolvers<RawResponse>();
   const send = target.protocol === "https:" ? httpsRequest : httpRequest;
   let settled = false;
@@ -203,6 +228,13 @@ function requestOnce(target: URL, signal: AbortSignal, options: FetchPageOptions
       lookup: guardedLookup(options.allowLoopback === true),
     },
     (response) => {
+      // `identity` is a request, and servers ignore it. Decoding is not implemented, so a body that
+      // arrived compressed is bytes that would reach the model as mojibake: say so instead.
+      const encoding = (response.headers["content-encoding"] ?? "").trim().toLowerCase();
+      if (encoding !== "" && encoding !== "identity") {
+        fail(new Error(`${target.host} sent the page ${encoding}-compressed after identity was asked for`));
+        return;
+      }
       const keep = isTextual(bareType(response.headers["content-type"] ?? ""));
       // A binary body is never returned, so its bytes are counted and dropped rather than held.
       const chunks: Buffer[] = [];
@@ -222,7 +254,8 @@ function requestOnce(target: URL, signal: AbortSignal, options: FetchPageOptions
             statusText: response.statusMessage ?? "",
             headers: response.headers,
             body: keep ? Buffer.concat(chunks) : Buffer.alloc(0),
-            bytes,
+            // A capped body is shorter than the response: report what the server declared.
+            bytes: Math.max(bytes, declaredLength(response.headers["content-length"])),
           });
         }
       };
@@ -253,11 +286,11 @@ function requestOnce(target: URL, signal: AbortSignal, options: FetchPageOptions
     },
   );
 
-  const totalMs = options.timeouts?.totalMs ?? REQUEST_TIMEOUT_MS;
   const idleMs = options.timeouts?.idleMs ?? IDLE_TIMEOUT_MS;
+  const remaining = Math.max(0, deadline - Date.now());
   overall = setTimeout(() => {
-    fail(new Error(`No response from ${target.host} within ${totalMs / 1000} s`));
-  }, totalMs);
+    fail(new Error(`No response from ${target.host} within the ${REQUEST_TIMEOUT_MS / 1000} s the fetch allows`));
+  }, remaining);
 
   request.setTimeout(idleMs, () => {
     fail(new Error(`The response from ${target.host} stalled for ${idleMs / 1000} s`));
@@ -291,9 +324,13 @@ export async function fetchPage(
   } catch {
     throw new Error(`Not an absolute URL: ${url}`);
   }
+  // One deadline for the whole fetch, not one per hop: six hops each given 20 s would hold a turn
+  // for two minutes, and the model asked for one page.
+  const deadline = Date.now() + (options.timeouts?.totalMs ?? REQUEST_TIMEOUT_MS);
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     assertFetchable(target, options.allowLoopback === true);
-    const response = await requestOnce(target, signal, options);
+    if (Date.now() >= deadline) throw new Error(`No response from ${target.host} within the fetch deadline`);
+    const response = await requestOnce(target, signal, options, deadline);
     const location = response.headers.location;
     if (response.status >= 300 && response.status < 400 && typeof location === "string" && location !== "") {
       try {
@@ -347,8 +384,10 @@ export function formatPage(result: FetchPageResult): string {
     return htmlToText(result.body, { baseUrl: result.finalUrl });
   }
   if (type === "application/json" || type.endsWith("+json")) {
+    if (result.body.length > MAX_PRETTY_BYTES) return result.body;
     try {
-      return JSON.stringify(JSON.parse(result.body) as unknown, null, 2);
+      const pretty = JSON.stringify(JSON.parse(result.body) as unknown, null, 2);
+      return pretty.length > MAX_PRETTY_BYTES ? result.body : pretty;
     } catch {
       return result.body;
     }

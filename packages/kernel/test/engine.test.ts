@@ -1385,6 +1385,32 @@ describe("EngineManager with the native engine", () => {
   );
 
   it(
+    "skips the fetch card when the agent already allows the network",
+    async () => {
+      const server = await startFakeOpenAiServer([
+        { toolCall: { id: "call_fetch", name: "web.fetch", args: JSON.stringify({ url: "https://example.test/a" }) } },
+        { text: "done" },
+      ]);
+      try {
+        const { events, manager, session } = setup({
+          baseUrl: server.baseUrl,
+          engine: "native",
+          agentPermissionPolicy: { network: "allow" },
+        });
+        await manager.prompt({ sessionId: session.id, requestId: "native-fetch-allowed", content: [{ type: "text", text: "fetch" }] });
+        // No card: the run goes straight to the tool, which fails on the network in this sandbox,
+        // and what matters is that no approval was ever requested.
+        await waitForEvent(events, session.id, (event) => event.type === "tool.completed" || event.type === "tool.failed");
+        expect(events.list(session.id).filter((event) => event.type === "permission.requested")).toHaveLength(0);
+        await manager.closeSession(session.id);
+      } finally {
+        await server.close();
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
     "reports the exit code native appends, not one the command printed",
     async () => {
       const server = await startFakeOpenAiServer([

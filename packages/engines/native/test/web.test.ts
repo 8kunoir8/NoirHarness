@@ -15,6 +15,8 @@ describe("isPrivateAddress", () => {
     "0.0.0.0",
     "255.255.255.255",
     "224.0.0.1",
+    "240.0.0.1",
+    "198.18.0.1",
     "::1",
     "::",
     "fe80::1",
@@ -23,6 +25,8 @@ describe("isPrivateAddress", () => {
     "ff02::1",
     "::ffff:127.0.0.1",
     "::ffff:10.0.0.1",
+    "64:ff9b::7f00:1",
+    "2002:7f00:1::",
   ])("refuses %s", (address) => {
     expect(isPrivateAddress(address)).toBe(true);
   });
@@ -43,6 +47,8 @@ interface Site {
 async function serve(handler: (req: IncomingMessage, res: ServerResponse) => void): Promise<Site> {
   const server = createServer(handler);
   const listening = Promise.withResolvers<void>();
+  // Without this a bind failure leaves the promise pending and the suite hangs to its timeout.
+  server.on("error", listening.reject);
   server.listen(0, "127.0.0.1", () => listening.resolve());
   await listening.promise;
   const address = server.address();
@@ -158,8 +164,24 @@ describe("fetchPage refusals", () => {
   });
 
   it("refuses a host that names itself local", async () => {
-    await expect(fetchPage("http://printer.local/", new AbortController().signal)).rejects.toThrow(/local/);
-    await expect(fetchPage("http://localhost:1/", new AbortController().signal)).rejects.toThrow(/local/);
+    for (const host of [
+      "printer.local",
+      "localhost:1",
+      "localhost.",
+      "LOCALHOST",
+      "nas.internal",
+      "router.home.arpa",
+      "thing.localhost",
+    ]) {
+      // Decided from the name, before DNS: an offline name cannot be proven private by its answer.
+      await expect(fetchPage(`http://${host}/`, new AbortController().signal)).rejects.toThrow(/local/i);
+    }
+  });
+
+  it("refuses the IPv6 loopback and the unspecified address as literals", async () => {
+    for (const host of ["[::1]", "[::]"]) {
+      await expect(fetchPage(`http://${host}:1/`, new AbortController().signal)).rejects.toThrow(/private/i);
+    }
   });
 
   it("re-validates each redirect target", async () => {
@@ -185,6 +207,64 @@ describe("fetchPage refusals", () => {
       await expect(fetchPage(site.url, new AbortController().signal, { allowLoopback: true })).rejects.toThrow(
         /unusable location/,
       );
+    } finally {
+      await site.close();
+    }
+  });
+
+  it("sends exactly three headers, and asks for identity", async () => {
+    // The page decides what it sees; a browser fingerprint or a cookie would be a different tool.
+    let seen: Record<string, string | string[] | undefined> = {};
+    const site = await serve((req, res) => {
+      seen = req.headers;
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end("ok");
+    });
+    try {
+      await fetchPage(site.url, new AbortController().signal, { allowLoopback: true });
+      // `connection` is added by Node's own client, not by the tool.
+      expect(Object.keys(seen).sort()).toEqual(["accept", "accept-encoding", "connection", "host", "user-agent"]);
+      expect(seen["accept-encoding"]).toBe("identity");
+      expect(seen["user-agent"]).toBe("NoirHarness/0.1");
+      expect(seen["authorization"]).toBeUndefined();
+      expect(seen["cookie"]).toBeUndefined();
+    } finally {
+      await site.close();
+    }
+  });
+
+  it("refuses a body that arrived compressed despite asking for identity", async () => {
+    const site = await serve((_req, res) => {
+      // Servers do this: `identity` is a request, not a guarantee.
+      res.writeHead(200, { "content-type": "text/html", "content-encoding": "gzip" });
+      res.end(Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00]));
+    });
+    try {
+      await expect(fetchPage(site.url, new AbortController().signal, { allowLoopback: true })).rejects.toThrow(
+        /compressed/i,
+      );
+    } finally {
+      await site.close();
+    }
+  });
+
+  it("holds one deadline across the whole redirect chain", async () => {
+    // Each hop used to get its own 20 s budget, so six hops could hold a turn for two minutes.
+    let hop = 0;
+    const site = await serve((_req, res) => {
+      hop += 1;
+      setTimeout(() => {
+        res.writeHead(302, { location: `/${hop + 1}` });
+        res.end();
+      }, 120);
+    });
+    try {
+      const started = Date.now();
+      await expect(
+        fetchPage(site.url, new AbortController().signal, { allowLoopback: true, timeouts: { totalMs: 400 } }),
+      ).rejects.toThrow(/No response|redirects/);
+      expect(Date.now() - started).toBeLessThan(1_500);
+      expect(hop).toBeLessThan(6);
     } finally {
       await site.close();
     }
@@ -323,6 +403,25 @@ describe("fetchPage limits", () => {
     }
   });
 
+  it("reports the size a binary body declares, not the cap it was stopped at", async () => {
+    const declared = 5 * 1024 * 1024;
+    const site = await serve((_req, res) => {
+      res.writeHead(200, { "content-type": "image/png", "content-length": String(declared) });
+      // Only enough to cross the 2 MiB cap: the refusal must still say 5 MiB, not 2 MiB.
+      res.write(Buffer.alloc(2 * 1024 * 1024 + 4_096, 1));
+    });
+    try {
+      const page = await fetchPage(site.url, new AbortController().signal, {
+        allowLoopback: true,
+        timeouts: { idleMs: 2_000 },
+      });
+      expect(page.bytes).toBe(declared);
+      expect(formatPage(page)).toBe(`image/png, ${declared} bytes — binary content is not returned`);
+    } finally {
+      await site.close();
+    }
+  });
+
   it("counts a binary body without holding it", async () => {
     const site = await serve((_req, res) => {
       res.writeHead(200, { "content-type": "image/png" });
@@ -400,6 +499,20 @@ describe("formatPage", () => {
 
   it("returns plain text unchanged", () => {
     expect(formatPage(page({ contentType: "text/plain", body: "as-is" }))).toBe("as-is");
+  });
+
+  it("does not let a deeply nested JSON body amplify into megabytes", () => {
+    // Pretty-printing indents by depth, so a 6 KB body nested 3,000 deep would build ~18 MB before
+    // the 64 KiB cap ever ran, on the kernel thread. Past the budget the body is returned as it is.
+    const deep = "[".repeat(3_000) + "]".repeat(3_000);
+    const out = formatPage(page({ contentType: "application/json", body: deep, bytes: deep.length }));
+    expect(Buffer.byteLength(out)).toBeLessThanOrEqual(deep.length * 4);
+
+    // A body that is merely large is not deep, and still gets its indentation.
+    const wide = JSON.stringify(Array.from({ length: 400 }, (_whole, index) => ({ index })));
+    expect(formatPage(page({ contentType: "application/json", body: wide, bytes: wide.length }))).toContain(
+      "\n  {",
+    );
   });
 
   it("names a missing content type instead of guessing", () => {

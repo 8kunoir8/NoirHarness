@@ -136,20 +136,22 @@ What comes back is readable text, not the document. HTML goes through the engine
 (`packages/engines/native/src/htmlText.ts`): `<title>` becomes the first heading, `<main>`-like
 landmarks scope the content when a page has one, navigation and hidden subtrees are dropped, links
 keep their targets resolved against the final URL, nested lists and tables survive as text, and
-`<code>` is marked with backticks. JSON is pretty-printed, other textual types pass through, and a
-binary type is refused with its name and size instead of its bytes, and its body is counted rather
-than buffered. Text is decoded as its declared charset — the header, a BOM, then a `<meta charset>`
-— and falls back to UTF-8. The text is capped at 64 KiB, and a non-2xx status is prefixed as
-`HTTP 404 Not Found`.
+`<code>` is marked with backticks. JSON is pretty-printed unless indenting it would cost more than
+64 KiB, which is what the returned text is capped at anyway; other textual types pass through; a
+binary type is refused with its name and size — the size the server declared — instead of its bytes,
+and its body is counted rather than buffered. Text is decoded as its declared charset — the header, a
+BOM, then a `<meta charset>` — and falls back to UTF-8. The text is capped at 64 KiB, and a non-2xx
+status is prefixed as `HTTP 404 Not Found`.
 
 Targets are refused before the request leaves the machine, or by the socket's own DNS answer: only
 `http` and `https`; no `localhost`, `.local`, `.internal`, or `home.arpa` name; and no private,
 loopback, link-local, or multicast address. The `lookup` handed to `net.connect` validates every
 address the host resolves to and connects to that same answer, so a second resolution cannot point
 back at the local machine. The check runs again on every redirect hop, and a literal address in the
-URL is checked directly — `net.connect` never asks DNS for one. `Accept-Encoding: identity` keeps
-compression out of the path, a body stops at 2 MiB, a request at 20 s, a stalled response at 10 s,
-and an interrupt aborts the socket.
+URL is checked directly — `net.connect` never asks DNS for one. Compression is kept out of the
+path: `Accept-Encoding: identity` is sent and there is no decoding code, so a page that arrives
+compressed anyway is refused by name rather than returned as bytes. A body stops at 2 MiB, a fetch
+at 20 s in total across redirects, a stalled response at 10 s, and an interrupt aborts the socket.
 
 Only the native engine has it. An ACP agent reaches the network through whatever tools it brings.
 
