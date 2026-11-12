@@ -117,6 +117,8 @@ function requestOnce(target: URL, signal: AbortSignal, options: FetchPageOptions
   const { promise, resolve, reject } = Promise.withResolvers<RawResponse>();
   const send = target.protocol === "https:" ? httpsRequest : httpRequest;
   let settled = false;
+  // Declared before `fail` can run: an error during connect would otherwise hit the TDZ.
+  let overall: NodeJS.Timeout | undefined;
 
   const fail = (error: Error): void => {
     if (settled) return;
@@ -169,15 +171,23 @@ function requestOnce(target: URL, signal: AbortSignal, options: FetchPageOptions
         }
       });
       response.on("end", finish);
-      // A destroyed response never emits "end"; both paths settle through the same guard.
-      response.on("close", finish);
-      response.on("error", fail);
+      // A destroy on purpose (the cap, an abort) is settled already. A socket that closed on its
+      // own leaves the body short, and returning it would hide the truncation; Node reports that
+      // as an `ECONNRESET` first, so both paths say the same thing.
+      const short = (): Error => new Error(`The response from ${target.host} closed before its body finished`);
+      response.on("close", () => {
+        if (!settledResponse && !response.complete) fail(short());
+        else finish();
+      });
+      response.on("error", (error: Error) => {
+        fail(response.complete ? error : short());
+      });
     },
   );
 
   const totalMs = options.timeouts?.totalMs ?? REQUEST_TIMEOUT_MS;
   const idleMs = options.timeouts?.idleMs ?? IDLE_TIMEOUT_MS;
-  const overall = setTimeout(() => {
+  overall = setTimeout(() => {
     fail(new Error(`No response from ${target.host} within ${totalMs / 1000} s`));
   }, totalMs);
 
@@ -236,6 +246,11 @@ export async function fetchPage(
 function assertFetchable(target: URL, allowLoopback: boolean): void {
   if (target.protocol !== "http:" && target.protocol !== "https:") {
     throw new Error(`Only http and https URLs can be fetched, not ${target.protocol}`);
+  }
+  if (target.username !== "" || target.password !== "") {
+    // `node:http` would turn these into `Authorization: Basic`, so refusing is the only way to
+    // keep the promise that the tool sends no credentials.
+    throw new Error(`${target.host} cannot be fetched: the URL carries credentials`);
   }
   const host = target.hostname.toLowerCase().replace(/^\[|\]$/g, "");
   if (REFUSED_HOSTS[host] === true || REFUSED_SUFFIXES.some((suffix) => host.endsWith(suffix))) {

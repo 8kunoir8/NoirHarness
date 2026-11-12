@@ -90,6 +90,32 @@ describe("fetchPage refusals", () => {
     await expect(fetchPage("ftp://example.com/x", new AbortController().signal)).rejects.toThrow(/http/i);
   });
 
+  it("refuses an IPv4-mapped IPv6 literal, which net.connect connects to without DNS", async () => {
+    const signal = new AbortController().signal;
+    // Node normalizes every spelling of the mapping to hex, so the dotted form never reaches us.
+    await expect(fetchPage("http://[::ffff:127.0.0.1]/", signal)).rejects.toThrow(/private address/);
+    await expect(fetchPage("http://[::ffff:10.0.0.1]/", signal)).rejects.toThrow(/private address/);
+    await expect(fetchPage("http://[::ffff:169.254.169.254]/", signal)).rejects.toThrow(/private address/);
+  });
+
+  it("refuses a URL that carries credentials instead of sending them", async () => {
+    let reached = false;
+    const site = await serve((_req, res) => {
+      reached = true;
+      res.end("x");
+    });
+    try {
+      // `node:http` turns userinfo into `Authorization: Basic`, which the tool must never send.
+      const withCredentials = site.url.replace("http://", "http://user:pw@");
+      await expect(fetchPage(withCredentials, new AbortController().signal, { allowLoopback: true })).rejects.toThrow(
+        /credentials/,
+      );
+      expect(reached).toBe(false);
+    } finally {
+      await site.close();
+    }
+  });
+
   it("refuses a host that names itself local", async () => {
     await expect(fetchPage("http://printer.local/", new AbortController().signal)).rejects.toThrow(/local/);
     await expect(fetchPage("http://localhost:1/", new AbortController().signal)).rejects.toThrow(/local/);
@@ -106,6 +132,23 @@ describe("fetchPage refusals", () => {
       );
     } finally {
       await far.close();
+    }
+  });
+
+  it("stops after five redirects instead of chasing a loop", async () => {
+    let hop = 0;
+    const site = await serve((_req, res) => {
+      hop += 1;
+      res.writeHead(302, { location: `/${hop + 1}` });
+      res.end();
+    });
+    try {
+      await expect(fetchPage(site.url, new AbortController().signal, { allowLoopback: true })).rejects.toThrow(
+        /redirects/,
+      );
+      expect(hop).toBe(6);
+    } finally {
+      await site.close();
     }
   });
 
@@ -169,6 +212,22 @@ describe("fetchPage limits", () => {
       await expect(
         fetchPage(site.url, new AbortController().signal, { allowLoopback: true, timeouts: { totalMs: 150 } }),
       ).rejects.toThrow(/No response|aborted|socket/i);
+    } finally {
+      await site.close();
+    }
+  });
+
+  it("fails a response whose body stops before its Content-Length", async () => {
+    const site = await serve((_req, res) => {
+      res.writeHead(200, { "content-type": "text/plain", "content-length": "50" });
+      res.write("only part");
+      // Drop the socket without finishing the body.
+      setTimeout(() => res.socket?.destroy(), 20);
+    });
+    try {
+      await expect(
+        fetchPage(site.url, new AbortController().signal, { allowLoopback: true, timeouts: { idleMs: 5_000 } }),
+      ).rejects.toThrow(/before|incomplete|closed/i);
     } finally {
       await site.close();
     }
