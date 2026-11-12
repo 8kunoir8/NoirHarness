@@ -1,9 +1,10 @@
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { ErrorCodes } from "@noir/protocol";
 import { afterAll, describe, expect, it } from "vitest";
-import { parseGitTarget, parseLocalTarget } from "../src/skillSources.js";
+import { fetchSkill, parseGitTarget, parseLocalTarget } from "../src/skillSources.js";
+import { git, serveSmartHttp, skillRepo } from "./smartHttp.js";
 
 const root = mkdtempSync(join(tmpdir(), "noir src "));
 const realDir = join(root, "real");
@@ -69,4 +70,74 @@ describe("fetch target validation", () => {
   it("reports a path that traverses a file as an invalid parameter, not an internal error", async () => {
     await expect(parseLocalTarget(join(file, "x"))).rejects.toMatchObject({ code: ErrorCodes.invalidParams });
   });
+});
+
+const scratch = (): string => mkdtempSync(join(tmpdir(), "noir fetch "));
+
+describe("fetching a skill", () => {
+  it("clones a git source, pins its commit, and reads the manifest", async () => {
+    const work = scratch();
+    const repo = join(work, "repo");
+    mkdirSync(repo);
+    skillRepo(repo, "my-skill", "GIT BODY");
+    const bare = join(work, "bare.git");
+    git(work, ["clone", "-q", "--bare", repo, bare]);
+    const served = await serveSmartHttp(bare);
+    try {
+      const fetched = await fetchSkill(
+        parseGitTarget(served.url, undefined),
+        join(work, "staging"),
+      );
+      expect(fetched.name).toBe("my-skill");
+      expect(fetched.commit).toMatch(/^[0-9a-f]{40}$/);
+      expect(readFileSync(join(fetched.dir, "SKILL.md"), "utf8")).toContain("GIT BODY");
+      expect(fetched.hash).toHaveLength(64);
+      await fetched.cleanup();
+    } finally {
+      await served.close();
+    }
+  });
+
+  it("copies a local directory without linking to it", async () => {
+    const work = scratch();
+    const source = join(work, "src");
+    mkdirSync(source);
+    skillRepo(source, "local-skill");
+    const fetched = await fetchSkill(await parseLocalTarget(source), join(work, "staging"));
+    expect(fetched.commit).toBeNull();
+    expect(fetched.dir.startsWith(source)).toBe(false);
+    await fetched.cleanup();
+    expect(existsSync(fetched.dir)).toBe(false);
+  });
+
+  it("refuses a source over the file cap and removes the staging copy", async () => {
+    const work = scratch();
+    const source = join(work, "src");
+    mkdirSync(source);
+    skillRepo(source, "big");
+    for (let index = 0; index < 201; index += 1) {
+      writeFileSync(join(source, "big", `f${index}.txt`), "x");
+    }
+    await expect(fetchSkill(await parseLocalTarget(source), join(work, "staging"))).rejects.toThrow(/more than 200 files/);
+    expect(existsSync(join(work, "staging")) ? readdirSync(join(work, "staging")) : []).toEqual([]);
+  });
+});
+
+it("refuses ext:: without starting any process", async () => {
+  const work = mkdtempSync(join(tmpdir(), "noir ext "));
+  // git writes this trace as it starts, even when it then refuses the transport. A `.cmd` fake
+  // cannot stand in for it: Node refuses to spawn one without a shell, so the marker would never
+  // appear and the test could not fail.
+  const marker = join(work, "git-trace");
+  process.env.GIT_TRACE = marker;
+  try {
+    // The guard throws while parsing, before fetchSkill can reach execFile, so git never starts.
+    const dangerous = async (): Promise<void> => {
+      await fetchSkill(parseGitTarget("ext::sh -c touch", undefined), join(work, "staging"));
+    };
+    await expect(dangerous()).rejects.toThrow(/not an accepted transport/);
+  } finally {
+    delete process.env.GIT_TRACE;
+  }
+  expect(existsSync(marker)).toBe(false);
 });
