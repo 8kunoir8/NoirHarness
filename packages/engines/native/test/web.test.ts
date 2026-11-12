@@ -231,6 +231,72 @@ describe("fetchPage limits", () => {
     }
   });
 
+  it("decodes a Latin-1 page by its declared charset", async () => {
+    const text = "caf\u00e9 cr\u00e8me";
+    const site = await serve((_req, res) => {
+      res.writeHead(200, { "content-type": "text/html; charset=iso-8859-1" });
+      res.end(Buffer.from(`<p>${text}</p>`, "latin1"));
+    });
+    try {
+      const page = await fetchPage(site.url, new AbortController().signal, { allowLoopback: true });
+      expect(page.body).toContain(text);
+      expect(page.body).not.toContain("\ufffd");
+      expect(formatPage(page)).toBe(text);
+    } finally {
+      await site.close();
+    }
+  });
+
+  it("falls back to the charset the document declares in a meta tag", async () => {
+    // CP1252 quotes are 0x93/0x94, which UTF-8 would show as replacement characters.
+    const body = Buffer.concat([
+      Buffer.from('<meta charset="windows-1252"><p>', "latin1"),
+      Buffer.from([0x93]),
+      Buffer.from("quoted", "latin1"),
+      Buffer.from([0x94]),
+      Buffer.from("</p>", "latin1"),
+    ]);
+    const site = await serve((_req, res) => {
+      // No charset in the header, only in the markup.
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end(body);
+    });
+    try {
+      const page = await fetchPage(site.url, new AbortController().signal, { allowLoopback: true });
+      expect(page.body).toContain("\u201cquoted\u201d");
+    } finally {
+      await site.close();
+    }
+  });
+
+  it("falls back to UTF-8 for a charset label it cannot use", async () => {
+    const site = await serve((_req, res) => {
+      res.writeHead(200, { "content-type": "text/plain; charset=x-not-a-charset" });
+      res.end("plain \u00e9");
+    });
+    try {
+      const page = await fetchPage(site.url, new AbortController().signal, { allowLoopback: true });
+      expect(page.body).toBe("plain \u00e9");
+    } finally {
+      await site.close();
+    }
+  });
+
+  it("counts a binary body without holding it", async () => {
+    const site = await serve((_req, res) => {
+      res.writeHead(200, { "content-type": "image/png" });
+      res.end(Buffer.alloc(512 * 1024, 7));
+    });
+    try {
+      const page = await fetchPage(site.url, new AbortController().signal, { allowLoopback: true });
+      expect(page.bytes).toBe(512 * 1024);
+      expect(page.body).toBe("");
+      expect(formatPage(page)).toBe("image/png, 524288 bytes — binary content is not returned");
+    } finally {
+      await site.close();
+    }
+  });
+
   it("fails a response whose body stops before its Content-Length", async () => {
     const site = await serve((_req, res) => {
       res.writeHead(200, { "content-type": "text/plain", "content-length": "50" });

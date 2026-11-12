@@ -2,6 +2,7 @@ import { lookup as dnsLookup } from "node:dns";
 import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { BlockList, isIPv4, isIPv6, type LookupFunction } from "node:net";
+import { TextDecoder } from "node:util";
 import { htmlToText } from "./htmlText.js";
 
 /**
@@ -83,7 +84,58 @@ interface RawResponse {
   status: number;
   statusText: string;
   headers: IncomingHttpHeaders;
+  /** Empty for a type that is not textual: its bytes were counted, not kept. */
   body: Buffer;
+  bytes: number;
+}
+
+/** The type without its parameters: `text/html; charset=iso-8859-1` becomes `text/html`. */
+function bareType(header: string): string {
+  return (header.split(";")[0] ?? "").trim().toLowerCase();
+}
+
+const TEXTUAL =
+  /^(text\/|application\/(json|xml|xhtml\+xml)|[a-z-]+\/[a-z0-9.+-]*\+(json|xml))/i;
+
+/** The types the tool keeps: everything else is counted and dropped as it arrives. */
+function isTextual(type: string): boolean {
+  return TEXTUAL.test(type);
+}
+
+function charsetOf(header: string): string | undefined {
+  const match = /;\s*charset\s*=\s*"?([^";\s]+)/i.exec(header);
+  return match?.[1]?.toLowerCase();
+}
+
+/** A byte-order mark is the one declaration a page cannot get wrong. */
+function bomCharset(body: Buffer): string | undefined {
+  if (body.length >= 3 && body[0] === 0xef && body[1] === 0xbb && body[2] === 0xbf) return "utf-8";
+  if (body.length >= 2 && body[0] === 0xff && body[1] === 0xfe) return "utf-16le";
+  if (body.length >= 2 && body[0] === 0xfe && body[1] === 0xff) return "utf-16be";
+  return undefined;
+}
+
+/** The charset a document declares about itself, read from the bytes before the first pass. */
+function declaredCharset(body: Buffer): string | undefined {
+  const head = body.subarray(0, 1_024).toString("latin1");
+  const meta = /<meta[^>]+charset\s*=\s*["']?([\w-]+)/i.exec(head);
+  if (meta?.[1] !== undefined) return meta[1].toLowerCase();
+  const xml = /<\?xml[^>]+encoding\s*=\s*["']([\w-]+)/i.exec(head);
+  return xml?.[1]?.toLowerCase();
+}
+
+/**
+ * Decodes with the declared charset, or UTF-8 when there is none or the label is unknown. A page
+ * that says it is Latin-1 no longer arrives full of replacement characters.
+ */
+function decodeBody(body: Buffer, charset: string | undefined): string {
+  const label = charset ?? bomCharset(body) ?? declaredCharset(body);
+  if (label === undefined) return body.toString("utf8");
+  try {
+    return new TextDecoder(label).decode(body);
+  } catch {
+    return body.toString("utf8");
+  }
 }
 
 /**
@@ -143,8 +195,10 @@ function requestOnce(target: URL, signal: AbortSignal, options: FetchPageOptions
       lookup: guardedLookup(options.allowLoopback === true),
     },
     (response) => {
+      const keep = isTextual(bareType(response.headers["content-type"] ?? ""));
+      // A binary body is never returned, so its bytes are counted and dropped rather than held.
       const chunks: Buffer[] = [];
-      let size = 0;
+      let bytes = 0;
       let settledResponse = false;
       // Set before the cap destroys the stream: that close is our decision, not a broken body.
       let stopped = false;
@@ -159,17 +213,18 @@ function requestOnce(target: URL, signal: AbortSignal, options: FetchPageOptions
             status: response.statusCode ?? 0,
             statusText: response.statusMessage ?? "",
             headers: response.headers,
-            body: Buffer.concat(chunks),
+            body: keep ? Buffer.concat(chunks) : Buffer.alloc(0),
+            bytes,
           });
         }
       };
       response.on("data", (chunk: Buffer) => {
-        if (size >= MAX_BODY_BYTES) return;
-        const room = MAX_BODY_BYTES - size;
+        if (bytes >= MAX_BODY_BYTES) return;
+        const room = MAX_BODY_BYTES - bytes;
         const kept = chunk.length > room ? chunk.subarray(0, room) : chunk;
-        chunks.push(kept);
-        size += kept.length;
-        if (size >= MAX_BODY_BYTES) {
+        bytes += kept.length;
+        if (keep) chunks.push(kept);
+        if (bytes >= MAX_BODY_BYTES) {
           stopped = true;
           response.destroy();
           finish();
@@ -240,12 +295,14 @@ export async function fetchPage(
       }
       continue;
     }
+    const declared = response.headers["content-type"] ?? "";
+    const type = bareType(declared);
     return {
       status: response.status,
       statusText: response.statusText,
-      contentType: (response.headers["content-type"] ?? "").split(";")[0]?.trim().toLowerCase() ?? "",
-      body: response.body.toString("utf8"),
-      bytes: response.body.length,
+      contentType: type,
+      body: isTextual(type) ? decodeBody(response.body, charsetOf(declared)) : "",
+      bytes: response.bytes,
       finalUrl: target.toString(),
     };
   }
@@ -274,8 +331,6 @@ function assertFetchable(target: URL, allowLoopback: boolean): void {
     throw new Error(`${host} is a private address and cannot be fetched`);
   }
 }
-
-const TEXTUAL = /^(text\/|application\/(json|xml|xhtml\+xml)|[a-z-]+\/[a-z0-9.+-]*\+(json|xml))/i;
 
 /** Turns a response into what the model reads: extracted HTML, pretty JSON, or a refusal. */
 export function formatPage(result: FetchPageResult): string {
