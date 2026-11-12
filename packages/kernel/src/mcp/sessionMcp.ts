@@ -3,6 +3,11 @@ import type { EngineMcpTool } from "@noir/engine-core";
 import { McpClient } from "./client.js";
 
 const NAMESPACE = "mcp__";
+/**
+ * Chat-completions providers reject a whole request whose tool list holds a bad name, so a server's
+ * tool has to fit `[A-Za-z0-9_-]{1,64}` — including the namespace — or it is dropped, not sent.
+ */
+const TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** `mcp__<server>__<tool>`; server names cannot contain `__`, so the split is unambiguous. */
 function namespaced(server: string, tool: string): string {
@@ -89,6 +94,16 @@ export class SessionMcpManager {
       const tools = await client.listTools();
       for (const tool of tools) {
         const name = namespaced(server.name, tool.name);
+        // A name the provider would reject, or a duplicate from a second server, must not reach
+        // the tool list: one bad entry fails the whole request, not just that tool.
+        if (!TOOL_NAME.test(tool.name) || !TOOL_NAME.test(name)) {
+          this.#warnings.push(`${server.name}: skipped tool ${tool.name} (name too long or not [A-Za-z0-9_-])`);
+          continue;
+        }
+        if (this.#routes.has(name)) {
+          this.#warnings.push(`${server.name}: skipped tool ${tool.name} (duplicate ${name})`);
+          continue;
+        }
         this.#routes.set(name, { client, tool: tool.name });
         this.#tools.push({
           name,

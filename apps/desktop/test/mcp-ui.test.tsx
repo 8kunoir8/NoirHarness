@@ -107,14 +107,14 @@ describe("Setup MCP panel", () => {
 
     await userEvent.type(within(panel).getByLabelText("Server name"), "calc");
     await userEvent.type(within(panel).getByLabelText("Server command"), "node");
-    await userEvent.type(within(panel).getByLabelText("Arguments"), "server.js --stdio");
+    await userEvent.type(within(panel).getByLabelText("Arguments"), "server.js{enter}--stdio");
     await userEvent.type(within(panel).getByLabelText("Environment"), "MODE=fast{enter}EMPTY=");
     await userEvent.click(within(panel).getByRole("button", { name: "Add MCP server" }));
 
     await waitFor(() => expect(calls(request, "mcp.create")).toHaveLength(1));
     expect(calls(request, "mcp.create")[0]?.[1]).toMatchObject({ name: "calc" });
 
-    const testButton = within(panel).getByRole("button", { name: "Test calc" });
+    const testButton = await within(panel).findByRole("button", { name: "Test calc" });
     await userEvent.click(testButton);
     expect(calls(request, "mcp.test")[0]?.[1]).toEqual({
       command: "node",
@@ -132,7 +132,7 @@ describe("Setup MCP panel", () => {
     render(<Setup request={request as unknown as RequestFn} onOpenChat={() => undefined} />);
 
     const panel = await screen.findByRole("region", { name: "MCP Servers" });
-    await userEvent.click(within(panel).getByRole("button", { name: "Test calc" }));
+    await userEvent.click(await within(panel).findByRole("button", { name: "Test calc" }));
     expect(await within(panel).findByText("spawn ENOENT")).toBeTruthy();
     expect(within(panel).queryByText(/tools$/)).toBeNull();
   });
@@ -146,11 +146,12 @@ describe("Setup MCP panel", () => {
     render(<Setup request={request as unknown as RequestFn} onOpenChat={() => undefined} />);
 
     const panel = await screen.findByRole("region", { name: "MCP Servers" });
-    await userEvent.click(within(panel).getByLabelText("Enabled calc"));
+    // The panel renders before `mcp.list` resolves; the row is what the clicks need.
+    await userEvent.click(await within(panel).findByLabelText("Enabled calc"));
     await waitFor(() => expect(calls(request, "mcp.update")).toHaveLength(1));
     expect(calls(request, "mcp.update")[0]?.[1]).toEqual({ id: "mcp-1", enabled: false });
 
-    await userEvent.click(within(panel).getByRole("button", { name: "Remove calc" }));
+    await userEvent.click(await within(panel).findByRole("button", { name: "Remove calc" }));
     await waitFor(() => expect(calls(request, "mcp.delete")).toHaveLength(1));
     expect(calls(request, "mcp.delete")[0]?.[1]).toEqual({ id: "mcp-1" });
   });
@@ -176,15 +177,18 @@ describe("Setup MCP panel", () => {
     render(<Setup request={request as unknown as RequestFn} onOpenChat={() => undefined} />);
 
     const panel = await screen.findByRole("region", { name: "MCP Servers" });
-    await userEvent.click(within(panel).getByRole("button", { name: "Edit calc" }));
+    await userEvent.click(await within(panel).findByRole("button", { name: "Edit calc" }));
 
     const name = within(panel).getByLabelText("Server name") as HTMLInputElement;
     await waitFor(() => expect(name.value).toBe("calc"));
-    expect((within(panel).getByLabelText("Arguments") as HTMLInputElement).value).toBe("server.js");
+    expect((within(panel).getByLabelText("Arguments") as HTMLTextAreaElement).value).toBe("server.js");
     expect((within(panel).getByLabelText("Environment") as HTMLTextAreaElement).value).toBe("MODE=fast");
 
     await userEvent.clear(within(panel).getByLabelText("Arguments"));
-    await userEvent.type(within(panel).getByLabelText("Arguments"), "server.js --verbose");
+    await userEvent.type(
+      within(panel).getByLabelText("Arguments"),
+      "server.js{enter}--path{enter}C:\\Program Files\\x",
+    );
     await userEvent.clear(within(panel).getByLabelText("Environment"));
     await userEvent.type(within(panel).getByLabelText("Environment"), "MODE=slow");
     await userEvent.click(within(panel).getByRole("button", { name: "Save MCP server" }));
@@ -194,7 +198,8 @@ describe("Setup MCP panel", () => {
       id: "mcp-1",
       name: "calc",
       command: "node",
-      args: ["server.js", "--verbose"],
+      // One argument per line: an argument with a space survives the round trip.
+      args: ["server.js", "--path", "C:\\Program Files\\x"],
       env: { MODE: "slow" },
     });
     expect(calls(request, "mcp.create")).toHaveLength(0);
@@ -207,7 +212,7 @@ describe("Setup MCP panel", () => {
     render(<Setup request={request as unknown as RequestFn} onOpenChat={() => undefined} />);
 
     const panel = await screen.findByRole("region", { name: "MCP Servers" });
-    await userEvent.click(within(panel).getByRole("button", { name: "Edit calc" }));
+    await userEvent.click(await within(panel).findByRole("button", { name: "Edit calc" }));
     await waitFor(() =>
       expect((within(panel).getByLabelText("Server name") as HTMLInputElement).value).toBe("calc"),
     );
@@ -216,6 +221,25 @@ describe("Setup MCP panel", () => {
     expect((within(panel).getByLabelText("Server name") as HTMLInputElement).value).toBe("");
     expect(within(panel).getByRole("button", { name: "Add MCP server" })).toBeTruthy();
     expect(calls(request, "mcp.update")).toHaveLength(0);
+  });
+
+  it("clears the form when the row it is editing is deleted", async () => {
+    const request = setupRequest({
+      "mcp.list": () => ({ servers: [CALC] }),
+      "mcp.delete": () => ({ deleted: true }),
+    });
+    render(<Setup request={request as unknown as RequestFn} onOpenChat={() => undefined} />);
+
+    const panel = await screen.findByRole("region", { name: "MCP Servers" });
+    await userEvent.click(await within(panel).findByRole("button", { name: "Edit calc" }));
+    await waitFor(() =>
+      expect((within(panel).getByLabelText("Server name") as HTMLInputElement).value).toBe("calc"),
+    );
+    await userEvent.click(within(panel).getByRole("button", { name: "Remove calc" }));
+    await waitFor(() => expect(calls(request, "mcp.delete")).toHaveLength(1));
+
+    expect(await within(panel).findByRole("button", { name: "Add MCP server" })).toBeTruthy();
+    expect((within(panel).getByLabelText("Server name") as HTMLInputElement).value).toBe("");
   });
 });
 
@@ -292,5 +316,26 @@ describe("Agent inspector MCP settings", () => {
       name: "Builder",
       mcpServerIds: ["mcp-1"],
     });
+  });
+
+  it("still unbinds a server that was disabled after the profile was saved", async () => {
+    const bound: AgentView = { ...AGENT, mcpServerIds: ["mcp-2"] };
+    const request = agentRequest({
+      "agent.list": () => ({ agents: [bound] }),
+      "agent.update": () => bound,
+    });
+    render(
+      <Agents workspaceId="w1" request={request as unknown as RequestFn} onOpenChat={() => undefined} />,
+    );
+
+    const servers = await screen.findByRole("group", { name: "MCP servers" });
+    const offline = within(servers).getByRole("checkbox", { name: /offline/ }) as HTMLInputElement;
+    expect(offline.checked).toBe(true);
+    expect(offline.disabled).toBe(false);
+    await userEvent.click(offline);
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(calls(request, "agent.update")).toHaveLength(1));
+    expect((calls(request, "agent.update")[0]?.[1] as { mcpServerIds?: string[] }).mcpServerIds).toEqual([]);
   });
 });

@@ -317,7 +317,9 @@ function AgentConfigForm({
                 <input
                   type="checkbox"
                   checked={mcpServerIds.includes(server.id)}
-                  disabled={busy || !server.enabled}
+                  // Only binding a disabled server is blocked: a server disabled after the profile
+                  // was saved must still be removable here.
+                  disabled={busy || (!server.enabled && !mcpServerIds.includes(server.id))}
                   onChange={(event) =>
                     setMcpServerIds((current) =>
                       event.target.checked

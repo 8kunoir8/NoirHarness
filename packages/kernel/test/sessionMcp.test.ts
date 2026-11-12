@@ -102,6 +102,37 @@ describe("SessionMcpManager", () => {
     expect(session.warnings).toEqual([]);
   });
 
+  it("drops a tool whose namespaced name the provider would reject, keeping the rest", async () => {
+    const longName = "t".repeat(60);
+    const script = `
+process.stdin.setEncoding("utf8");
+let buffer = "";
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  const lines = buffer.split("\\n");
+  buffer = lines.pop();
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const message = JSON.parse(line);
+    if (message.method === "initialize") {
+      send({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "wide", version: "1.0.0" } } });
+    } else if (message.method === "tools/list") {
+      send({ jsonrpc: "2.0", id: message.id, result: { tools: [
+        { name: "ok", inputSchema: { type: "object" } },
+        { name: "${longName}", inputSchema: { type: "object" } },
+        { name: "has space", inputSchema: { type: "object" } },
+      ] } });
+    }
+  }
+});
+`;
+    const session = manager([server("wide", script)]);
+    await session.initialize();
+    expect(session.tools.map((tool) => tool.name)).toEqual(["mcp__wide__ok"]);
+    expect(session.warnings).toHaveLength(2);
+  });
+
   it("skips a server that cannot start and reports why", async () => {
     const broken: McpServerView = { ...server("broken", "x"), command: "definitely-not-a-real-binary-xyz" };
     const session = manager([broken, server("calc", CALC_SERVER)]);

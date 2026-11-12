@@ -587,7 +587,22 @@ async function runMcpTool(name: string, args: unknown, ctx: ToolContext): Promis
   if (call === undefined) throw new Error(`Unknown tool: ${name}`);
   const record = typeof args === "object" && args !== null ? (args as Record<string, unknown>) : {};
   if (!(await approve(ctx, name, "mcp", record))) return PERMISSION_DENIED;
-  return await call(name, record);
+  if (ctx.signal.aborted) throw new Error("MCP call aborted before it started.");
+  // The broker's call has its own deadline and no cancellation, so an interrupt races it: the
+  // turn settles now and a late answer is dropped. The cap keeps one server's output from
+  // entering every later request of the session.
+  let onAbort: (() => void) | undefined;
+  try {
+    return await Promise.race([
+      call(name, record),
+      new Promise<never>((_resolve, reject) => {
+        onAbort = () => reject(new Error("MCP call aborted."));
+        ctx.signal.addEventListener("abort", onAbort, { once: true });
+      }),
+    ]).then((text) => truncate(text));
+  } finally {
+    if (onAbort !== undefined) ctx.signal.removeEventListener("abort", onAbort);
+  }
 }
 
 export async function runTool(name: string, args: unknown, ctx: ToolContext): Promise<string> {

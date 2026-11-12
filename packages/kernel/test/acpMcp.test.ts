@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import type { PermissionPolicy } from "@noir/protocol";
 import { AgentService } from "../src/agents.js";
 import { openDb } from "../src/db.js";
 import { EngineManager } from "../src/engineManager.js";
@@ -48,92 +49,115 @@ function memorySecrets(): Secrets {
   };
 }
 
+/**
+ * An ACP agent bound to one server whose only observable effect is a file: if the kernel spawns it,
+ * the marker exists. The wire log is what the fake ACP server received.
+ */
+async function harness(policy: PermissionPolicy) {
+  const workspaceDir = tempDir();
+  const dataDir = tempDir();
+  const marker = join(dataDir, "spawned-marker.txt");
+  const wireLog = join(dataDir, "wire.log");
+  process.env.NOIR_OMP_ARGS_JSON = JSON.stringify([FAKE_ACP]);
+  process.env.FAKE_ACP_LOG = wireLog;
+
+  const db = openDb(join(dataDir, "noir.db"));
+  const events = new EventStore(db);
+  const projects = new ProjectService(db);
+  const workspaces = new WorkspaceService(db, projects);
+  const models = new ModelService(db);
+  const sessions = new SessionService(db, events, models);
+  const agents = new AgentService(db, models, sessions);
+  const providers = new ProviderService(db, memorySecrets());
+  const skills = new SkillService(db, dataDir);
+  const mcp = new McpService(db);
+
+  const server = mcp.create({
+    name: "calc",
+    command: process.execPath,
+    args: ["-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "spawned")`],
+    env: {},
+    enabled: true,
+  });
+  const project = projects.add(workspaceDir);
+  const workspace = workspaces.createLocal(project.id);
+  const provider = providers.create({
+    name: "Fake",
+    baseUrl: "http://127.0.0.1:9/v1",
+    apiKind: "openai-completions",
+    apiKey: "sk-fake",
+    enabled: true,
+  });
+  const model = models.create({
+    providerId: provider.id,
+    modelId: "fake-1",
+    contextWindow: 200_000,
+    enabled: true,
+    engine: "acp",
+  });
+  const agent = agents.create({
+    name: "Broker",
+    role: "Coder",
+    engineId: "acp",
+    modelRef: model.id,
+    defaultWorkspaceId: workspace.id,
+    mcpServerIds: [server.id],
+    permissionPolicy: policy,
+  });
+  const session = sessions.create(workspace.id, { modelId: model.id, agentId: agent.id });
+  const manager = new EngineManager({
+    db,
+    events,
+    sessions,
+    agents,
+    models,
+    providers,
+    skills,
+    mcp,
+    dataDir,
+    ompCommand: process.execPath,
+  });
+  managers.push(manager);
+  return { db, events, manager, session, marker, wireLog };
+}
+
+function sessionNew(wireLog: string): { params: { mcpServers?: unknown } } {
+  const line = readFileSync(wireLog, "utf8")
+    .split("\n")
+    .find((entry) => entry.includes('"method":"session/new"'));
+  expect(line).toBeDefined();
+  return JSON.parse((line as string).slice((line as string).indexOf("{"))) as {
+    params: { mcpServers?: unknown };
+  };
+}
+
+async function turn(manager: EngineManager, events: EventStore, sessionId: string): Promise<void> {
+  await manager.prompt({ sessionId, requestId: "acp-mcp", content: [{ type: "text", text: "hello" }] });
+  const deadline = Date.now() + 20_000;
+  while (!events.list(sessionId).some((event) => event.type === "turn.completed")) {
+    if (Date.now() > deadline) throw new Error("timed out waiting for turn.completed");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
 describe("EngineManager over an ACP engine with MCP servers", () => {
   it("forwards the bound servers to session/new and never spawns them itself", async () => {
-    const workspaceDir = tempDir();
-    const dataDir = tempDir();
-    const marker = join(dataDir, "spawned-marker.txt");
-    const wireLog = join(dataDir, "wire.log");
-    process.env.NOIR_OMP_ARGS_JSON = JSON.stringify([FAKE_ACP]);
-    process.env.FAKE_ACP_LOG = wireLog;
-
-    const db = openDb(join(dataDir, "noir.db"));
-    const events = new EventStore(db);
-    const projects = new ProjectService(db);
-    const workspaces = new WorkspaceService(db, projects);
-    const models = new ModelService(db);
-    const sessions = new SessionService(db, events, models);
-    const agents = new AgentService(db, models, sessions);
-    const providers = new ProviderService(db, memorySecrets());
-    const skills = new SkillService(db, dataDir);
-    const mcp = new McpService(db);
-
-    // A server whose only observable effect is a file: if the kernel spawns it, the marker exists.
-    const server = mcp.create({
-      name: "calc",
-      command: process.execPath,
-      args: ["-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "spawned")`],
-      env: {},
-      enabled: true,
-    });
-    const project = projects.add(workspaceDir);
-    const workspace = workspaces.createLocal(project.id);
-    const provider = providers.create({
-      name: "Fake",
-      baseUrl: "http://127.0.0.1:9/v1",
-      apiKind: "openai-completions",
-      apiKey: "sk-fake",
-      enabled: true,
-    });
-    const model = models.create({
-      providerId: provider.id,
-      modelId: "fake-1",
-      contextWindow: 200_000,
-      enabled: true,
-      engine: "acp",
-    });
-    const agent = agents.create({
-      name: "Broker",
-      role: "Coder",
-      engineId: "acp",
-      modelRef: model.id,
-      defaultWorkspaceId: workspace.id,
-      mcpServerIds: [server.id],
-      permissionPolicy: { mcp: "ask" },
-    });
-    const session = sessions.create(workspace.id, { modelId: model.id, agentId: agent.id });
-    const manager = new EngineManager({
-      db,
-      events,
-      sessions,
-      agents,
-      models,
-      providers,
-      skills,
-      mcp,
-      dataDir,
-      ompCommand: process.execPath,
-    });
-    managers.push(manager);
-
-    await manager.prompt({ sessionId: session.id, requestId: "acp-mcp", content: [{ type: "text", text: "hello" }] });
-    const deadline = Date.now() + 20_000;
-    while (!events.list(session.id).some((event) => event.type === "turn.completed")) {
-      if (Date.now() > deadline) throw new Error("timed out waiting for turn.completed");
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
+    const { db, events, manager, session, marker, wireLog } = await harness({ mcp: "ask" });
+    await turn(manager, events, session.id);
 
     expect(existsSync(marker)).toBe(false);
-    const startup = readFileSync(wireLog, "utf8")
-      .split("\n")
-      .find((line) => line.includes('"method":"session/new"'));
-    expect(startup).toBeDefined();
-    const params = JSON.parse((startup as string).slice((startup as string).indexOf("{"))) as {
-      params: { mcpServers: Array<{ name: string; command: string }> };
-    };
-    expect(params.params.mcpServers).toEqual([
+    expect(sessionNew(wireLog).params.mcpServers).toEqual([
       { name: "calc", command: process.execPath, args: expect.any(Array), env: [] },
     ]);
+    db.close();
+  }, 60_000);
+
+  it("withholds the servers from an mcp: reject agent, which has no kernel-side gate", async () => {
+    const { db, events, manager, session, marker, wireLog } = await harness({ mcp: "reject" });
+    await turn(manager, events, session.id);
+
+    expect(existsSync(marker)).toBe(false);
+    expect(sessionNew(wireLog).params.mcpServers).toEqual([]);
     db.close();
   }, 60_000);
 });

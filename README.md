@@ -81,8 +81,9 @@ visible without opening the form.
 
 The native engine runs inside the kernel process. It posts to the provider's
 `/chat/completions` and reads the SSE stream itself, reassembling tool-call deltas that arrive split
-across frames. It exposes nine tools — `fs.read`, `fs.list`, `fs.search`, `fs.write`, `fs.replace`,
-`fs.delete`, `shell.exec`, `skill.list`, `skill.read` — and allows at most 24 tool rounds per turn.
+across frames. It exposes nine built-in tools — `fs.read`, `fs.list`, `fs.search`, `fs.write`,
+`fs.replace`, `fs.delete`, `shell.exec`, `skill.list`, `skill.read` — plus the session's MCP tools
+(see [MCP servers](#mcp-servers)), and allows at most 24 tool rounds per turn.
 Every tool call is an approval card (`Allow once` / `Reject`) unless the session's permission policy
 allows that category; `shell.exec` is never sandboxed, so the approval is the only gate. Writes,
 deletes, and renames are checked against the workspace with the resolved real path before they run,
@@ -95,6 +96,30 @@ History is reconstructed from the event log, not kept in memory: a kernel restar
 session's turns back into the prompt, dropping calls that lost their name or their JSON arguments, so
 the transcript the model sees matches the transcript on screen. A session freezes `agentId`,
 `engine`, `modelId`, and `permissionPolicy` when it is created.
+
+## MCP servers
+
+**Setup** carries an `MCP servers` panel: a list of configured servers with a live `Enabled`
+switch, `Test`, `Edit`, `Cancel`, and `Remove` actions, and one form for name, command, arguments,
+and `KEY=value` environment lines. The name becomes part of a tool name, so it is `[a-z0-9_-]{1,40}`
+and unique; arguments are one whitespace-separated line, not shell syntax. `Test` starts the real
+command, completes the handshake, lists the tools, and reports `n tools` or the server's own error —
+the probe is discarded when the row is edited or removed. `Edit` loads the row into the same form and
+saves through `mcp.update`.
+
+An agent selects the servers it may use in the `Agent config` inspector, and every MCP call is
+approved by the `mcp` permission category, the sixth alongside `shell`, `delete`, `rename`,
+`write-outside-workspace`, and `network`. Servers are resolved once per engine start, so a binding
+change applies to the next session. The kernel speaks MCP over stdio itself
+(`packages/kernel/src/mcp/`): newline-delimited JSON-RPC with a 10 s handshake and a 120 s call
+deadline, 64 KiB of server stderr kept for diagnostics, and `SIGTERM` then `SIGKILL` after 3 s on
+dispose. A server that fails to start does not fail the session; its tools are absent and the
+transcript carries `name: reason`.
+
+For the native engine the kernel spawns the session's servers, aggregates their tools as
+`mcp__<server>__<tool>` with the server's own JSON schema, and routes `tools/call` back through the
+approval card. An ACP agent spawns the servers itself from the `session/new` payload, so the kernel
+only forwards the list there and spawns nothing.
 
 ## The chat shell
 
@@ -244,9 +269,9 @@ and links inside a skill are skipped silently and do not enter the hash.
 The **Agents** view is three regions: the `Agents` roster, the `Office` main pane, and the
 `Agent config` inspector.
 
-An agent carries a name, a role, an engine, an optional model, an optional default workspace, and a
-decision for each of the five permission categories (`shell`, `delete`, `rename`,
-`write-outside-workspace`, `network`) with `allow` / `ask` / `reject`. The roster reads
+An agent carries a name, a role, an engine, an optional model, an optional default workspace, the MCP
+servers it may use, and a decision for each of the six permission categories (`shell`, `delete`,
+`rename`, `write-outside-workspace`, `network`, `mcp`) with `allow` / `ask` / `reject`. The roster reads
 `agent.roster` and shows each agent's status, the tool it is running, its session count, and its
 context usage; status precedence is `needs you` over `working` over `error` over `idle`. `Start`
 creates a session from the agent, freezing its engine, model, and policy, and opens the new chat.
@@ -288,8 +313,8 @@ pnpm --filter @noir/desktop test
 pnpm --filter @noir/desktop test:e2e
 ```
 
-`test:e2e` builds the app and drives Electron with Playwright against a local mock provider. Nine
-specs, twelve tests: `smoke` (2) — boot, process spawn, health, and a provider surviving an app
+`test:e2e` builds the app and drives Electron with Playwright against a local mock provider. Ten
+specs, thirteen tests: `smoke` (2) — boot, process spawn, health, and a provider surviving an app
 restart; `chat` (2) — a streamed reply and a permission-approved tool call; `shell` (1) — a tool turn
 that survives the restart, a prompt queued behind a slow turn, an interrupt, the queued turn draining
 after it, and a restart that replays the transcript; `editor` (2) — open a file, edit it, save
@@ -300,7 +325,9 @@ directory drop it; `recovery` (1) — a crashed kernel is reported and its sessi
 (1) — the native engine's SSE stream, a real `Allow once`, and a restart that reconstructs the wire
 history; `artifacts` (1) — Markdown, CSV, and PDF previews, hostile Markdown staying inert, a
 restored tab, and a deleted file; `office` (1) — two agents painted from the roster, an approval
-bubble that clears, desks that survive a cold start, and `Enter` opening a chat from a focused row.
+bubble that clears, desks that survive a cold start, and `Enter` opening a chat from a focused row;
+`mcp` (1) — an MCP server configured in Setup and probed, an agent bound to it, and a brokered
+`mcp__calc__add` call approved through the card.
 Each spec gets its own temporary data directory and its own Electron profile
 (`--user-data-dir` inside that directory), so engine state and restored tabs stay inside it.
 

@@ -362,8 +362,11 @@ export const McpServerView = z.object({
 });
 export type McpServerView = z.infer<typeof McpServerView>;
 
-/** Server names become tool-name segments (`mcp__<name>__<tool>`), so they stay narrow. */
-export const McpServerName = z.string().regex(/^[a-z0-9_-]{1,40}$/);
+/**
+ * Server names become tool-name segments (`mcp__<name>__<tool>`). `__` is reserved as the
+ * separator, so a name that contains it would make the split ambiguous.
+ */
+export const McpServerName = z.string().regex(/^(?!.*__)[a-z0-9_-]{1,40}$/);
 
 export const McpServerCreateParams = z.object({
   name: McpServerName,

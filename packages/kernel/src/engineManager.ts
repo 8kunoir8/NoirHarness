@@ -23,6 +23,7 @@ import {
   RpcFault,
   type EngineKind,
   type AgentEvent,
+  type McpServerView,
   type PermissionOption,
   type SessionPromptParams,
   type SessionPromptResult,
@@ -692,7 +693,7 @@ export class EngineManager {
       }
       // The profile's bindings are read once per engine start: enabling a server mid-session
       // would change the tool list the provider was already told about.
-      const bound = this.deps.mcp.forAgent(this.deps.agents.view(state.agentId).mcpServerIds);
+      const bound = this.boundMcpServers(state);
       // Only the native engine gets the kernel's own clients; an ACP agent spawns the servers from
       // `session/new`, so spawning them here too would run every server twice.
       const sessionMcp =
@@ -1121,5 +1122,17 @@ export class EngineManager {
     }
     if (state !== undefined && state.turn !== undefined) this.setStatus(state.sessionId, "running");
     pending.resolve(decision);
+  }
+
+  /**
+   * The servers this session may run. The native broker keeps them under `mcp: reject` because its
+   * own approval gate answers every call with a denial (spec §4.1). An ACP agent has no such gate
+   * here — it spawns whatever it is given and answers its own approvals — so the list itself is
+   * withheld, otherwise the policy would only be a label.
+   */
+  private boundMcpServers(state: SessionState): McpServerView[] {
+    const policy = this.deps.sessions.snapshot(state.sessionId).permissionPolicy?.mcp;
+    if (state.engineKind !== "native" && policy === "reject") return [];
+    return this.deps.mcp.forAgent(this.deps.agents.view(state.agentId).mcpServerIds);
   }
 }

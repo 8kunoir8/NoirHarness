@@ -3,6 +3,7 @@ import {
   McpServerCreateParams,
   McpServerDeleteParams,
   McpServerListResult,
+  McpServerName,
   McpServerUpdateParams,
   McpTestParams,
   McpTestResult,
@@ -27,12 +28,18 @@ const API_KIND_LABEL: Record<ApiKind, string> = {
   "google-generative-ai": "Google",
 };
 
-const MCP_NAME_PATTERN = /^[a-z0-9_-]{1,40}$/;
-const MCP_NAME_HINT = "Use lowercase letters, digits, _ or - (max 40)";
+const MCP_NAME_HINT = "Use lowercase letters, digits, _ or - (max 40, no double underscore)";
 
-/** `a b  c` → `["a","b","c"]`; the field is one line of arguments, not shell syntax. */
+/**
+ * One argument per line: an argument may contain spaces (a Windows path is the common case), so
+ * splitting on whitespace would silently turn one argument into several.
+ */
 function parseArgs(text: string): string[] {
-  return text.split(/\s+/).filter((arg) => arg !== "");
+  return text.split(/\r?\n/).filter((arg) => arg !== "");
+}
+
+function argsText(args: readonly string[]): string {
+  return args.join("\n");
 }
 
 /** `KEY=value` per line; the value may be empty and keeps everything after the first `=`. */
@@ -205,7 +212,7 @@ export function Setup({ request, onOpenChat }: SetupProps) {
     event.preventDefault();
     if (busy) return;
     const trimmed = mcpName.trim();
-    if (!MCP_NAME_PATTERN.test(trimmed)) {
+    if (!McpServerName.safeParse(trimmed).success) {
       setMcpError(MCP_NAME_HINT);
       return;
     }
@@ -264,6 +271,8 @@ export function Setup({ request, onOpenChat }: SetupProps) {
     setBusy(true);
     try {
       await request("mcp.delete", McpServerDeleteParams.parse({ id: server.id }));
+      // The form may still hold the row that just went away; saving it would fail with not-found.
+      if (mcpEditing === server.id) resetMcpForm();
       setMcpProbes((current) => {
         const next = { ...current };
         delete next[server.id];
@@ -305,7 +314,7 @@ export function Setup({ request, onOpenChat }: SetupProps) {
     setMcpEditing(server.id);
     setMcpName(server.name);
     setMcpCommand(server.command);
-    setMcpArgs(server.args.join(" "));
+    setMcpArgs(argsText(server.args));
     setMcpEnv(envText(server.env));
     setMcpError(undefined);
   }
@@ -515,12 +524,14 @@ export function Setup({ request, onOpenChat }: SetupProps) {
           </label>
           <label>
             Arguments
-            <input
-              placeholder="server.js --stdio"
+            <textarea
+              rows={2}
+              placeholder="server.js"
               value={mcpArgs}
               onChange={(event) => setMcpArgs(event.target.value)}
             />
           </label>
+          <p className="hint">One argument per line, so an argument may contain spaces.</p>
           <label>
             Environment
             <textarea
