@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { randomBytes } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { describe, expect, it, vi } from "vitest";
 import type { EnginePermissionRequest } from "@noir/engine-core";
@@ -314,6 +315,25 @@ describe("fetchPage refusals", () => {
       // The page up to the cap is kept: a long compressed page still reads, it just stops.
       expect(page.body.length).toBe(2 * 1024 * 1024);
       expect((process.memoryUsage().heapUsed - heapBefore) / 1048576).toBeLessThan(64);
+    } finally {
+      await site.close();
+    }
+  });
+
+  it("returns what it decoded of a compressed body that itself exceeded the cap", async () => {
+    // Incompressible input: the compressed stream is longer than 2 MiB, so the input is cut before
+    // the output cap is reached. That cut is not corruption, and the bytes decoded before it are
+    // the page.
+    const gz = gzipSync(randomBytes(3 * 1024 * 1024));
+    expect(gz.length).toBeGreaterThan(2 * 1024 * 1024);
+    const site = await serve((_req, res) => {
+      res.writeHead(200, { "content-type": "text/plain", "content-encoding": "gzip" });
+      res.end(gz);
+    });
+    try {
+      const page = await fetchPage(site.url, new AbortController().signal, { allowLoopback: true });
+      expect(page.truncated).toBe(true);
+      expect(page.body.length).toBeGreaterThan(1024 * 1024);
     } finally {
       await site.close();
     }

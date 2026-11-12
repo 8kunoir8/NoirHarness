@@ -72,8 +72,16 @@ const DECODERS: Record<string, () => Transform> = {
   br: () => createBrotliDecompress(),
 };
 
-/** The decoded body, cut at the cap, or a rejection when the bytes are not what they claim. */
-function decodeStream(body: Buffer, decoder: (() => Transform) | undefined): Promise<{ body: Buffer; cut: boolean }> {
+/**
+ * The decoded body, cut at the cap, or a rejection when the bytes are not what they claim. `inputCut`
+ * says the compressed stream itself was stopped at the cap, so a decode error at its end is that cut
+ * and not corruption: the bytes decoded before it are the page.
+ */
+function decodeStream(
+  body: Buffer,
+  decoder: (() => Transform) | undefined,
+  inputCut: boolean,
+): Promise<{ body: Buffer; cut: boolean }> {
   if (decoder === undefined) return Promise.resolve({ body, cut: false });
   const { promise, resolve, reject } = Promise.withResolvers<{ body: Buffer; cut: boolean }>();
   const stream = decoder();
@@ -97,7 +105,9 @@ function decodeStream(body: Buffer, decoder: (() => Transform) | undefined): Pro
   stream.on("error", (error: Error) => {
     if (settled) return;
     settled = true;
-    reject(error);
+    stream.destroy();
+    if (inputCut) resolve({ body: Buffer.concat(chunks), cut: true });
+    else reject(error);
   });
   stream.end(body);
   return promise;
@@ -351,7 +361,7 @@ function requestOnce(
           done(Buffer.alloc(0), stopped);
           return;
         }
-        decodeStream(Buffer.concat(chunks), decompress).then(
+        decodeStream(Buffer.concat(chunks), decompress, stopped).then(
           (decoded) => done(decoded.body, stopped || decoded.cut),
           (error: Error) => reject(new Error(`${target.host} sent a body that is not valid ${encoding}: ${error.message}`)),
         );
