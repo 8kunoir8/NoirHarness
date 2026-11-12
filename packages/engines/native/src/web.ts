@@ -61,7 +61,7 @@ export interface FetchPageOptions {
 }
 
 /** Names that point at the local machine or its network, refused before DNS. */
-const REFUSED_HOSTS: Record<string, true> = { localhost: true, "home.arpa": true };
+const REFUSED_HOSTS: Record<string, true> = { localhost: true };
 const REFUSED_SUFFIXES = [".local", ".localhost", ".internal", ".home.arpa"];
 
 function isLoopback(address: string): boolean {
@@ -103,7 +103,9 @@ function guardedLookup(allowLoopback: boolean): LookupFunction {
         callback(new Error(`No address for ${hostname}`), "", 0);
         return;
       }
-      const blocked = addresses.find((entry) => isPrivateAddress(entry.address) && !(allowLoopback && isLoopback(entry.address)));
+      const blocked = addresses.find(
+        (entry) => isPrivateAddress(entry.address) && !(allowLoopback && isLoopback(entry.address)),
+      );
       if (blocked !== undefined) {
         callback(new Error(`${hostname} resolves to a private address`), "", 0);
         return;
@@ -144,6 +146,8 @@ function requestOnce(target: URL, signal: AbortSignal, options: FetchPageOptions
       const chunks: Buffer[] = [];
       let size = 0;
       let settledResponse = false;
+      // Set before the cap destroys the stream: that close is our decision, not a broken body.
+      let stopped = false;
       const finish = (): void => {
         if (settledResponse) return;
         settledResponse = true;
@@ -166,6 +170,7 @@ function requestOnce(target: URL, signal: AbortSignal, options: FetchPageOptions
         chunks.push(kept);
         size += kept.length;
         if (size >= MAX_BODY_BYTES) {
+          stopped = true;
           response.destroy();
           finish();
         }
@@ -176,7 +181,7 @@ function requestOnce(target: URL, signal: AbortSignal, options: FetchPageOptions
       // as an `ECONNRESET` first, so both paths say the same thing.
       const short = (): Error => new Error(`The response from ${target.host} closed before its body finished`);
       response.on("close", () => {
-        if (!settledResponse && !response.complete) fail(short());
+        if (!settledResponse && !stopped && !response.complete) fail(short());
         else finish();
       });
       response.on("error", (error: Error) => {
@@ -217,7 +222,12 @@ export async function fetchPage(
   signal: AbortSignal,
   options: FetchPageOptions = {},
 ): Promise<FetchPageResult> {
-  let target = new URL(url);
+  let target: URL;
+  try {
+    target = new URL(url);
+  } catch {
+    throw new Error(`Not an absolute URL: ${url}`);
+  }
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     assertFetchable(target, options.allowLoopback === true);
     const response = await requestOnce(target, signal, options);

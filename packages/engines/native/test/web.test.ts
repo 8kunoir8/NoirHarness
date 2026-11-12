@@ -281,6 +281,12 @@ describe("formatPage", () => {
     expect(formatPage(page({ contentType: "text/plain", body: "as-is" }))).toBe("as-is");
   });
 
+  it("names a missing content type instead of guessing", () => {
+    expect(formatPage(page({ contentType: "", body: "<!doctype html><p>body</p>" }))).toBe(
+      "unknown type, 26 bytes — binary content is not returned",
+    );
+  });
+
   it("reports a binary content type instead of returning its bytes", () => {
     expect(formatPage(page({ contentType: "image/png", body: "\u0089PNG" }))).toBe(
       "image/png, 5 bytes — binary content is not returned",
