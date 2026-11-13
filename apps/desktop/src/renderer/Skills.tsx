@@ -327,7 +327,7 @@ export function Skills({ workspaceId, request }: SkillsProps) {
     setConfirming(undefined);
   }
 
-  function requestRemove(skill: SkillView): void {
+  function requestRemove(skill: SkillRef): void {
     setConfirming({ key: `${skill.scope}|${skill.name}`, kind: "remove" });
   }
 
@@ -336,7 +336,7 @@ export function Skills({ workspaceId, request }: SkillsProps) {
    * would be a second round trip for state the kernel already computed, and a window in which the
    * removed row would still show.
    */
-  async function remove(skill: SkillView): Promise<void> {
+  async function remove(skill: SkillRef): Promise<void> {
     const key = `${skill.scope}|${skill.name}`;
     const ticket = generation.current;
     const workspace = workspaceId;
@@ -446,11 +446,36 @@ export function Skills({ workspaceId, request }: SkillsProps) {
         <section aria-label="Global skills">
           <h3>Global skills</h3>
           <ul className="skills-list">
-            {shadowed.map((name) => (
-              <li key={`shadowed-${name}`} className="skills-row skills-row-shadowed">
-                {`${name} (shadowed by a project skill)`}
-              </li>
-            ))}
+            {shadowed.map((name) => {
+              // A shadowed global cannot be read (the scan hides it) or toggled to any effect
+              // (`materialize` writes only the effective set), so removing it is its one action.
+              const key = `global|${name}`;
+              const confirmingRemove = confirming?.key === key && confirming.kind === "remove";
+              return (
+                <li key={`shadowed-${name}`} className="skills-row skills-row-shadowed">
+                  <strong>{name}</strong>
+                  <span className="skills-source">shadowed by a project skill</span>
+                  {confirmingRemove ? (
+                    <>
+                      <button type="button" disabled={busy} onClick={() => void remove({ scope: "global", name })}>
+                        {`Confirm remove ${name}`}
+                      </button>
+                      <button type="button" disabled={busy} onClick={cancelConfirmation}>
+                        {`Cancel remove ${name}`}
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => requestRemove({ scope: "global", name })}
+                    >
+                      {`Remove ${name}`}
+                    </button>
+                  )}
+                </li>
+              );
+            })}
             {globalSkills.map((skill) => {
               const key = `${skill.scope}|${skill.name}`;
               return (

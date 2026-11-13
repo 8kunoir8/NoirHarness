@@ -473,6 +473,39 @@ describe("Skills", () => {
     expect(within(global).queryByRole("button", { name: "Confirm remove kept" })).toBeNull();
   });
 
+  it("removes a shadowed global through the panel, which is its only available action", async () => {
+    const calls: Array<{ method: string; params: unknown }> = [];
+    let hidden = true;
+    const projectRow = {
+      scope: "project", name: "shared", description: "project copy", hash: "p".repeat(64), enabled: true,
+    };
+    const request = vi.fn(async (method: string, params: unknown): Promise<unknown> => {
+      calls.push({ method, params });
+      if (method === "skill.list") {
+        return { skills: [projectRow], shadowed: hidden ? ["shared"] : [], warnings: [] };
+      }
+      if (method === "skill.remove") {
+        hidden = false;
+        return { ok: true, skills: [projectRow], shadowed: [], warnings: [] };
+      }
+      throw new Error(method);
+    }) as unknown as RequestFn;
+
+    render(<Skills workspaceId="ws-1" request={request} />);
+    const global = screen.getByRole("region", { name: "Global skills" });
+    await userEvent.click(await within(global).findByRole("button", { name: "Remove shared" }));
+    await userEvent.click(within(global).getByRole("button", { name: "Confirm remove shared" }));
+
+    // The scope is the one the row belongs to, not the project copy the user is looking at.
+    expect(calls).toContainEqual({
+      method: "skill.remove",
+      params: { workspaceId: "ws-1", scope: "global", name: "shared" },
+    });
+    await waitFor(() => expect(within(global).getByText("No global skills")).toBeDefined());
+    // The project copy that was shadowing it is untouched: its row still renders.
+    expect(screen.getByRole("region", { name: "Project skills" }).textContent).toContain("project copy");
+  });
+
   it("drops a removed row's pin so a later install of the same name cannot inherit it", async () => {
     const calls: Array<{ method: string; params: unknown }> = [];
     let installed = true;
