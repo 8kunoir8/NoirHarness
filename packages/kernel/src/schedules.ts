@@ -9,7 +9,7 @@ import {
   type ScheduleUpdateParams,
   type ScheduleView,
 } from "@noir/protocol";
-import { anchoredOn, nextAfter } from "./cadence.js";
+import { anchoredOn, nextAfter, occurrencesBetween } from "./cadence.js";
 
 /** The columns a fire needs; narrower than `ScheduleView` because `running` is a query, not a field. */
 export interface ScheduleRecord {
@@ -126,12 +126,17 @@ export class ScheduleService {
   create(input: ScheduleCreateParams, now: number): ScheduleView {
     const workspace = this.db.prepare("SELECT id FROM workspaces WHERE id = ?").get(input.workspaceId);
     if (workspace === undefined) throw new RpcFault(ErrorCodes.notFound, "Workspace not found");
-    const agent = this.db.prepare("SELECT id FROM agents WHERE id = ?").get(input.agentId);
+    const agent = this.db.prepare("SELECT id, archived_at FROM agents WHERE id = ?").get(input.agentId) as
+      | { id: string; archived_at: number | null }
+      | undefined;
     if (agent === undefined) throw new RpcFault(ErrorCodes.notFound, "Agent not found");
+    // An archived agent can never start a session, so a schedule born against one would record
+    // `failed` on every occurrence for as long as it exists.
+    if (agent.archived_at !== null) throw new RpcFault(ErrorCodes.conflict, "Agent is archived");
     this.assertNameFree(input.workspaceId, input.name, null);
 
     const id = uuidv7();
-    const nextRunAt = nextAfter(anchoredOn(now, input.anchorMinutes), input.intervalMinutes, now);
+    const nextRunAt = nextAfter(anchoredOn(now, input.anchorMinutes), input.intervalMinutes, now, input.anchorMinutes);
     this.db
       .prepare(
         `INSERT INTO schedules (id, workspace_id, agent_id, name, prompt, interval_minutes, anchor_minutes, enabled, next_run_at, created_at)
@@ -164,7 +169,7 @@ export class ScheduleService {
     // Re-enabling or re-timing must not replay a wall of `missed` rows for the time it was off.
     const nextRunAt =
       cadenceChanged || (enabled && existing.enabled === 0)
-        ? nextAfter(anchoredOn(now, anchor), interval, now)
+        ? nextAfter(anchoredOn(now, anchor), interval, now, anchor)
         : existing.next_run_at;
 
     this.db
@@ -197,13 +202,18 @@ export class ScheduleService {
     return row !== undefined && ACTIVE_SESSION[row.session_status] === true;
   }
 
-  /** A manual run's due instant: after every recorded run, so the (scheduleId, due_at) cursor stays strict. */
+  /**
+   * A manual run's due instant: strictly after every recorded run, so the `(schedule_id, due_at)`
+   * cursor stays strict. It is nudged past `next_run_at` only when it would land exactly there, which
+   * is a collision with the tick's own next row and would make the cursor skip one of the two.
+   */
   nextDueAt(scheduleId: string, now: number): number {
-    const row = this.db
+    const row = this.row(scheduleId);
+    const newest = this.db
       .prepare("SELECT MAX(due_at) AS at FROM schedule_runs WHERE schedule_id = ?")
       .get(scheduleId) as { at: number | null } | undefined;
-    const newest = row?.at ?? null;
-    return newest === null ? now : Math.max(now, newest + 1);
+    const next = Math.max(now, (newest?.at ?? now) + 1);
+    return next === row.next_run_at ? next + 1 : next;
   }
 
   /**
@@ -230,6 +240,23 @@ export class ScheduleService {
         .run(input.nextRunAt, input.startedAt, input.scheduleId);
     })();
     return id;
+  }
+
+  /**
+   * Records a fire that threw before it could record itself and moves the schedule past `now`.
+   * Without the advance the same instant would be attempted forever.
+   */
+  deferAfterFailure(scheduleId: string, now: number, reason: string): void {
+    const row = this.row(scheduleId);
+    const { next } = occurrencesBetween(row.next_run_at, row.interval_minutes, now, row.anchor_minutes);
+    this.recordRun({
+      scheduleId,
+      status: "failed",
+      dueAt: row.next_run_at,
+      startedAt: now,
+      reason,
+      nextRunAt: next,
+    });
   }
 
   /** A manual run does not touch the cadence; only `last_run_at` learns about it. */

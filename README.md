@@ -366,7 +366,8 @@ is fetched at runtime.
 A schedule is a workspace, an agent, a prompt, and a cadence: every `N` minutes, or every `N` days
 at a wall-clock time. The **Automations** view lists them with their next run, edits one at a time,
 and shows the run history; `Run now` records a manual run and opens its chat. The kernel's scheduler
-holds one timer, armed for the earliest enabled `next_run_at`, and re-arms after every tick.
+holds one timer, armed for the earliest enabled `next_run_at`, and re-arms after every tick and after
+every create, edit, or delete, so a schedule added while the app is open fires without a restart.
 
 Each due schedule gets exactly one row in `schedule_runs` before anything else happens: the run is
 recorded and `next_run_at` advanced in a single transaction, so a crash in between cannot fire the

@@ -470,10 +470,21 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets } 
         [Methods.scheduleList]: async (params) => ({
           schedules: schedules.list(ScheduleListParams.parse(params ?? {}).workspaceId),
         }),
-        [Methods.scheduleCreate]: async (params) => schedules.create(ScheduleCreateParams.parse(params), Date.now()),
-        [Methods.scheduleUpdate]: async (params) => schedules.update(ScheduleUpdateParams.parse(params), Date.now()),
+        [Methods.scheduleCreate]: async (params) => {
+          const created = schedules.create(ScheduleCreateParams.parse(params), Date.now());
+          // A timer armed before this row existed is aimed past it, or absent when nothing was armed.
+          schedulerInstance.reschedule();
+          return created;
+        },
+        [Methods.scheduleUpdate]: async (params) => {
+          const updated = schedules.update(ScheduleUpdateParams.parse(params), Date.now());
+          // Resuming or re-timing can move the instant earlier than the armed one.
+          schedulerInstance.reschedule();
+          return updated;
+        },
         [Methods.scheduleDelete]: async (params) => {
           schedules.remove(ScheduleDeleteParams.parse(params).id);
+          schedulerInstance.reschedule();
           return { ok: true };
         },
         [Methods.scheduleRunNow]: async (params) => ({

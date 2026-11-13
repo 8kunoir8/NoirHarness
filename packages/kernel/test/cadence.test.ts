@@ -41,6 +41,16 @@ describe("occurrencesBetween", () => {
     });
   });
 
+  it("re-aligns to the schedule's phase, not the tick's clock, when the budget runs out", () => {
+    // A 15-minute cadence anchored on the hour, left closed for two years. The answer must still be
+    // a quarter hour, not "one interval after whenever the app happened to open".
+    const after = at(2027, 0, 1, 10, 7);
+    expect(occurrencesBetween(at(2025, 0, 1, 0, 0), 15, after, 0)).toEqual({
+      next: at(2027, 0, 1, 10, 15),
+      count: MAX_ADVANCE_STEPS,
+    });
+  });
+
   it("re-aligns instead of walking when the gap exceeds the step budget", () => {
     const after = at(2027, 0, 1, 0, 0);
     expect(occurrencesBetween(at(2026, 0, 1, 0, 0), 1, after)).toEqual({

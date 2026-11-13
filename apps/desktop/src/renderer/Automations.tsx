@@ -79,11 +79,12 @@ function draftPatch(draft: Draft): Record<string, unknown> {
   return patch;
 }
 
-function anchorFrom(clock: string): number {
+/** `HH:MM` -> minutes past midnight; undefined for the empty string a cleared time input yields. */
+function anchorFrom(clock: string): number | undefined {
   const [hours, minutes] = clock.split(":");
   const h = Number(hours);
   const m = Number(minutes);
-  if (!Number.isFinite(h) || !Number.isFinite(m)) return 0;
+  if (hours === undefined || minutes === undefined || !Number.isFinite(h) || !Number.isFinite(m)) return undefined;
   return h * 60 + m;
 }
 
@@ -101,6 +102,11 @@ export function Automations({ workspaceId, request, onOpenSession }: Automations
 
   // A workspace switch bumps this, so a listing that resolves late is dropped.
   const generation = useRef(0);
+  // The row the editor is showing, read by callbacks that outlive the render that started them.
+  const draftId = useRef<string | null>(null);
+  useEffect(() => {
+    draftId.current = draft.id;
+  }, [draft.id]);
 
   const load = useCallback(
     async (ticket: number, workspace: string): Promise<void> => {
@@ -141,10 +147,12 @@ export function Automations({ workspaceId, request, onOpenSession }: Automations
   async function loadRuns(scheduleId: string, ticket: number): Promise<void> {
     try {
       const result = ScheduleRunsResult.parse(await request<unknown>("schedule.runs", { id: scheduleId }));
-      if (generation.current !== ticket) return;
+      // Both guards matter: the workspace may have switched, and a slower answer for the previous
+      // row would otherwise render under the row now selected.
+      if (generation.current !== ticket || draftId.current !== scheduleId) return;
       setRuns(result.runs);
     } catch (loadError) {
-      if (generation.current === ticket) setError(errorMessage(loadError));
+      if (generation.current === ticket && draftId.current === scheduleId) setError(errorMessage(loadError));
     }
   }
 
@@ -169,12 +177,7 @@ export function Automations({ workspaceId, request, onOpenSession }: Automations
           enabled: draft.enabled,
         });
       } else {
-        const patch = draftPatch(draft);
-        if (Object.keys(patch).length === 0) {
-          setBusy(false);
-          return;
-        }
-        await request<unknown>("schedule.update", { id: draft.id, ...patch });
+        await request<unknown>("schedule.update", { id: draft.id, ...draftPatch(draft) });
       }
       if (generation.current !== ticket) return;
       setDraft(blankDraft(draft.agentId));
@@ -264,7 +267,10 @@ export function Automations({ workspaceId, request, onOpenSession }: Automations
 
   const cadenceKnown = CADENCES.some((option) => option.minutes === draft.intervalMinutes);
   const daily = draft.intervalMinutes % DAY_MINUTES === 0;
-  const canSave = draft.name.trim() !== "" && draft.prompt.trim() !== "" && draft.agentId !== "" && !busy;
+  // An existing schedule with no edits has nothing to send: `schedule.update` needs a field, and a
+  // button that silently does nothing reads as a broken button.
+  const dirty = draft.id === null || Object.keys(draftPatch(draft)).length > 0;
+  const canSave = dirty && draft.name.trim() !== "" && draft.prompt.trim() !== "" && draft.agentId !== "" && !busy;
 
   return (
     <section className="automations" aria-label="Automations">
@@ -377,9 +383,11 @@ export function Automations({ workspaceId, request, onOpenSession }: Automations
                 id="schedule-time"
                 type="time"
                 value={formatClock(draft.anchorMinutes)}
-                onChange={(event) =>
-                  setDraft((current) => ({ ...current, anchorMinutes: anchorFrom(event.target.value) }))
-                }
+                onChange={(event) => {
+                  const anchor = anchorFrom(event.target.value);
+                  // A cleared input is not midnight: an unparseable time leaves the anchor alone.
+                  if (anchor !== undefined) setDraft((current) => ({ ...current, anchorMinutes: anchor }));
+                }}
               />
             </>
           ) : null}

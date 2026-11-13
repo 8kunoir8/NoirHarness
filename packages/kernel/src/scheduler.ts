@@ -5,6 +5,9 @@ import type { ScheduleRecord, ScheduleService } from "./schedules.js";
 /** `setTimeout` stores its delay in 32 bits; a larger one is clamped by the runtime to 1 ms. */
 const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
 
+/** The shortest wait between two attempts, so a row stuck in the past cannot spin the loop. */
+const MIN_TIMER_DELAY_MS = 1_000;
+
 /**
  * A tick that lands this far past the due instant is on time. Event-loop latency and a slow disk
  * both fit here; without the slack every fire would record itself as missed.
@@ -44,16 +47,42 @@ export class Scheduler {
     this.disarm();
   }
 
+  /**
+   * Re-aims the timer at whatever is earliest now. A schedule written or resumed through RPC is not
+   * seen by a timer armed before it existed, and without this the fire would wait for a restart.
+   */
+  reschedule(): void {
+    this.arm();
+  }
+
   /** Classifies and performs every due schedule. Synchronous: a turn is never awaited. */
   tick(): void {
     if (this.stopped || this.ticking) return;
     this.ticking = true;
     try {
       const now = (this.opts.now ?? Date.now)();
-      for (const schedule of this.opts.schedules.due(now)) this.fire(schedule, now);
+      for (const schedule of this.opts.schedules.due(now)) {
+        try {
+          this.fire(schedule, now);
+        } catch (error) {
+          // One bad row must not take the process down or starve the schedules behind it. The
+          // record that failed left `next_run_at` in the past, so the arm floor keeps this from
+          // becoming a 0 ms loop; the row is retried once per floor.
+          this.failed(schedule, now, error);
+        }
+      }
     } finally {
       this.ticking = false;
       this.arm();
+    }
+  }
+
+  /** Best-effort: moving the broken row past `now` needs a write that may itself be what failed. */
+  private failed(schedule: ScheduleRecord, now: number, error: unknown): void {
+    try {
+      this.opts.schedules.deferAfterFailure(schedule.id, now, messageOf(error));
+    } catch {
+      // Nothing left to do: the arm floor throttles the retry.
     }
   }
 
@@ -70,7 +99,7 @@ export class Scheduler {
       startedAt: now,
     });
     const sessionId = this.openSession(schedule, runId);
-    if (sessionId !== undefined) void this.opts.prompt(sessionId, runId, schedule.prompt).catch(() => undefined);
+    if (sessionId !== undefined) this.dispatch(sessionId, runId, schedule.prompt);
     return this.opts.schedules.runView(runId);
   }
 
@@ -84,7 +113,12 @@ export class Scheduler {
       : late > slack
         ? "missed"
         : "fired";
-    const { next, count } = occurrencesBetween(schedule.nextRunAt, schedule.intervalMinutes, now);
+    const { next, count } = occurrencesBetween(
+      schedule.nextRunAt,
+      schedule.intervalMinutes,
+      now,
+      schedule.anchorMinutes,
+    );
     const runId = this.opts.schedules.recordRun({
       scheduleId: schedule.id,
       status,
@@ -96,9 +130,18 @@ export class Scheduler {
     if (status !== "fired") return;
     const sessionId = this.openSession(schedule, runId);
     if (sessionId === undefined) return;
-    // Deliberately detached: a turn can run for the full engine timeout, and the timer must be
-    // free to arm the next schedule meanwhile.
-    void this.opts.prompt(sessionId, runId, schedule.prompt).catch(() => undefined);
+    this.dispatch(sessionId, runId, schedule.prompt);
+  }
+
+  /**
+   * Deliberately detached: a turn can run for the full engine timeout, and the timer must be free to
+   * arm the next schedule meanwhile. A rejection before a turn exists leaves a session that will
+   * never start, so the run records why instead of reading "fired" with nothing to show.
+   */
+  private dispatch(sessionId: string, runId: string, text: string): void {
+    void this.opts.prompt(sessionId, runId, text).catch((error: unknown) => {
+      this.opts.schedules.failRun(runId, `The prompt never reached the agent: ${messageOf(error)}`);
+    });
   }
 
   /** Creates the session and links it to the run; a failure marks the run and returns undefined. */
@@ -125,10 +168,12 @@ export class Scheduler {
     const next = this.opts.schedules.earliestEnabled();
     if (next === undefined) return;
     const due = next - (this.opts.now ?? Date.now)();
-    // Node stores a delay in 32 bits: anything larger silently becomes 1 ms, so a schedule more than
-    // ~24.8 days out would wake immediately, find nothing due, and re-arm to 1 ms in a tight loop.
-    // Sleeping the maximum and re-arming is exact, because `tick()` re-reads the clock.
-    const delay = Math.min(Math.max(0, due), MAX_TIMER_DELAY_MS);
+    // A row stuck in the past — a fire that threw before recording itself — would otherwise re-arm
+    // at 0 ms and spin. A second between attempts is invisible to a human and cheap for the loop.
+    // Node also stores the delay in 32 bits: anything larger silently becomes 1 ms, so a schedule
+    // over ~24.8 days out would wake at once and spin the same way. Sleeping the maximum and
+    // re-arming is exact, because `tick()` re-reads the clock.
+    const delay = Math.min(Math.max(due, MIN_TIMER_DELAY_MS), MAX_TIMER_DELAY_MS);
     const timer = (this.opts.setTimer ?? setTimeout)(() => this.tick(), delay);
     // Nothing to wake for must not keep the process alive; a test double need not implement it.
     timer.unref?.();

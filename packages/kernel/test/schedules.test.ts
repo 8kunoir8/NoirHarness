@@ -68,6 +68,12 @@ describe("ScheduleService create", () => {
     schedule.create(createInput(workspaceId), T0);
     expectFault(() => schedule.create(createInput(workspaceId), T0), ErrorCodes.conflict, /already exists/);
   });
+
+  it("rejects an archived agent", () => {
+    const { db, schedule, workspaceId } = setup();
+    db.prepare("UPDATE agents SET archived_at = ? WHERE id = ?").run(T0, "ag-1");
+    expectFault(() => schedule.create(createInput(workspaceId), T0), ErrorCodes.conflict, /archived/);
+  });
 });
 
 describe("ScheduleService update", () => {
@@ -189,6 +195,43 @@ describe("ScheduleService runs", () => {
     expect(second.runs.map((row) => row.dueAt)).toEqual([T0]);
     expect(second.nextBefore).toBeNull();
   });
+
+  it("keeps a manual run out of the instant the cadence is due", () => {
+    const { schedule, workspaceId } = setup();
+    const created = schedule.create(createInput(workspaceId), T0);
+    // Run now a moment before the cadence is due: the manual row lands on the exact instant the
+    // tick is about to record, and the (scheduleId, dueAt) cursor then skips one of the two.
+    schedule.recordRun({
+      scheduleId: created.id,
+      status: "skipped",
+      dueAt: created.nextRunAt - 60_000,
+      startedAt: created.nextRunAt - 60_000,
+      reason: "busy",
+      nextRunAt: created.nextRunAt,
+    });
+    const manual = schedule.nextDueAt(created.id, created.nextRunAt);
+    schedule.recordManualRun({ scheduleId: created.id, dueAt: manual, startedAt: created.nextRunAt });
+    schedule.recordRun({
+      scheduleId: created.id,
+      status: "fired",
+      dueAt: created.nextRunAt,
+      startedAt: created.nextRunAt,
+      reason: null,
+      nextRunAt: created.nextRunAt + 86_400_000,
+    });
+
+    const seen: number[] = [];
+    let before: number | undefined;
+    for (let page = 0; page < 5; page += 1) {
+      const result = schedule.runs(created.id, 1, before);
+      seen.push(...result.runs.map((row) => row.dueAt));
+      if (result.nextBefore === null) break;
+      before = result.nextBefore;
+    }
+    expect(seen).toHaveLength(3);
+    expect(new Set(seen).size).toBe(3);
+  });
+
 
   it("advances the schedule and stamps lastRunAt inside the fire transaction", () => {
     const { schedule, workspaceId } = setup();

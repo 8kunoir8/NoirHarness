@@ -190,6 +190,70 @@ describe("Scheduler.tick", () => {
     expect(f.schedules.view(created.id).enabled).toBe(true);
   });
 
+  it("records a failed run and advances when the overlap probe throws", () => {
+    const f = setup();
+    const created = f.create();
+    // The probe is the first thing a fire asks; a broken read must still produce a record.
+    const flaky = Object.create(f.schedules) as ScheduleService;
+    flaky.isRunning = () => {
+      throw new Error("db boom");
+    };
+    const scheduler = new Scheduler({
+      schedules: flaky,
+      now: f.now,
+      createSession: f.createSession,
+      prompt: f.prompt,
+      setTimer: f.setTimer,
+      clearTimer: f.clearTimer,
+    });
+    f.at(created.nextRunAt);
+    expect(() => scheduler.tick()).not.toThrow();
+    const { runs } = f.schedules.runs(created.id, 20, undefined);
+    expect(runs.map((run) => run.status)).toEqual(["failed"]);
+    expect(runs[0]?.reason).toMatch(/db boom/);
+    expect(f.schedules.view(created.id).nextRunAt).toBeGreaterThan(f.now());
+  });
+
+  it("keeps firing the other schedules when one can neither record nor advance", () => {
+    const f = setup();
+    const first = f.create();
+    const workspaceId = f.schedules.view(first.id).workspaceId;
+    const second = f.schedules.create(
+      {
+        workspaceId,
+        agentId: "ag-1",
+        name: "Other",
+        prompt: "p",
+        intervalMinutes: first.intervalMinutes,
+        anchorMinutes: first.anchorMinutes,
+        enabled: true,
+      },
+      f.now(),
+    );
+    expect(second.nextRunAt).toBe(first.nextRunAt);
+
+    const flaky = Object.create(f.schedules) as ScheduleService;
+    flaky.recordRun = (input) => {
+      if (input.scheduleId === first.id) throw new Error("SQLITE_FULL");
+      return f.schedules.recordRun(input);
+    };
+    const scheduler = new Scheduler({
+      schedules: flaky,
+      now: f.now,
+      createSession: f.createSession,
+      prompt: f.prompt,
+      setTimer: f.setTimer,
+      clearTimer: f.clearTimer,
+    });
+    f.at(first.nextRunAt);
+    expect(() => scheduler.tick()).not.toThrow();
+    expect(f.schedules.runs(second.id, 20, undefined).runs.map((run) => run.status)).toEqual(["fired"]);
+    // The broken row is still in the past: the re-arm must be throttled, not 0 ms.
+    const armed = [...f.timers.values()].filter((timer) => !timer.cleared);
+    expect(armed).toHaveLength(1);
+    expect(armed[0]?.ms).toBeGreaterThanOrEqual(1_000);
+  });
+
   it("does not wait for the turn before arming the next timer", () => {
     const f = setup();
     const created = f.create();
@@ -209,6 +273,40 @@ describe("Scheduler.tick", () => {
     expect([...f.timers.values()].filter((timer) => !timer.cleared)).toHaveLength(1);
     expect(f.schedules.view(created.id).nextRunAt).toBeGreaterThan(f.now());
     slow.stop();
+  });
+
+  it("records why a prompt that never reached the agent failed", async () => {
+    const f = setup();
+    const created = f.create();
+    const refusing = new Scheduler({
+      schedules: f.schedules,
+      now: f.now,
+      createSession: f.createSession,
+      prompt: () => Promise.reject(new Error("Session is closed")),
+      setTimer: f.setTimer,
+      clearTimer: f.clearTimer,
+    });
+    f.at(created.nextRunAt);
+    refusing.tick();
+    await Promise.resolve();
+    // The dispatch is detached, so the record settles a microtask after the tick.
+    await Promise.resolve();
+    const { runs } = f.schedules.runs(created.id, 20, undefined);
+    expect(runs[0]?.status).toBe("failed");
+    expect(runs[0]?.reason).toMatch(/never reached the agent: Session is closed/);
+  });
+
+  it("arms a schedule created after the scheduler started", () => {
+    const f = setup();
+    // Nothing enabled yet: the timer has nothing to aim at, so none exists.
+    f.scheduler.start();
+    expect([...f.timers.values()].filter((timer) => !timer.cleared)).toEqual([]);
+
+    const created = f.create();
+    f.scheduler.reschedule();
+    const armed = [...f.timers.values()].filter((timer) => !timer.cleared);
+    expect(armed).toHaveLength(1);
+    expect(armed[0]?.ms).toBe(created.nextRunAt - f.now());
   });
 
   it("leaves no armed timer after stop", () => {

@@ -40,11 +40,16 @@ export function anchoredOn(day: number, anchorMinutes: number): number {
 /**
  * Walks from `from` until strictly past `after`, counting the occurrences it passed. `count` is the
  * number of runs that came due and did not happen; `next` is the first one still in the future.
+ *
+ * Past the step budget the walk stops, and `anchorMinutes` decides where it lands: the answer is the
+ * first anchored occurrence after `after`, so a 15-minute schedule left closed for a year comes back
+ * on the quarter hour instead of one interval after whenever the app was opened.
  */
 export function occurrencesBetween(
   from: number,
   intervalMinutes: number,
   after: number,
+  anchorMinutes = 0,
 ): { next: number; count: number } {
   if (from > after) return { next: from, count: 0 };
   let cursor = from;
@@ -52,10 +57,23 @@ export function occurrencesBetween(
     cursor = advance(cursor, intervalMinutes);
     if (cursor > after) return { next: cursor, count: count + 1 };
   }
-  return { next: advance(after, intervalMinutes), count: MAX_ADVANCE_STEPS };
+  return { next: realignAfter(after, intervalMinutes, anchorMinutes), count: MAX_ADVANCE_STEPS };
+}
+
+/**
+ * The first anchored occurrence after `after`. `anchorAt` is on the same local day, so the walk
+ * needs at most one day's worth of intervals — a bound independent of the interval, unlike the one
+ * that was just exhausted.
+ */
+function realignAfter(after: number, intervalMinutes: number, anchorMinutes: number): number {
+  let cursor = anchoredOn(after, anchorMinutes);
+  for (let steps = 0; cursor <= after && steps <= DAY_MINUTES + 1; steps += 1) {
+    cursor = advance(cursor, intervalMinutes);
+  }
+  return cursor;
 }
 
 /** The first occurrence strictly after `after`. */
-export function nextAfter(from: number, intervalMinutes: number, after: number): number {
-  return occurrencesBetween(from, intervalMinutes, after).next;
+export function nextAfter(from: number, intervalMinutes: number, after: number, anchorMinutes = 0): number {
+  return occurrencesBetween(from, intervalMinutes, after, anchorMinutes).next;
 }

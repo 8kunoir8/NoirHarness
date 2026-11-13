@@ -185,13 +185,11 @@ export function SessionList({
                     >
                       <span className={`dot dot-${sessionStatusTone(session)}`} aria-hidden="true" />
                       <span className="session-row-main">
-                        <span className="session-row-title">
-                          {label}
-                          {session.scheduleId === null ? null : <span className="session-tag">scheduled</span>}
-                        </span>
+                        <span className="session-row-title">{label}</span>
                         <span className="session-row-meta">
                           {sessionStatusLabel(session)}
                           {meta === undefined ? "" : ` · ${meta}`}
+                          {session.scheduleId === null ? null : <span className="session-tag">scheduled</span>}
                         </span>
                       </span>
                       <time dateTime={new Date(session.lastEventAt).toISOString()}>{timeLabel(session.lastEventAt)}</time>
