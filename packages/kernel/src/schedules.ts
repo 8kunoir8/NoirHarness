@@ -264,20 +264,22 @@ export class ScheduleService {
     before: number | undefined,
   ): { runs: ScheduleRunView[]; nextBefore: number | null } {
     this.row(scheduleId);
+    // One row past the page settles whether another page exists; a full page alone cannot.
+    const probe = limit + 1;
     const rows = (
       before === undefined
         ? this.db
             .prepare(`SELECT ${RUN_COLUMNS} FROM schedule_runs WHERE schedule_id = ? ORDER BY due_at DESC LIMIT ?`)
-            .all(scheduleId, limit)
+            .all(scheduleId, probe)
         : this.db
             .prepare(
               `SELECT ${RUN_COLUMNS} FROM schedule_runs WHERE schedule_id = ? AND due_at < ? ORDER BY due_at DESC LIMIT ?`,
             )
-            .all(scheduleId, before, limit)
+            .all(scheduleId, before, probe)
     ) as RunRow[];
-    // A full page means there may be more; a short one is the last by definition.
-    const nextBefore = rows.length === limit ? (rows.at(-1)?.due_at ?? null) : null;
-    return { runs: rows.map(toRunView), nextBefore };
+    const page = rows.slice(0, limit);
+    const nextBefore = rows.length > limit ? (page.at(-1)?.due_at ?? null) : null;
+    return { runs: page.map(toRunView), nextBefore };
   }
 
   private assertNameFree(workspaceId: string, name: string, ignoreId: string | null): void {

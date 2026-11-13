@@ -34,6 +34,12 @@ import {
   ProviderCreateParams,
   ProviderDeleteParams,
   RpcFault,
+  ScheduleCreateParams,
+  ScheduleDeleteParams,
+  ScheduleListParams,
+  ScheduleRunNowParams,
+  ScheduleRunsParams,
+  ScheduleUpdateParams,
   SessionCloseParams,
   SessionCreateParams,
   SessionCancelQueuedParams,
@@ -70,6 +76,8 @@ import { parseRedactionPatterns, Redactor } from "./redact.js";
 import { startRpcServer, type RpcServer } from "./rpcServer.js";
 import { SkillService } from "./skills.js";
 import { SkillSourceService } from "./skillSources.js";
+import { ScheduleService } from "./schedules.js";
+import { Scheduler } from "./scheduler.js";
 import {
   lockFilePath,
   isProcessAlive,
@@ -215,6 +223,7 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets } 
     let db: Database.Database | undefined;
     let server: RpcServer | undefined;
     let engines: EngineManager | undefined;
+    let scheduler: Scheduler | undefined;
     try {
       const database = openDb(join(dir, "noir.db"));
       db = database;
@@ -261,6 +270,16 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets } 
         dataDir: dir,
       });
       engines = engineManager;
+      const schedules = new ScheduleService(db);
+      const schedulerInstance = new Scheduler({
+        schedules,
+        // A scheduled run is an ordinary session; `scheduleId` is the only tag that marks it.
+        createSession: (schedule) =>
+          sessions.create(schedule.workspaceId, { agentId: schedule.agentId, scheduleId: schedule.id }).id,
+        prompt: (sessionId, runId, text) =>
+          engineManager.prompt({ sessionId, requestId: runId, content: [{ type: "text", text }] }),
+      });
+      scheduler = schedulerInstance;
       const sync = () => syncProfile({ providers, models, dataDir: dir });
       const rollbackProfileRow = async (remove: () => void, cause: unknown): Promise<never> => {
         remove();
@@ -448,6 +467,22 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets } 
           await sync();
           return { ok: true };
         },
+        [Methods.scheduleList]: async (params) => ({
+          schedules: schedules.list(ScheduleListParams.parse(params ?? {}).workspaceId),
+        }),
+        [Methods.scheduleCreate]: async (params) => schedules.create(ScheduleCreateParams.parse(params), Date.now()),
+        [Methods.scheduleUpdate]: async (params) => schedules.update(ScheduleUpdateParams.parse(params), Date.now()),
+        [Methods.scheduleDelete]: async (params) => {
+          schedules.remove(ScheduleDeleteParams.parse(params).id);
+          return { ok: true };
+        },
+        [Methods.scheduleRunNow]: async (params) => ({
+          run: schedulerInstance.runNow(ScheduleRunNowParams.parse(params).id),
+        }),
+        [Methods.scheduleRuns]: async (params) => {
+          const { id, limit, before } = ScheduleRunsParams.parse(params);
+          return schedules.runs(id, limit, before);
+        },
         [Methods.sessionSubscribe]: async (params) => {
           const { sessionId, sinceSeq } = SessionSubscribeParams.parse(params);
           engineManager.reconcileSession(sessionId);
@@ -460,6 +495,8 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets } 
       server = started;
       broadcast = (event) => started.broadcast(event);
       engineManager.reconcileAll();
+      // After the socket is listening, so a fire can broadcast; before the first tick's catch-up.
+      scheduler.start();
       writeRuntimeFile(file, { pid: process.pid, port: started.port, token });
     } catch (error) {
       if (engines) {
@@ -497,6 +534,7 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets } 
         if (closed) return;
         closed = true;
         try {
+          scheduler.stop();
           await runningEngines.shutdown();
         } finally {
           try {
