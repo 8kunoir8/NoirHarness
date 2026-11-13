@@ -122,10 +122,16 @@ describe("skill source schemas", () => {
     expect(
       SkillView.parse({
         ...base,
-        source: { kind: "git", url: "https://e.test/r.git", ref: "main", commit: "abc", hash: "h", updateAvailable: false },
+        source: { kind: "git", url: "https://e.test/r.git", ref: "main", commit: "abc", hash: "h" },
       }).source?.commit,
     ).toBe("abc");
-    expect(() => SkillView.parse({ ...base, source: { kind: "http", url: "x", ref: null, commit: null, hash: "h", updateAvailable: false } })).toThrow();
+    expect(() => SkillView.parse({ ...base, source: { kind: "http", url: "x", ref: null, commit: null, hash: "h" } })).toThrow();
+    // A listing that carried a badge would be claiming a network verdict `list` never makes.
+    const legacy = SkillView.parse({
+      ...base,
+      source: { kind: "git", url: "https://e.test/r.git", ref: null, commit: null, hash: "h", updateAvailable: true },
+    });
+    expect(legacy.source).not.toHaveProperty("updateAvailable");
   });
 
   it("requires expectHash for an update", () => {
@@ -133,10 +139,13 @@ describe("skill source schemas", () => {
     expect(SkillUpdateParams.safeParse({ scope: "global", name: "s" }).success).toBe(false);
   });
 
-  it("returns the remaining listing from a removal", () => {
+  it("returns the whole listing from a removal", () => {
     const row = { scope: "global" as const, name: "s", description: "", hash: "h", enabled: true, source: null };
-    expect(SkillRemoveResult.parse({ ok: true, skills: [row] }).skills).toHaveLength(1);
-    expect(SkillRemoveResult.parse({ ok: true, skills: [] }).skills).toEqual([]);
-    expect(() => SkillRemoveResult.parse({ ok: true })).toThrow();
+    const listing = { shadowed: ["s"], warnings: [] };
+    expect(SkillRemoveResult.parse({ ok: true, skills: [row], ...listing }).shadowed).toEqual(["s"]);
+    expect(SkillRemoveResult.parse({ ok: true, skills: [], ...listing }).skills).toEqual([]);
+    // `shadowed` is what makes the panel's rendering right, so it is required, not defaulted.
+    expect(() => SkillRemoveResult.parse({ ok: true, skills: [] })).toThrow();
+    expect(() => SkillRemoveResult.parse({ skills: [], ...listing })).toThrow();
   });
 });

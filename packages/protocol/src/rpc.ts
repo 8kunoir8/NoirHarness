@@ -320,14 +320,17 @@ export type SkillScopeSchema = z.infer<typeof SkillScopeSchema>;
 export const SkillSourceKindSchema = z.enum(["git", "local"]);
 export type SkillSourceKindSchema = z.infer<typeof SkillSourceKindSchema>;
 
-/** Where an installed skill came from. `null` on a skill placed on disk by hand. */
+/**
+ * Where an installed skill came from. `null` on a skill placed on disk by hand. There is no
+ * "update available" field: a listing must not touch the network, so the verdict belongs to the
+ * `skill.checkUpdate` response and to whoever holds it, never to the row.
+ */
 export const SkillSourceView = z.object({
   kind: SkillSourceKindSchema,
   url: z.string(),
   ref: z.string().nullable(),
   commit: z.string().nullable(),
   hash: z.string(),
-  updateAvailable: z.boolean(),
 });
 export type SkillSourceView = z.infer<typeof SkillSourceView>;
 
@@ -412,8 +415,12 @@ export const SkillRemoveParams = z.object({
 });
 export type SkillRemoveParams = z.infer<typeof SkillRemoveParams>;
 
-/** Removal answers with the workspace's remaining listing so the UI needs no follow-up call. */
-export const SkillRemoveResult = z.object({ ok: z.literal(true), skills: z.array(SkillView) });
+/**
+ * Removal answers with the workspace's whole listing — the same shape `skill.list` returns, plus
+ * `ok` — so the panel can render the result without a second round trip. The skill list alone
+ * would leave a stale `shadowed`: removing the project copy of a name unshadows the global one.
+ */
+export const SkillRemoveResult = SkillListResult.extend({ ok: z.literal(true) });
 export type SkillRemoveResult = z.infer<typeof SkillRemoveResult>;
 /** A configured MCP server. `args` and `env` are decoded from the row's JSON columns. */
 export const McpServerView = z.object({
