@@ -186,8 +186,8 @@ describe("SessionService model selection", () => {
     expect(created.workspaceId).toBe(workspaceId);
 
     expect(sessions.view(created.id).modelId).toBe(model.id);
-    expect(sessions.list()).toHaveLength(1);
-    expect(sessions.list()[0]!.modelId).toBe(model.id);
+    expect(sessions.all()).toHaveLength(1);
+    expect(sessions.all()[0]!.modelId).toBe(model.id);
   });
 
   it("creates a session without a model", () => {
@@ -195,7 +195,7 @@ describe("SessionService model selection", () => {
     const created = sessions.create(workspace(projects, workspaces));
     expect(created.modelId).toBeNull();
     expect(sessions.view(created.id).modelId).toBeNull();
-    expect(sessions.list()[0]!.modelId).toBeNull();
+    expect(sessions.all()[0]!.modelId).toBeNull();
   });
 
   it("rejects a disabled model", () => {

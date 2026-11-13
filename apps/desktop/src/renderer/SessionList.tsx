@@ -113,6 +113,11 @@ export interface SessionListProps {
   onSelect: (session: SessionView) => void;
   onNewChat: () => void;
   canCreate: boolean;
+  /** True while the kernel has another page behind this one. */
+  hasMore?: boolean;
+  /** How many sessions match the filter in the kernel, including the pages not loaded. */
+  total?: number;
+  onLoadMore?: () => void;
   now?: number;
 }
 
@@ -128,6 +133,9 @@ export function SessionList({
   onSelect,
   onNewChat,
   canCreate,
+  hasMore = false,
+  total,
+  onLoadMore,
   now = Date.now(),
 }: SessionListProps) {
   const needle = query.trim().toLowerCase();
@@ -201,6 +209,11 @@ export function SessionList({
           </section>
         ))
       )}
+      {hasMore && onLoadMore !== undefined ? (
+        <button type="button" className="load-more" onClick={onLoadMore}>
+          Load older chats{total === undefined ? "" : ` (${String(total - sessions.length)} more)`}
+        </button>
+      ) : null}
     </div>
   );
 }

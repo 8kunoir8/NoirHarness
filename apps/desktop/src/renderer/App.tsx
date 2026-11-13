@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ModelListResult,
   ScheduleListResult,
+  SessionListResult,
   SessionView,
   SystemHealthResult,
   type AgentEvent,
@@ -26,6 +27,7 @@ import { ArtifactPreview } from "./preview/ArtifactPreview.js";
 import { previewKind } from "./preview/kind.js";
 import { QuickOpen } from "./QuickOpen.js";
 import { SessionList, type ReadState, type SessionFilter } from "./SessionList.js";
+import { mergeSessions, sessionListQuery } from "./sessionQuery.js";
 import { Setup } from "./Setup.js";
 import { Shell } from "./Shell.js";
 import { Skills } from "./Skills.js";
@@ -126,6 +128,12 @@ export function App() {
   const [read, setRead] = useState<ReadState>(() => loadJson<ReadState>(READ_KEY, {}));
   const [filter, setFilter] = useState<SessionFilter>("all");
   const [query, setQuery] = useState("");
+  const [hasMore, setHasMore] = useState(false);
+  const [sessionTotal, setSessionTotal] = useState(0);
+  const nextCursor = useRef<string | null>(null);
+  /** The state the request is built from; a ref so a keystroke does not rebuild every callback. */
+  const listQuery = useRef({ filter, query, workspaceId: "" });
+  const sessionsRef = useRef(sessions);
   const [error, setError] = useState<string | undefined>(undefined);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -166,6 +174,15 @@ export function App() {
   const workspaceRef = useRef(workspaceId);
   // Pruning must wait for the first real session list: before it arrives every chat tab looks dead.
   const sessionsLoaded = useRef(false);
+  const appliedQuery = useRef<string | null>(null);
+
+  useEffect(() => {
+    listQuery.current = { filter, query, workspaceId };
+  }, [filter, query, workspaceId]);
+
+  useEffect(() => {
+    sessionsRef.current = sessions;
+  }, [sessions]);
 
   useEffect(() => {
     tabsRef.current = tabState.tabs;
@@ -194,10 +211,11 @@ export function App() {
   // A session that was removed (or a restored tab for a session that no longer exists) would render
   // an "Untitled chat" tab whose main pane can never fill in.
   useEffect(() => {
-    if (!sessionsLoaded.current) return;
+    // Only a complete, unfiltered list can prove a tab's session is gone; a page cannot.
+    if (!sessionsLoaded.current || hasMore || filter !== "all" || query.trim() !== "") return;
     const ids = new Set(sessions.map((session) => session.id));
     setTabState((current) => pruneChatTabs(current, ids));
-  }, [sessions]);
+  }, [sessions, hasMore, filter, query]);
 
   // Never leave the subscription on a chat tab that pruning just removed.
   useEffect(() => {
@@ -257,11 +275,23 @@ export function App() {
     };
   }, [request, workspaceId]);
 
-  const loadSessions = useCallback(async (): Promise<SessionView[]> => {
-    const result = await request<{ sessions: SessionView[] }>("session.list");
+  /**
+   * The list is a page, not a table read: the window asks for what it renders, and the kernel
+   * answers the filter. `unread` stays in the window because only it knows what each tab has shown.
+   */
+  const loadSessions = useCallback(async (append = false): Promise<SessionView[]> => {
+    const cursor = append ? (nextCursor.current ?? undefined) : undefined;
+    const result = await request<SessionListResult>(
+      "session.list",
+      sessionListQuery({ filter: listQuery.current.filter, query: listQuery.current.query, workspaceId: listQuery.current.workspaceId, ...(cursor === undefined ? {} : { cursor }) }),
+    );
     sessionsLoaded.current = true;
-    setSessions(result.sessions);
-    return result.sessions;
+    nextCursor.current = result.nextCursor;
+    setHasMore(result.nextCursor !== null);
+    setSessionTotal(result.total);
+    const next = append ? mergeSessions(sessionsRef.current, result.sessions) : result.sessions;
+    setSessions(next);
+    return next;
   }, []);
 
   const loadAll = useCallback(async (): Promise<void> => {
@@ -274,12 +304,15 @@ export function App() {
         request<{ projects: ProjectView[] }>("project.list"),
         request<{ workspaces: WorkspaceView[] }>("workspace.list"),
         request<ModelListResult>("model.list"),
-        request<{ sessions: SessionView[] }>("session.list"),
+        request<SessionListResult>("session.list", sessionListQuery({ filter: "all", query: "", workspaceId: "" })),
       ]);
       setProjects(projectResult.projects);
       setWorkspaces(workspaceResult.workspaces);
       setModels(modelResult.models);
       sessionsLoaded.current = true;
+      nextCursor.current = sessionList.nextCursor;
+      setHasMore(sessionList.nextCursor !== null);
+      setSessionTotal(sessionList.total);
       setSessions(sessionList.sessions);
       setNewChatModelId((current) => (current !== "" ? current : (modelResult.models[0]?.id ?? "")));
       setWorkspaceId((current) => current !== "" ? current : (workspaceResult.workspaces[0]?.id ?? ""));
@@ -298,6 +331,20 @@ export function App() {
   useEffect(() => {
     void loadAll();
   }, [loadAll]);
+
+  // Typing narrows the kernel's answer, so it is not free: one request per pause, not per key.
+  useEffect(() => {
+    const key = JSON.stringify({ filter, query, workspaceId });
+    if (appliedQuery.current === key) return;
+    const first = appliedQuery.current === null;
+    appliedQuery.current = key;
+    // `loadAll` already asked for the first list; asking again would race it.
+    if (first) return;
+    const timer = setTimeout(() => {
+      void loadSessions().catch(() => undefined);
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [filter, query, workspaceId, loadSessions]);
 
   useEffect(() => {
     const listener = (event: AgentEvent): void => {
@@ -986,6 +1033,9 @@ export function App() {
                   onSelect={openSession}
                   onNewChat={() => void newChat()}
                   canCreate={workspaceId !== "" && models.length > 0}
+                  hasMore={hasMore}
+                  total={sessionTotal}
+                  onLoadMore={() => void loadSessions(true).catch(() => undefined)}
                 />
               </section>
             )}

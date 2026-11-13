@@ -250,6 +250,16 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; colo
 .session-list-head input { flex: 1; }
 .session-list-head button { white-space: nowrap; }
 
+.load-more {
+  margin-top: 4px;
+  padding: 6px 8px;
+  font-size: 0.78rem;
+  background: transparent;
+  color: var(--muted);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+}
+
 .filter-chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .filter-chips button {
   padding: 2px 8px;

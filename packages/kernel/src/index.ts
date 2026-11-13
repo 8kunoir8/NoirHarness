@@ -42,6 +42,7 @@ import {
   ScheduleUpdateParams,
   SessionCloseParams,
   SessionForkParams,
+  SessionListParams,
   SessionCreateParams,
   SessionCancelQueuedParams,
   SessionInterruptParams,
@@ -411,7 +412,7 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; o
           const row = sessions.create(workspaceId, { modelId, agentId });
           return sessions.view(row.id);
         },
-        [Methods.sessionList]: async () => ({ sessions: sessions.list() }),
+        [Methods.sessionList]: async (params) => sessions.list(SessionListParams.parse(params ?? {})),
         [Methods.agentList]: async (params) => ({
           agents: agents.list(AgentListParams.parse(params ?? {}).includeArchived ?? false),
         }),
@@ -553,7 +554,7 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; o
         hub,
         buildId,
         requestShutdown: (force) => {
-          const live = liveCount(sessions.list());
+          const live = liveCount(sessions.all());
           return { stop: force || live === 0, live };
         },
         onStopped: () => {

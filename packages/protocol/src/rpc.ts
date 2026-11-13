@@ -113,6 +113,21 @@ export const ModelDeleteParams = z.object({ id: z.string().min(1) });
 export const ModelSetEngineParams = z.object({ id: z.string().min(1), engine: EngineKind });
 export type ModelSetEngineParams = z.infer<typeof ModelSetEngineParams>;
 
+/** The three filters the kernel can answer itself; `unread` needs the window's read marks. */
+export const SessionFilter = z.enum(["all", "needs_you", "working", "done"]);
+export type SessionFilter = z.infer<typeof SessionFilter>;
+
+export const SessionListParams = z.object({
+  limit: z.number().int().min(1).max(200).optional(),
+  /** Opaque: the `createdAt:id` of the last row of the previous page. */
+  cursor: z.string().regex(/^\d+:/).optional(),
+  filter: SessionFilter.optional(),
+  /** Matches the title, which is what the search box promised; the transcript stays out of SQL. */
+  search: z.string().trim().max(200).optional(),
+  /** The window lists one workspace; filtering it here keeps a page from being mostly other ones. */
+  workspaceId: z.string().min(1).optional(),
+});
+export type SessionListParams = z.infer<typeof SessionListParams>;
 export const SessionView = z.object({
   id: z.string(), workspaceId: z.string(), agentId: z.string(), engine: z.string(),
   title: z.string(), status: SessionStatus, modelId: z.string().nullable(),
@@ -127,6 +142,14 @@ export const SessionView = z.object({
   pendingApproval: z.boolean(),
 });
 export type SessionView = z.infer<typeof SessionView>;
+
+export const SessionListResult = z.object({
+  sessions: z.array(SessionView),
+  /** How many sessions match the filter and search, not how many fit on this page. */
+  total: z.number().int().nonnegative(),
+  nextCursor: z.string().nullable(),
+});
+export type SessionListResult = z.infer<typeof SessionListResult>;
 
 export const SessionPromptParams = z.object({
   sessionId: z.string().min(1),

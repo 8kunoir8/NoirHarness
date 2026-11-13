@@ -95,7 +95,7 @@ describe("SessionService", () => {
     expect(s.status).toBe("starting");
     expect(s.engine).toBe("acp");
     sessions.setStatus(s.id, "idle");
-    expect(sessions.list()[0]!.status).toBe("idle");
+    expect(sessions.all()[0]!.status).toBe("idle");
   });
 
   it("rejects an illegal transition", () => {
@@ -130,6 +130,45 @@ describe("SessionService", () => {
     const created = (id: string) => events.list(id).find((event) => event.type === "session.created");
     expect(created(fired.id)?.payload).toEqual({ title: "", scheduleId: "sched-1" });
     expect(created(manual.id)?.payload).toEqual({ title: "" });
+  });
+
+  it("pages newest first, and says how many match in total", () => {
+    const { db, projects, workspaces, sessions } = setup();
+    const workspaceId = workspaces.createLocal(projects.add(tempDir()).id).id;
+    for (let index = 0; index < 5; index += 1) {
+      const created = sessions.create(workspaceId);
+      db.prepare("UPDATE sessions SET created_at = ? WHERE id = ?").run(1_000 + index, created.id);
+    }
+    const first = sessions.list({ limit: 2 });
+    expect(first.sessions.map((session) => session.createdAt)).toEqual([1_004, 1_003]);
+    expect(first.total).toBe(5);
+    const second = sessions.list({ limit: 2, cursor: first.nextCursor ?? "" });
+    expect(second.sessions.map((session) => session.createdAt)).toEqual([1_002, 1_001]);
+    const third = sessions.list({ limit: 2, cursor: second.nextCursor ?? "" });
+    expect(third.sessions.map((session) => session.createdAt)).toEqual([1_000]);
+    expect(third.nextCursor).toBeNull();
+  });
+
+  it("filters by what the kernel can answer, and searches the title", () => {
+    const { projects, workspaces, sessions, events } = setup();
+    const workspaceId = workspaces.createLocal(projects.add(tempDir()).id).id;
+    const named = sessions.create(workspaceId);
+    events.append({
+      sessionId: named.id,
+      agentId: named.agentId,
+      type: "session.updated",
+      payload: { title: "Nightly tidy" },
+      provenance: { engine: "acp", engineName: "test", adapterVersion: "0" },
+    });
+    const closed = sessions.create(workspaceId);
+    sessions.setStatus(closed.id, "idle");
+    sessions.setStatus(closed.id, "closed");
+
+    expect(sessions.list({ filter: "done" }).total).toBe(1);
+    expect(sessions.list({ filter: "needs_you" }).total).toBe(0);
+    const found = sessions.list({ search: "nightly" });
+    expect(found.sessions.map((session) => session.id)).toEqual([named.id]);
+    expect(sessions.list({ search: "%" }).total).toBe(0);
   });
 
   it("forks the conversation without the parent's lifecycle", () => {
@@ -190,7 +229,7 @@ describe("SessionService", () => {
     const s = sessions.create(workspaces.createLocal(projects.add(tempDir()).id).id);
     const newestTs = Date.now() + 5_000;
     const provenance = { engine: "acp", engineName: "fake", adapterVersion: "0" } as const;
-    expect(sessions.list()[0]).toMatchObject({ lastEventSeq: 2, pendingApproval: false });
+    expect(sessions.all()[0]).toMatchObject({ lastEventSeq: 2, pendingApproval: false });
 
     events.append({
       sessionId: s.id,
@@ -205,11 +244,11 @@ describe("SessionService", () => {
       provenance,
       ts: newestTs,
     });
-    expect(sessions.list()[0]).toMatchObject({ lastEventSeq: 3, lastEventAt: newestTs, pendingApproval: true });
+    expect(sessions.all()[0]).toMatchObject({ lastEventSeq: 3, lastEventAt: newestTs, pendingApproval: true });
     expect(sessions.view(s.id)).toMatchObject({ lastEventSeq: 3, pendingApproval: true });
 
     events.append({ sessionId: s.id, agentId: s.agentId, type: "permission.resolved", payload: { approvalId: "a1", decision: "allow_once" }, provenance });
-    expect(sessions.list()[0]!.pendingApproval).toBe(false);
+    expect(sessions.all()[0]!.pendingApproval).toBe(false);
   });
 
   it("switches the model and rejects unknown or disabled models", () => {

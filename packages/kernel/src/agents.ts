@@ -224,7 +224,7 @@ export class AgentService {
    * newest session that is still open; a closed session has nothing to open.
    */
   roster(): AgentRosterEntry[] {
-    const sessions = this.sessions.list();
+    const sessions = this.sessions.all();
     // One batched lookup for every open session: the cost stays flat as the roster grows.
     const state = this.openSessionState();
     const entries = this.list().map((agent): AgentRosterEntry => {

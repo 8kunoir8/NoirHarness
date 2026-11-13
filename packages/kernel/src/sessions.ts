@@ -18,6 +18,20 @@ export function assertTransition(from: SessionStatus, to: SessionStatus): void {
   if (!TRANSITIONS[from].includes(to)) throw new RpcFault(ErrorCodes.conflict, `Invalid session transition ${from} -> ${to}`);
 }
 
+export interface SessionListOptions {
+  limit?: number | undefined;
+  cursor?: string | undefined;
+  filter?: "all" | "needs_you" | "working" | "done" | undefined;
+  search?: string | undefined;
+  workspaceId?: string | undefined;
+}
+
+export interface SessionListPage {
+  sessions: SessionView[];
+  total: number;
+  nextCursor: string | null;
+}
+
 export interface SessionRow { id: string; workspaceId: string; agentId: string; engine: EngineKind; title: string; status: SessionStatus; modelId: string | null; createdAt: number; }
 
 export interface SessionCreateOptions {
@@ -57,6 +71,9 @@ function toView(r: Record<string, unknown>, meta: SessionMeta): SessionView {
 }
 
 const VIEW_COLUMNS = "id, workspace_id, agent_id, engine, title, status, model_id, schedule_id, created_at";
+/** A page is what a window can render without scrolling for its life; 200 is a ceiling, not a target. */
+const DEFAULT_PAGE = 50;
+const MAX_PAGE = 200;
 
 /** Newest event per session, in one grouped pass; empty sessions fall back to the row's creation time. */
 const EVENTS_BY_SESSION = "SELECT session_id, MAX(seq) AS last_seq, MAX(ts) AS last_ts FROM events GROUP BY session_id";
@@ -221,9 +238,72 @@ export class SessionService {
     return toView(row, this.metaForOne(row));
   }
 
-  list(): SessionView[] {
-    const rows = this.db.prepare(`SELECT ${VIEW_COLUMNS} FROM sessions ORDER BY created_at DESC`).all() as Array<Record<string, unknown>>;
-    if (rows.length === 0) return [];
+  /**
+   * One page of sessions, newest first. The filters are answered here rather than in the window:
+   * a filter that only sees the current page would quietly hide matches on the pages below it.
+   */
+  list(opts: SessionListOptions = {}): SessionListPage {
+    const limit = Math.min(Math.max(opts.limit ?? DEFAULT_PAGE, 1), MAX_PAGE);
+    const where: string[] = [];
+    const args: Array<string | number> = [];
+    if (opts.workspaceId !== undefined) {
+      where.push("workspace_id = ?");
+      args.push(opts.workspaceId);
+    }
+    switch (opts.filter) {
+      case "done":
+        where.push("status = 'closed'");
+        break;
+      case "working":
+        where.push("status IN ('starting','running','waiting')");
+        where.push(`id NOT IN (${PENDING_APPROVALS})`);
+        break;
+      case "needs_you":
+        where.push(`(status = 'error' OR id IN (${PENDING_APPROVALS}))`);
+        break;
+      default:
+        break;
+    }
+    if (opts.search !== undefined && opts.search.trim() !== "") {
+      where.push("title LIKE ? ESCAPE '\\'");
+      args.push(`%${opts.search.trim().replace(/[\\%_]/g, (char) => `\\${char}`)}%`);
+    }
+    const filtered = where.length === 0 ? "" : `WHERE ${where.join(" AND ")}`;
+    const { total } = this.db
+      .prepare(`SELECT COUNT(*) AS total FROM sessions ${filtered}`)
+      .get(...args) as { total: number };
+
+    const pageWhere = [...where];
+    const pageArgs = [...args];
+    if (opts.cursor !== undefined) {
+      const [createdAt, id] = opts.cursor.split(/:(.*)/s) as [string, string];
+      pageWhere.push("(created_at < ? OR (created_at = ? AND id < ?))");
+      pageArgs.push(Number(createdAt), Number(createdAt), id);
+    }
+    const clause = pageWhere.length === 0 ? "" : `WHERE ${pageWhere.join(" AND ")}`;
+    const rows = this.db
+      .prepare(`SELECT ${VIEW_COLUMNS} FROM sessions ${clause} ORDER BY created_at DESC, id DESC LIMIT ?`)
+      .all(...pageArgs, limit + 1) as Array<Record<string, unknown>>;
+    const page = rows.slice(0, limit);
+    const last = page.at(-1);
+    return {
+      sessions: page.length === 0 ? [] : this.views(page),
+      total,
+      nextCursor: rows.length > limit && last !== undefined ? `${String(last.created_at as number)}:${String(last.id as string)}` : null,
+    };
+  }
+
+  /**
+   * Every session, newest first. For the kernel's own bookkeeping — the agent roster and the live
+   * count — where a page would answer a different question than the one being asked.
+   */
+  all(): SessionView[] {
+    const rows = this.db.prepare(`SELECT ${VIEW_COLUMNS} FROM sessions ORDER BY created_at DESC, id DESC`).all() as Array<Record<string, unknown>>;
+    return rows.length === 0 ? [] : this.views(rows);
+  }
+
+  /** Fills in the per-session metadata a view carries, for rows already narrowed by `list`. */
+  private views(rows: readonly Record<string, unknown>[]): SessionView[] {
     const stats = new Map<string, { last_seq: number; last_ts: number }>();
     for (const row of this.db.prepare(EVENTS_BY_SESSION).all() as Array<{ session_id: string; last_seq: number; last_ts: number }>) {
       stats.set(row.session_id, row);

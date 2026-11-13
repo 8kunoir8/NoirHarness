@@ -82,7 +82,7 @@ function stubApp({ models = [MODEL], sessions = [] }: { models?: readonly unknow
       case "model.list":
         return { models };
       case "session.list":
-        return { sessions: listed };
+        return { sessions: listed, total: listed.length, nextCursor: null };
       case "session.subscribe":
         return { events: [], lastSeq: 1 };
       case "session.fork": {
