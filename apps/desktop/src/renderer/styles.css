@@ -93,6 +93,22 @@ input, select, textarea {
   padding: 5px 8px;
   min-width: 0;
 }
+/*
+ * The shell asks for `height: 100%`, so a banner above it would push the status bar past the
+ * viewport. The root becomes the column and the shell takes what is left; with no banner the
+ * shell is the only child and the layout is unchanged.
+ */
+#root { display: flex; flex-direction: column; }
+#root > .shell { flex: 1; min-height: 0; height: auto; }
+
+.kernel-banner {
+  margin: 0;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--warning);
+  background: var(--surface-sunken);
+  border-bottom: 1px solid var(--border-strong);
+}
 
 label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; color: var(--muted); }
 

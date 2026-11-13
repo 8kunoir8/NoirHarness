@@ -1,13 +1,19 @@
 import type { AgentEvent } from "@noir/protocol";
 
-interface KernelInfo {
+export interface KernelInfo {
   port: number;
   token: string;
+  buildMatches: boolean;
+  daemon: boolean;
 }
 
 declare global {
   interface Window {
-    noir: { kernelInfo(): Promise<KernelInfo>; openExternal(url: string): Promise<void> };
+    noir: {
+      kernelInfo(): Promise<KernelInfo>;
+      openExternal(url: string): Promise<void>;
+      automationsArmed(count: number): void;
+    };
   }
 }
 

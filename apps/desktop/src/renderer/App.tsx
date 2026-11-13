@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ModelListResult,
+  ScheduleListResult,
   SessionView,
   SystemHealthResult,
   type AgentEvent,
   type FsReadResult,
   type GitStatusResult,
 } from "@noir/protocol";
-import { connect, offEvent, request } from "./api.js";
+import { connect, offEvent, request, type KernelInfo } from "./api.js";
 import { Agents } from "./Agents.js";
 import { Automations } from "./Automations.js";
 import { Chat } from "./Chat.js";
@@ -18,6 +19,7 @@ import { DiffView } from "./DiffView.js";
 import { useSessionEvents, type ChatFile } from "./events.js";
 import { FileTree } from "./FileTree.js";
 import { Inspector } from "./Inspector.js";
+import { KernelBanner } from "./KernelBanner.js";
 import { MonacoEditor } from "./MonacoEditor.js";
 import { ArtifactPreview } from "./preview/ArtifactPreview.js";
 import { previewKind } from "./preview/kind.js";
@@ -98,6 +100,7 @@ export function App() {
   const [engineDir, setEngineDir] = useState<string | undefined>(undefined);
   const [view, setView] = useState<View>("setup");
   const [theme, , toggleTheme] = useTheme();
+  const [kernel, setKernel] = useState<KernelInfo | undefined>(undefined);
 
   const [projects, setProjects] = useState<ProjectView[]>([]);
   const [workspaces, setWorkspaces] = useState<WorkspaceView[]>([]);
@@ -222,6 +225,32 @@ export function App() {
   useEffect(() => {
     void refreshGit();
   }, [refreshGit]);
+
+  // The window owns two facts the tray cannot see: which build its daemon is, and how many
+  // automations are armed. Neither affects rendering except through the banner.
+  useEffect(() => {
+    void window.noir.kernelInfo().then(setKernel).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    if (workspaceId === "") return;
+    let cancelled = false;
+    const report = async (): Promise<void> => {
+      // The same call and the same parse the Automations pane makes, so the tray and the pane
+      // cannot disagree about what is armed.
+      const listed = await request<unknown>("schedule.list", { workspaceId }).catch(() => undefined);
+      if (cancelled || listed === undefined) return;
+      const parsed = ScheduleListResult.safeParse(listed);
+      if (!parsed.success) return;
+      window.noir.automationsArmed(parsed.data.schedules.filter((entry) => entry.enabled).length);
+    };
+    void report();
+    const timer = setInterval(() => void report(), 15_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [request, workspaceId]);
 
   const loadSessions = useCallback(async (): Promise<SessionView[]> => {
     const result = await request<{ sessions: SessionView[] }>("session.list");
@@ -834,6 +863,7 @@ export function App() {
   ) {
     return (
       <>
+        {kernel === undefined ? null : <KernelBanner daemon={kernel.daemon} buildMatches={kernel.buildMatches} />}
         <Shell
           rail={rail}
           topbar={topbar}
@@ -874,6 +904,7 @@ export function App() {
 
   return (
     <>
+      {kernel === undefined ? null : <KernelBanner daemon={kernel.daemon} buildMatches={kernel.buildMatches} />}
       <Shell
         rail={rail}
         topbar={topbar}
