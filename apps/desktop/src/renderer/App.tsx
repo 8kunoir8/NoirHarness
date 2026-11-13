@@ -583,6 +583,18 @@ export function App() {
     }
   }
 
+  /** The conversation so far becomes the parent; the fork continues from it and leaves it alone. */
+  async function forkSession(sessionId: string): Promise<void> {
+    setError(undefined);
+    try {
+      const result = await request<{ session: SessionView; copiedEvents: number }>("session.fork", { sessionId });
+      await loadSessions();
+      openSession(result.session);
+    } catch (forkError) {
+      setError(forkError instanceof Error ? forkError.message : "Could not fork the chat");
+    }
+  }
+
   const rail = (
     <>
       <button
@@ -789,6 +801,16 @@ export function App() {
       shortcut: { key: "t", mod: true, shift: true },
       enabled: true,
       run: () => toggleTheme(),
+    },
+    {
+      id: "fork-session",
+      label: "Fork this chat",
+      keywords: "branch duplicate copy continue from here",
+      enabled: activeChatId !== undefined,
+      run: () => {
+        if (activeChatId === undefined) return;
+        void forkSession(activeChatId);
+      },
     },
     {
       id: "copy-session-id",

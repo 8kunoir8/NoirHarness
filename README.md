@@ -175,6 +175,11 @@ The **Chats** view is five regions:
   the files the session reported), the plan, and pending approvals.
 - **Status bar** — kernel health, turns running, approvals waiting, and the engine directory in use.
 
+*Fork this chat* in the command palette copies the transcript into a new session in the same
+workspace and agent, so the original is untouched and the copy continues from where it stood. The
+copy's engine starts empty for ACP engines — the log is replayed into the model only by the native
+engine — which is the same rule a resumed session follows.
+
 Filters read kernel session metadata, not the transcript: `All`; `Needs you` (a pending approval or
 an errored session); `Working` (starting, running, or waiting without an approval); `Unread` (the
 session's newest event is past the last event its tab rendered); `Done` (closed). Search matches the

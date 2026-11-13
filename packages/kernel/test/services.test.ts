@@ -132,6 +132,48 @@ describe("SessionService", () => {
     expect(created(manual.id)?.payload).toEqual({ title: "" });
   });
 
+  it("forks the conversation without the parent's lifecycle", () => {
+    const { projects, workspaces, sessions, events } = setup();
+    const project = projects.add(tempDir());
+    const parent = sessions.create(workspaces.createLocal(project.id).id);
+    const provenance = { engine: "acp" as const, engineName: "test", adapterVersion: "0" };
+    const say = (text: string, seq: number): void => {
+      events.append({ sessionId: parent.id, agentId: parent.agentId, type: "message.delta", payload: { messageId: "m1", role: "assistant", block: { type: "text", text } }, provenance, ts: seq });
+      events.append({ sessionId: parent.id, agentId: parent.agentId, type: "message.completed", payload: { messageId: "m1", status: "done" }, provenance, ts: seq + 1 });
+    };
+    say("first", 10);
+    say("second", 20);
+    events.append({ sessionId: parent.id, agentId: parent.agentId, type: "session.updated", payload: { title: "Nightly" }, provenance });
+    sessions.setStatus(parent.id, "idle");
+
+    const { session: fork, copiedEvents } = sessions.fork(parent.id);
+    // Four messages plus the parent's retitle; the lifecycle events stay behind.
+    expect(copiedEvents).toBe(5);
+    expect(fork.status).toBe("idle");
+    expect(fork.title).toBe("Fork of Nightly");
+    expect(fork.id).not.toBe(parent.id);
+    const stream = events.list(fork.id);
+    expect(stream.filter((event) => event.type === "session.created")).toHaveLength(1);
+    expect(stream.map((event) => event.seq)).toEqual([...stream.map((event) => event.seq)].sort((a, b) => a - b));
+    const state = stream.reduce<SessionState | undefined>(reduceSession, undefined);
+    expect(state?.messages).toHaveLength(1);
+    expect(state?.messages[0]?.blocks).toHaveLength(2);
+    expect(state?.status).toBe("idle");
+    expect(state?.title).toBe("Fork of Nightly");
+  });
+
+  it("cuts the fork at a sequence when asked", () => {
+    const { projects, workspaces, sessions, events } = setup();
+    const project = projects.add(tempDir());
+    const parent = sessions.create(workspaces.createLocal(project.id).id);
+    const provenance = { engine: "acp" as const, engineName: "test", adapterVersion: "0" };
+    events.append({ sessionId: parent.id, agentId: parent.agentId, type: "message.delta", payload: { messageId: "m1", role: "assistant", block: { type: "text", text: "early" } }, provenance });
+    events.append({ sessionId: parent.id, agentId: parent.agentId, type: "message.delta", payload: { messageId: "m2", role: "assistant", block: { type: "text", text: "late" } }, provenance });
+    const { session: fork, copiedEvents } = sessions.fork(parent.id, 3);
+    expect(copiedEvents).toBe(1);
+    expect(events.list(fork.id).some((event) => event.type === "message.delta" && JSON.stringify(event.payload).includes("late"))).toBe(false);
+  });
+
   it("closes through session.closed and records closed_at", () => {
     const { db, projects, workspaces, sessions, events } = setup();
     const project = projects.add(tempDir());

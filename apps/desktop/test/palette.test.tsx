@@ -52,8 +52,25 @@ const MODEL = {
 };
 
 /** The smallest kernel surface `App` needs; anything unlisted rejects so a wrong call is visible. */
-function stubApp({ models = [MODEL] }: { models?: readonly unknown[] } = {}): void {
+const SESSION = {
+  id: "s1",
+  workspaceId: "w1",
+  agentId: "a1",
+  engine: "acp",
+  title: "Shell",
+  status: "idle",
+  modelId: null,
+  scheduleId: null,
+  createdAt: 1,
+  lastEventSeq: 1,
+  lastEventAt: 1,
+  pendingApproval: false,
+};
+
+function stubApp({ models = [MODEL], sessions = [] }: { models?: readonly unknown[]; sessions?: readonly unknown[] } = {}): void {
   appApi.request.mockReset();
+  // The list a reload sees is the list the kernel would have: a fork has to appear in it.
+  const listed = [...sessions];
   appApi.request.mockImplementation(async (method: string, params?: unknown): Promise<unknown> => {
     switch (method) {
       case "system.health":
@@ -65,7 +82,14 @@ function stubApp({ models = [MODEL] }: { models?: readonly unknown[] } = {}): vo
       case "model.list":
         return { models };
       case "session.list":
-        return { sessions: [] };
+        return { sessions: listed };
+      case "session.subscribe":
+        return { events: [], lastSeq: 1 };
+      case "session.fork": {
+        const fork = { ...SESSION, id: "s2", title: "Fork of Shell" };
+        listed.push(fork);
+        return { session: fork, copiedEvents: 2 };
+      }
       case "fs.files":
         return { files: ["notes.md", "other.md", "doc.pdf", "src/main.ts"], truncated: false };
       case "fs.list":
@@ -165,6 +189,26 @@ describe("CommandPalette", () => {
     expect(screen.getByTestId("palette-close").getAttribute("aria-disabled")).toBe("true");
     await user.keyboard("{Enter}");
     expect(onRun).not.toHaveBeenCalled();
+  });
+});
+
+describe("App fork entry point", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("forks the open chat and lands in the copy", async () => {
+    stubApp({ sessions: [SESSION] });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: /Shell/ }));
+    await user.click(await screen.findByRole("button", { name: "Commands" }));
+    await user.type(await screen.findByLabelText("Command"), "fork");
+    await user.click(screen.getByTestId("palette-fork-session"));
+
+    expect(appApi.request).toHaveBeenCalledWith("session.fork", { sessionId: "s1" });
+    expect(await screen.findByRole("tab", { name: "Fork of Shell" })).toBeTruthy();
   });
 });
 

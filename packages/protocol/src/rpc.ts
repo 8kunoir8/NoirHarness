@@ -30,6 +30,7 @@ export const Methods = {
   sessionInterrupt: "session.interrupt",
   sessionCancelQueued: "session.cancelQueued",
   sessionClose: "session.close",
+  sessionFork: "session.fork",
   sessionSetModel: "session.setModel",
   approvalRespond: "approval.respond",
   providerCreate: "provider.create",
@@ -144,6 +145,19 @@ export type SessionCancelQueuedParams = z.infer<typeof SessionCancelQueuedParams
 export const SessionCancelQueuedResult = z.object({ cancelled: z.boolean() });
 export type SessionCancelQueuedResult = z.infer<typeof SessionCancelQueuedResult>;
 export const SessionCloseParams = z.object({ sessionId: z.string().min(1) });
+
+/** `upToSeq` forks the conversation as it stood at an event, not as it stands now. */
+export const SessionForkParams = z.object({
+  sessionId: z.string().min(1),
+  upToSeq: z.number().int().positive().optional(),
+});
+export type SessionForkParams = z.infer<typeof SessionForkParams>;
+export const SessionForkResult = z.object({
+  session: SessionView,
+  /** How many events came along, so the UI can say "empty fork" instead of implying one. */
+  copiedEvents: z.number().int().nonnegative(),
+});
+export type SessionForkResult = z.infer<typeof SessionForkResult>;
 
 export const SessionSetModelParams = z.object({ sessionId: z.string().min(1), modelId: z.string().min(1) });
 export type SessionSetModelParams = z.infer<typeof SessionSetModelParams>;

@@ -180,6 +180,41 @@ export class SessionService {
     return this.view(sessionId);
   }
 
+  /**
+   * Copies a session's conversation into a new one. Lifecycle events stay behind: the fork was never
+   * starting, never running and never closed, and replaying the parent's statuses would make it look
+   * as though it were. Everything else — messages, tool calls, usage, changed files — comes along in
+   * order, so the transcript reads the same and the next turn continues from it.
+   */
+  fork(sessionId: string, upToSeq?: number): { session: SessionView; copiedEvents: number } {
+    const parent = this.db
+      .prepare("SELECT workspace_id, agent_id, model_id, title, status FROM sessions WHERE id = ?")
+      .get(sessionId) as
+      | { workspace_id: string; agent_id: string; model_id: string | null; title: string; status: SessionStatus }
+      | undefined;
+    if (parent === undefined) throw new RpcFault(ErrorCodes.notFound, "Session not found");
+
+    const created = this.create(parent.workspace_id, {
+      agentId: parent.agent_id,
+      ...(parent.model_id === null ? {} : { modelId: parent.model_id }),
+    });
+    const copiedEvents = this.events.copyPrefix(sessionId, created.id, {
+      ...(upToSeq === undefined ? {} : { upToSeq }),
+      skip: ["session.created", "session.status", "session.closed"],
+    });
+    const title = parent.title.trim() === "" ? "Fork" : `Fork of ${parent.title}`;
+    this.events.append({
+      sessionId: created.id,
+      agentId: created.agentId,
+      type: "session.updated",
+      payload: { title },
+      provenance: { engine: created.engine, engineName: "none", adapterVersion: "0" },
+    });
+    // Nothing is running in a fork, and `starting` would claim a start that never comes.
+    this.setStatus(created.id, "idle");
+    return { session: this.view(created.id), copiedEvents };
+  }
+
   view(sessionId: string): SessionView {
     const row = this.db.prepare(`SELECT ${VIEW_COLUMNS} FROM sessions WHERE id = ?`).get(sessionId) as Record<string, unknown> | undefined;
     if (!row) throw new RpcFault(ErrorCodes.notFound, "Session not found");

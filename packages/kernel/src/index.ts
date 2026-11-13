@@ -41,6 +41,7 @@ import {
   ScheduleRunsParams,
   ScheduleUpdateParams,
   SessionCloseParams,
+  SessionForkParams,
   SessionCreateParams,
   SessionCancelQueuedParams,
   SessionInterruptParams,
@@ -432,6 +433,10 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; o
         [Methods.sessionClose]: async (params) => {
           await engineManager.closeSession(SessionCloseParams.parse(params).sessionId);
           return { ok: true };
+        },
+        [Methods.sessionFork]: async (params) => {
+          const { sessionId, upToSeq } = SessionForkParams.parse(params);
+          return sessions.fork(sessionId, upToSeq);
         },
         [Methods.sessionSetModel]: async (params) => {
           const { sessionId, modelId } = SessionSetModelParams.parse(params);

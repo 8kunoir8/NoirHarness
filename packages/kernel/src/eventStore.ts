@@ -42,6 +42,41 @@ export class EventStore {
     return event;
   }
 
+  /**
+   * Copies one session's history into another, renumbered after whatever the target already has.
+   *
+   * Inserted rather than re-appended: these events already passed validation and redaction once,
+   * and replaying them would re-run projections and announce old turns on a live socket. Ids are
+   * fresh because an event id is unique, and the sequence is what replay reads.
+   */
+  copyPrefix(sourceSessionId: string, targetSessionId: string, opts: { upToSeq?: number; skip?: readonly EventType[] } = {}): number {
+    const skip = new Set<string>(opts.skip ?? []);
+    const rows = this.db
+      .prepare(
+        `SELECT seq, ts, type, agent_id, parent_agent_id, turn_id, payload_json, provenance_json
+           FROM events WHERE session_id = ? AND seq <= ? ORDER BY seq ASC`,
+      )
+      .all(sourceSessionId, opts.upToSeq ?? Number.MAX_SAFE_INTEGER) as Array<{
+      seq: number; ts: number; type: string; agent_id: string; parent_agent_id: string | null;
+      turn_id: string | null; payload_json: string; provenance_json: string;
+    }>;
+    const kept = rows.filter((row) => !skip.has(row.type));
+    if (kept.length === 0) return 0;
+    const insert = this.db.prepare(
+      "INSERT INTO events (id, session_id, seq, ts, type, agent_id, parent_agent_id, turn_id, payload_json, provenance_json) VALUES (?,?,?,?,?,?,?,?,?,?)",
+    );
+    const tx = this.db.transaction(() => {
+      const { base } = this.db
+        .prepare("SELECT COALESCE(MAX(seq), 0) AS base FROM events WHERE session_id = ?")
+        .get(targetSessionId) as { base: number };
+      kept.forEach((row, index) => {
+        insert.run(uuidv7(), targetSessionId, base + index + 1, row.ts, row.type, row.agent_id, row.parent_agent_id, row.turn_id, row.payload_json, row.provenance_json);
+      });
+    });
+    tx();
+    return kept.length;
+  }
+
   list(sessionId: string, sinceSeq = 0): AgentEvent[] {
     const rows = this.db.prepare("SELECT * FROM events WHERE session_id = ? AND seq > ? ORDER BY seq ASC").all(sessionId, sinceSeq) as Array<Record<string, unknown>>;
     return rows.map((r) => AgentEventSchema.parse({
