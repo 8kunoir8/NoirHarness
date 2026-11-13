@@ -8,7 +8,6 @@ import {
   type RefObject,
 } from "react";
 import {
-  type AgentEvent,
   type AgentListResult,
   type AgentRosterEntry,
   type AgentRosterResult,
@@ -22,33 +21,20 @@ import {
   type SkillListResult,
   type SkillView,
 } from "@noir/protocol";
-import { connect, offEvent, type RequestFn } from "./api.js";
+import type { RequestFn } from "./api.js";
 import { errorMessage } from "./events.js";
 import { formatTokens } from "./format.js";
 import type { WorkspaceView } from "./WorkspacePanel.js";
 import { AgentOffice } from "./office/AgentOffice.js";
 import { approvalBubbleText, MAX_OFFICE_AGENTS, toOfficeStates } from "./office/mapper.js";
 import { OFFICE_DESKS } from "./office/desks.js";
+import { useReducedMotion, useRoster } from "./useRoster.js";
 import "./agents.css";
 
 type Decision = "ask" | "allow" | "reject";
 
-/** Trailing window for the live roster refresh: a burst of events costs one `agent.roster` call. */
-const ROSTER_REFRESH_MS = 250;
-
-/**
- * Broadcast events that can change the roster. Everything else (message deltas, file changes) is
- * irrelevant to status, the active tool and the context share, so it must not schedule a fetch.
- */
-function refreshesRoster(type: AgentEvent["type"]): boolean {
-  return (
-    type === "session.status" ||
-    type === "usage.updated" ||
-    type.startsWith("turn.") ||
-    type.startsWith("tool.") ||
-    type.startsWith("permission.")
-  );
-}
+/** Stable empty roster: the office's memo must not see a fresh array before the first read lands. */
+const NO_ROSTER: AgentRosterEntry[] = [];
 
 /** The six policy categories, in the order the matrix renders them. */
 const POLICY_CATEGORIES: readonly PermissionCategory[] = [
@@ -113,19 +99,6 @@ function modelLabel(models: readonly ModelView[], modelRef: string | null): stri
   return model === undefined ? modelRef : model.displayName;
 }
 
-/** The office renders seated states instead of walking when the OS asks for reduced motion. */
-function useReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(false);
-  useEffect(() => {
-    if (typeof window.matchMedia !== "function") return;
-    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
-    setReduced(query.matches);
-    const listener = (event: MediaQueryListEvent): void => setReduced(event.matches);
-    query.addEventListener("change", listener);
-    return () => query.removeEventListener("change", listener);
-  }, []);
-  return reduced;
-}
 
 interface AgentDraft {
   name: string;
@@ -380,7 +353,10 @@ export interface AgentsProps {
  */
 export function Agents({ workspaceId, request, onOpenChat, configRef }: AgentsProps) {
   const [agents, setAgents] = useState<AgentView[] | undefined>(undefined);
-  const [roster, setRoster] = useState<AgentRosterEntry[]>([]);
+  // The batch load below carries the first roster read, so the hook only owns the live refresh.
+  const { roster: liveRoster, nextSnapshot, apply: applyRoster } = useRoster(request, { subscribe: true });
+  // The office and the rail always describe a list: before the first read there is simply nobody.
+  const roster = liveRoster ?? NO_ROSTER;
   const [models, setModels] = useState<ModelView[]>([]);
   const [workspaces, setWorkspaces] = useState<WorkspaceView[]>([]);
   const [mcpServers, setMcpServers] = useState<McpServerView[]>([]);
@@ -406,20 +382,10 @@ export function Agents({ workspaceId, request, onOpenChat, configRef }: AgentsPr
 
   // The RPC server answers concurrently, so a slower earlier batch must not overwrite a newer one.
   const loadSeq = useRef(0);
-  // Roster snapshots are stamped when requested, not when they arrive: a refresh may overlap another
-  // refresh or a still-pending `load`, and only the newest snapshot may win. Otherwise a late answer
-  // would roll status, the active tool and a `needs_you` bubble back to an older value.
-  const rosterSeq = useRef(0);
-  const appliedRosterSeq = useRef(0);
-  const applyRoster = useCallback((snapshot: number, entries: AgentRosterEntry[]): void => {
-    if (snapshot <= appliedRosterSeq.current) return;
-    appliedRosterSeq.current = snapshot;
-    setRoster(entries);
-  }, []);
 
   const load = useCallback(async (): Promise<void> => {
     const run = ++loadSeq.current;
-    const rosterSnapshot = ++rosterSeq.current;
+    const rosterSnapshot = nextSnapshot();
     try {
       const [agentResult, rosterResult, modelResult, workspaceResult, skillResult, mcpResult] =
         await Promise.all([
@@ -449,36 +415,6 @@ export function Agents({ workspaceId, request, onOpenChat, configRef }: AgentsPr
     void load();
   }, [load]);
 
-  // A broadcast may change status, the active tool, the context share or an approval. Only the
-  // roster is refetched; the event types are filtered so message and file traffic never schedules it.
-  const refreshTimer = useRef<number | undefined>(undefined);
-  const refreshRoster = useCallback(async (): Promise<void> => {
-    const snapshot = ++rosterSeq.current;
-    try {
-      const result = await request<AgentRosterResult>("agent.roster", {});
-      applyRoster(snapshot, result.agents);
-    } catch {
-      // A failed live refresh keeps the last good snapshot; the next matching event retries.
-    }
-  }, [request, applyRoster]);
-
-  useEffect(() => {
-    const listener = (event: AgentEvent): void => {
-      if (!refreshesRoster(event.type)) return;
-      // Trailing coalescing: many events in one burst schedule exactly one fetch.
-      if (refreshTimer.current !== undefined) return;
-      refreshTimer.current = window.setTimeout(() => {
-        refreshTimer.current = undefined;
-        void refreshRoster();
-      }, ROSTER_REFRESH_MS);
-    };
-    void connect(listener).catch(() => undefined);
-    return () => {
-      if (refreshTimer.current !== undefined) window.clearTimeout(refreshTimer.current);
-      refreshTimer.current = undefined;
-      offEvent(listener);
-    };
-  }, [refreshRoster]);
 
   // Keep one row selected so the office pane and the inspector always describe a real agent, but
   // never steal the selection while a blank create form is open.

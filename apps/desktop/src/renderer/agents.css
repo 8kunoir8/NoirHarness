@@ -1,19 +1,36 @@
 /* --- agents view: roster, office list view, config inspector --- */
 
+/*
+ * The office is the page's headline, not a footer. A grid puts it in the first row while the DOM
+ * keeps roster → office → config for reading order; the old flex row wrapped it below a 750 px
+ * config form, which is how it ended up off-screen.
+ */
 .agents-view {
-  display: flex;
-  align-items: flex-start;
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  align-items: start;
   gap: 12px;
   min-height: 0;
   max-width: 1400px;
 }
 
+.agents-office {
+  grid-column: 1 / -1;
+  grid-row: 1;
+}
+
 .agents-roster {
-  flex: 0 0 300px;
+  grid-column: 1;
+  grid-row: 2;
   min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.agents-config {
+  grid-column: 2;
+  grid-row: 2;
 }
 
 .agents-roster-head {
@@ -115,7 +132,6 @@
 .agents-status[data-status="error"] { color: var(--danger); }
 
 .agents-office {
-  flex: 1 1 auto;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -298,18 +314,23 @@
   font-size: 0.8rem;
 }
 
-@media (max-width: 1180px) {
+/* One column below the width where a 300 px roster plus a config form stops leaving room to write. */
+@media (max-width: 1100px) {
   .agents-view {
-    flex-wrap: wrap;
+    grid-template-columns: minmax(0, 1fr);
   }
 
+  .agents-office,
   .agents-roster,
   .agents-config {
-    flex: 1 1 300px;
+    grid-column: 1;
   }
 
-  .agents-office {
-    flex: 1 1 100%;
-    order: 3;
+  .agents-roster {
+    grid-row: 2;
+  }
+
+  .agents-config {
+    grid-row: 3;
   }
 }

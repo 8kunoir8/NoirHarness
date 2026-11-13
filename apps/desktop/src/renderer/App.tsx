@@ -8,6 +8,7 @@ import {
   type AgentEvent,
   type FsReadResult,
   type GitStatusResult,
+  type SkillListResult,
 } from "@noir/protocol";
 import { connect, kernelInfo, offEvent, reportArmed, request, type KernelInfo } from "./api.js";
 import { isBrowser } from "./transport.js";
@@ -25,9 +26,12 @@ import { KernelBanner } from "./KernelBanner.js";
 import { MonacoEditor } from "./MonacoEditor.js";
 import { ArtifactPreview } from "./preview/ArtifactPreview.js";
 import { previewKind } from "./preview/kind.js";
+import { LiveSidebar } from "./LiveSidebar.js";
+import { NavClock } from "./NavClock.js";
 import { QuickOpen } from "./QuickOpen.js";
-import { SessionList, type ReadState, type SessionFilter } from "./SessionList.js";
-import { mergeSessions, sessionListQuery } from "./sessionQuery.js";
+import { SessionFilters, SessionList, type ReadState, type SessionFilter } from "./SessionList.js";
+import { countUnread, mergeSessions, sessionListQuery } from "./sessionQuery.js";
+import { useRoster } from "./useRoster.js";
 import { Setup } from "./Setup.js";
 import { Shell } from "./Shell.js";
 import { Skills } from "./Skills.js";
@@ -137,6 +141,10 @@ export function App() {
   const [error, setError] = useState<string | undefined>(undefined);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [armed, setArmed] = useState(0);
+  const [skillCount, setSkillCount] = useState<number | undefined>(undefined);
+  // One live roster for the shell: the nav badge and the sidebar office read the same snapshot.
+  const { roster } = useRoster(request, { subscribe: true, initial: true });
   // The Office header's Configure button and the `C` command both focus the inspector it names.
   const agentConfigRef = useRef<HTMLElement | null>(null);
 
@@ -258,14 +266,16 @@ export function App() {
   useEffect(() => {
     if (workspaceId === "") return;
     let cancelled = false;
+    // The same call and the same parse the Automations pane makes, so the tray, the nav badge and
+    // the pane cannot disagree about what is armed.
     const report = async (): Promise<void> => {
-      // The same call and the same parse the Automations pane makes, so the tray and the pane
-      // cannot disagree about what is armed.
       const listed = await request<unknown>("schedule.list", { workspaceId }).catch(() => undefined);
       if (cancelled || listed === undefined) return;
       const parsed = ScheduleListResult.safeParse(listed);
       if (!parsed.success) return;
-      reportArmed(parsed.data.schedules.filter((entry) => entry.enabled).length);
+      const enabled = parsed.data.schedules.filter((entry) => entry.enabled).length;
+      setArmed(enabled);
+      reportArmed(enabled);
     };
     void report();
     const timer = setInterval(() => void report(), 15_000);
@@ -274,6 +284,21 @@ export function App() {
       clearInterval(timer);
     };
   }, [request, workspaceId]);
+
+  // The nav badge asks the kernel for a count the shell does not otherwise load. A kernel without
+  // the method (or no workspace yet) leaves the badge off rather than failing the shell.
+  useEffect(() => {
+    if (status !== "kernel ok") return;
+    let cancelled = false;
+    void request<SkillListResult>("skill.list", workspaceId === "" ? {} : { workspaceId })
+      .then((result) => {
+        if (!cancelled) setSkillCount(result.skills.length);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [request, status, workspaceId]);
 
   /**
    * The list is a page, not a table read: the window asks for what it renders, and the kernel
@@ -463,6 +488,18 @@ export function App() {
   const running = workspaceSessions.filter((session) => session.status === "running" || session.status === "starting").length;
   const pendingApprovals = workspaceSessions.filter((session) => session.pendingApproval).length;
 
+  const unread = countUnread(workspaceSessions, read);
+  // The nav's one status line: a kernel fault outranks a queue of approvals, which outranks work.
+  const navTone = status !== "kernel ok" ? "danger" : pendingApprovals > 0 ? "warn" : "ok";
+  const navState =
+    status !== "kernel ok"
+      ? status
+      : pendingApprovals > 0
+        ? `${String(pendingApprovals)} need you`
+        : running > 0
+          ? `${String(running)} running`
+          : "Nominal";
+
   // Branch and totals describe the workspace they were scanned in. A chat tab can outlive a
   // workspace switch, so the chat header and the inspector only use a snapshot that matches the
   // active session's workspace; otherwise the event-reported files stand alone.
@@ -642,40 +679,120 @@ export function App() {
     }
   }
 
-  const rail = (
+  // Named once: the nav, the palette and the `C` shortcut all reach the same view switch.
+  const goTo = (target: View): void => {
+    setView(target);
+    // The chats view is the only one that lists sessions; landing on it re-reads the page it shows.
+    if (target === "chats") void loadAll();
+  };
+
+  const nav = (
     <>
-      <button
-        type="button"
-        aria-pressed={view === "chats"}
-        onClick={() => {
-          setView("chats");
-          void loadAll();
-        }}
-        title="Chats"
-      >
-        Chats
-      </button>
-      <button type="button" aria-pressed={view === "agents"} onClick={() => setView("agents")} title="Agents">
-        Agents
-      </button>
-      <button type="button" aria-pressed={view === "skills"} onClick={() => setView("skills")} title="Skills">
-        Skills
-      </button>
-      <button
-        type="button"
-        aria-pressed={view === "automations"}
-        onClick={() => setView("automations")}
-        title="Automations"
-      >
-        Automations
-      </button>
-      <button type="button" aria-pressed={view === "setup"} onClick={() => setView("setup")} title="Setup">
-        Setup
-      </button>
-      <span className="rail-spacer" />
-      <button type="button" onClick={toggleTheme} aria-label="Switch theme" title="Switch theme">
+      <span className="nav-item">
+        <button type="button" aria-pressed={view === "chats"} onClick={() => goTo("chats")} title="Chats">
+          Chats
+        </button>
+        {unread === 0 ? null : (
+          <span className="nav-count" data-tone="warn" aria-hidden="true">
+            {unread}
+          </span>
+        )}
+        <span className="nav-count" aria-hidden="true">
+          {sessionTotal}
+        </span>
+      </span>
+      <span className="nav-item">
+        <button type="button" aria-pressed={view === "agents"} onClick={() => goTo("agents")} title="Agents">
+          Agents
+        </button>
+        {roster === undefined ? null : (
+          <span className="nav-count" aria-hidden="true">
+            {roster.length}
+          </span>
+        )}
+      </span>
+      <span className="nav-item">
+        <button type="button" aria-pressed={view === "skills"} onClick={() => goTo("skills")} title="Skills">
+          Skills
+        </button>
+        {skillCount === undefined ? null : (
+          <span className="nav-count" aria-hidden="true">
+            {skillCount}
+          </span>
+        )}
+      </span>
+      <span className="nav-item">
+        <button
+          type="button"
+          aria-pressed={view === "automations"}
+          onClick={() => goTo("automations")}
+          title="Automations"
+        >
+          Automations
+        </button>
+        <span className="nav-count" aria-hidden="true">
+          {armed}
+        </span>
+      </span>
+      <span className="nav-item">
+        <button type="button" aria-pressed={view === "setup"} onClick={() => goTo("setup")} title="Setup">
+          Setup
+        </button>
+      </span>
+      <span className="nav-spacer" />
+      <span className="nav-state" data-tone={navTone}>
+        <span className="nav-dot" aria-hidden="true" />
+        {navState}
+      </span>
+      <NavClock />
+      <button type="button" className="nav-theme" onClick={toggleTheme} aria-label="Switch theme" title="Switch theme">
         ◐
       </button>
+    </>
+  );
+
+  // The rail: what narrows the list on the left, and the projects the list belongs to. The new-chat
+  // controls stay with the list they create into, so the e2e contract keeps one Sessions region.
+  const rail = (
+    <>
+      <div className="rail-heading">Filters</div>
+      <SessionFilters filter={filter} onFilterChange={setFilter} />
+      <WorkspacePanel
+        projects={projects}
+        workspaces={workspaces}
+        workspaceId={workspaceId}
+        onSelectWorkspace={setWorkspaceId}
+        onAddProject={addProject}
+        onCreateWorkspace={createWorkspace}
+      />
+    </>
+  );
+
+  // The fourth column: the office, the agent behind the open chat, and the inspector when asked for.
+  // It is never a drawer — the office is the point of the column.
+  const sidebar = (
+    <>
+      <LiveSidebar
+        roster={roster}
+        agentId={activeSession?.agentId}
+        showOffice={view !== "agents"}
+        onOpenAgents={() => goTo("agents")}
+      />
+      {inspectorOpen ? (
+        <Inspector
+          session={activeSession}
+          status={events.state.status}
+          usage={events.state.usage}
+          turnStartedAt={events.state.turnStartedAt}
+          lastTurn={events.state.lastTurn}
+          files={inspectorFiles}
+          plan={events.state.plan}
+          approvalTitles={events.state.approval === undefined ? [] : [events.state.approval.title]}
+          onShowDiff={(path) => setTabState((current) => openTab(current, diffTab(path)))}
+          onPreview={openPreview}
+          onClose={() => setInspectorOpen(false)}
+        />
+      ) : null}
     </>
   );
 
@@ -941,35 +1058,24 @@ export function App() {
       <>
         {kernel === undefined ? null : <KernelBanner daemon={kernel.daemon} buildMatches={kernel.buildMatches} />}
         <Shell
-          rail={rail}
+          nav={nav}
           topbar={topbar}
+          rail={rail}
           list={
             models.length === 0 ? (
               <p className="empty">Add a provider and a model to unlock chats.</p>
             ) : (
-              <WorkspacePanel
-                projects={projects}
-                workspaces={workspaces}
-                workspaceId={workspaceId}
-                onSelectWorkspace={setWorkspaceId}
-                onAddProject={addProject}
-                onCreateWorkspace={createWorkspace}
-              />
+              <p className="empty">Pick a chat from the list, or create one.</p>
             )
           }
           main={
             status === "kernel ok" ? (
-              <Setup
-                request={request}
-                onOpenChat={() => {
-                  setView("chats");
-                  void loadAll();
-                }}
-              />
+              <Setup request={request} onOpenChat={() => goTo("chats")} />
             ) : (
               <p className="empty">{error ?? "Connecting to the kernel…"}</p>
             )
           }
+          sidebar={sidebar}
           status={statusbar}
         />
         {quickOpenOverlay}
@@ -982,19 +1088,12 @@ export function App() {
     <>
       {kernel === undefined ? null : <KernelBanner daemon={kernel.daemon} buildMatches={kernel.buildMatches} />}
       <Shell
-        rail={rail}
+        nav={nav}
         topbar={topbar}
+        rail={rail}
         list={
           <>
             {listModeSwitch}
-            <WorkspacePanel
-              projects={projects}
-              workspaces={workspaces}
-              workspaceId={workspaceId}
-              onSelectWorkspace={setWorkspaceId}
-              onAddProject={addProject}
-              onCreateWorkspace={createWorkspace}
-            />
             {listMode === "files" ? (
               <FileTree
                 request={request}
@@ -1027,7 +1126,6 @@ export function App() {
                   activeId={activeTab?.kind === "chat" ? activeTab.sessionId : undefined}
                   read={read}
                   filter={filter}
-                  onFilterChange={setFilter}
                   query={query}
                   onQueryChange={setQuery}
                   onSelect={openSession}
@@ -1152,25 +1250,7 @@ export function App() {
             </>
           )
         }
-        {...(inspectorOpen
-          ? {
-              inspector: (
-                <Inspector
-                  session={activeSession}
-                  status={events.state.status}
-                  usage={events.state.usage}
-                  turnStartedAt={events.state.turnStartedAt}
-                  lastTurn={events.state.lastTurn}
-                  files={inspectorFiles}
-                  plan={events.state.plan}
-                  approvalTitles={events.state.approval === undefined ? [] : [events.state.approval.title]}
-                  onShowDiff={(path) => setTabState((current) => openTab(current, diffTab(path)))}
-                  onPreview={openPreview}
-                  onClose={() => setInspectorOpen(false)}
-                />
-              ),
-            }
-          : {})}
+        sidebar={sidebar}
         status={statusbar}
       />
       {quickOpenOverlay}

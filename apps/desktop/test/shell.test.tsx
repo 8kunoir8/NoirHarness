@@ -1,10 +1,11 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { ModelView, SessionView } from "@noir/protocol";
 import {
   groupSessions,
   matchesFilter,
+  SessionFilters,
   SessionList,
   type ReadState,
   type SessionFilter,
@@ -103,7 +104,6 @@ function renderList(sessions: SessionView[], read: ReadState = {}, query = "") {
       read={read}
       query={query}
       filter="all"
-      onFilterChange={() => undefined}
       onQueryChange={() => undefined}
       onSelect={onSelect}
       onNewChat={onNewChat}
@@ -120,7 +120,6 @@ describe("SessionList", () => {
     const row = screen.getByRole("button", { name: /Refactor kernel/ });
     expect(row.textContent).toContain("Idle · Mock One");
     expect(row.getAttribute("aria-current")).toBe("false");
-    expect(screen.getByRole("group", { name: "Chat filters" })).toBeTruthy();
   });
 
   it("selects a row and starts a new chat", async () => {
@@ -150,5 +149,19 @@ describe("SessionList", () => {
     ]);
     expect(screen.getByRole("button", { name: /Nightly/ }).textContent).toContain("scheduled");
     expect(screen.getByRole("button", { name: /Manual/ }).textContent).not.toContain("scheduled");
+  });
+});
+
+describe("SessionFilters", () => {
+  it("reports the chosen filter and marks the current one pressed", async () => {
+    const user = userEvent.setup();
+    const onFilterChange = vi.fn();
+    render(<SessionFilters filter="all" onFilterChange={onFilterChange} />);
+
+    const group = screen.getByRole("group", { name: "Chat filters" });
+    expect(within(group).getByRole("button", { name: /All/ }).getAttribute("aria-pressed")).toBe("true");
+
+    await user.click(within(group).getByRole("button", { name: /Needs you/ }));
+    expect(onFilterChange).toHaveBeenCalledWith("needs");
   });
 });

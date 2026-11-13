@@ -95,6 +95,44 @@ function timeLabel(value: number): string {
   return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+/** The glyph beside each filter in the rail; the label still carries the meaning for a reader. */
+const FILTER_ICON: Readonly<Record<SessionFilter, string>> = {
+  all: "◻",
+  needs: "!",
+  working: "●",
+  unread: "■",
+  done: "✕",
+};
+
+export interface SessionFiltersProps {
+  filter: SessionFilter;
+  onFilterChange: (filter: SessionFilter) => void;
+}
+
+/**
+ * The filter list that lives in the shell's rail. It keeps the accessible group name the list used
+ * to carry inline, so only its position in the shell changed.
+ */
+export function SessionFilters({ filter, onFilterChange }: SessionFiltersProps) {
+  return (
+    <div className="rail-filters" role="group" aria-label="Chat filters">
+      {FILTERS.map((entry) => (
+        <button
+          key={entry.id}
+          type="button"
+          aria-pressed={filter === entry.id}
+          onClick={() => onFilterChange(entry.id)}
+        >
+          <span className="filter-icon" aria-hidden="true">
+            {FILTER_ICON[entry.id]}
+          </span>
+          {entry.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function modelLabel(session: SessionView, models: readonly ModelView[]): string | undefined {
   if (session.modelId === null) return undefined;
   const model = models.find((candidate) => candidate.id === session.modelId);
@@ -107,7 +145,6 @@ export interface SessionListProps {
   activeId?: string | undefined;
   read: ReadState;
   filter: SessionFilter;
-  onFilterChange: (filter: SessionFilter) => void;
   query: string;
   onQueryChange: (query: string) => void;
   onSelect: (session: SessionView) => void;
@@ -127,7 +164,6 @@ export function SessionList({
   activeId,
   read,
   filter,
-  onFilterChange,
   query,
   onQueryChange,
   onSelect,
@@ -158,18 +194,6 @@ export function SessionList({
         <button type="button" className="primary" onClick={onNewChat} disabled={!canCreate}>
           New chat
         </button>
-      </div>
-      <div className="filter-chips" role="group" aria-label="Chat filters">
-        {FILTERS.map((entry) => (
-          <button
-            key={entry.id}
-            type="button"
-            aria-pressed={filter === entry.id}
-            onClick={() => onFilterChange(entry.id)}
-          >
-            {entry.label}
-          </button>
-        ))}
       </div>
       {visible.length === 0 ? (
         <p className="empty">
