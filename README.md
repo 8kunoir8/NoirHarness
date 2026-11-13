@@ -458,9 +458,9 @@ retimed to a minute, fired by the kernel's own timer into a real agent, and the 
 open pane without a remount; `daemon` (1) — the kernel still answering `/health` after the app's
 window closes, and a relaunch reattaching to the same pid; `daemon-fire` (1) — a schedule firing with
 no window open at all, observed over the kernel socket and only then seen in the reopened panel;
-`remote` (1) — a browser with no Electron behind it, paired by code, running the harness over the
-LAN listener, then revoked and refused on the next load (needs `pnpm exec playwright install
-chromium`).
+`remote` (1) — a browser with no Electron behind it, paired by code over TLS, running the harness
+over the LAN listener with a `Secure` cookie, then revoked and refused on the next load (needs
+`pnpm exec playwright install chromium`).
 Each spec gets its own temporary data directory and its own Electron profile
 (`--user-data-dir` inside that directory), so engine state and restored tabs stay inside it. Since
 the daemon outlives the app, each spec's teardown asks it to stop through `/shutdown` before the

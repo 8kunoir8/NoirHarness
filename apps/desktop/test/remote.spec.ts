@@ -16,31 +16,32 @@ test("a paired browser runs the harness, and losing the device ends it", async (
     const window = await app.firstWindow();
     await expect(window.getByTestId("kernel-status")).toHaveText("kernel ok", { timeout: 20_000 });
 
-    const enabled = (await withKernel(harness.dataDir, (request) => request("remote.enable"))) as { port: number | null };
+    const enabled = (await withKernel(harness.dataDir, (request) => request("remote.enable"))) as {
+      port: number | null;
+      url: string | null;
+      fingerprint: string | null;
+    };
     const port = enabled.port ?? 0;
     expect(port).toBeGreaterThan(0);
+    expect(enabled.url ?? "").toMatch(/^https:\/\//);
+    expect(enabled.fingerprint ?? "").toMatch(/^([0-9A-F]{2}:){31}[0-9A-F]{2}$/);
     const pair = (await withKernel(harness.dataDir, (request) => request("remote.pair"))) as {
       code: string;
       url: string;
     };
     expect(pair.url).toContain(`#${pair.code}`);
 
-    const redeemed = await fetch(`http://127.0.0.1:${port}/pair/redeem`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ code: pair.code }),
-    });
-    expect(redeemed.status).toBe(200);
-    const cookie = (redeemed.headers.getSetCookie()[0] ?? "").split(";")[0] ?? "";
-    expect(cookie.startsWith("noir_device=")).toBe(true);
-
     browser = await chromium.launch();
-    const context = await browser.newContext();
-    await context.addCookies([
-      { name: "noir_device", value: cookie.slice("noir_device=".length), url: `http://127.0.0.1:${port}` },
-    ]);
+    // The one click a person makes once: trust the certificate this kernel signed for itself.
+    const context = await browser.newContext({ ignoreHTTPSErrors: true });
+    const redeemed = await context.request.post(`https://127.0.0.1:${port}/pair/redeem`, { data: { code: pair.code } });
+    expect(redeemed.status()).toBe(200);
+    const device = (await context.cookies(`https://127.0.0.1:${port}`)).find((cookie) => cookie.name === "noir_device");
+    expect(device).toBeDefined();
+    expect(device?.secure).toBe(true);
+
     const tab = await context.newPage();
-    await tab.goto(`http://127.0.0.1:${port}/`);
+    await tab.goto(`https://127.0.0.1:${port}/`);
 
     // The same status line the Electron window shows, reached through a cookie instead of a token.
     await expect(tab.getByTestId("kernel-status")).toHaveText("kernel ok", { timeout: 30_000 });
