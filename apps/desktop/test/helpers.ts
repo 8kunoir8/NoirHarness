@@ -81,10 +81,14 @@ function readKernelRuntime(dataDir: string): KernelRuntime {
 }
 
 /**
- * Removes the provider through the kernel socket (not the UI) so the keyring entry and the
- * SQLite row are both deleted; a spec must not leave a credential in the host vault.
+ * Opens the kernel socket named by the runtime file and hands the caller a request function that
+ * resolves the frame carrying its own id. Broadcasts share the socket, so matching on the reply
+ * order would hand a `session.created` to a `schedule.list` caller.
  */
-export async function deleteProviderThroughKernel(dataDir: string, name: string): Promise<void> {
+export async function withKernel<T>(
+  dataDir: string,
+  body: (request: (method: string, params?: unknown) => Promise<unknown>) => Promise<T>,
+): Promise<T> {
   const runtime = readKernelRuntime(dataDir);
   const ws = new WebSocket(`ws://127.0.0.1:${runtime.port}/?token=${runtime.token}`);
   try {
@@ -108,14 +112,24 @@ export async function deleteProviderThroughKernel(dataDir: string, name: string)
         call.reject(new Error("malformed kernel response"));
       }
     });
-    const request = (method: string, params?: unknown): Promise<unknown> => {
+    return await body((method, params) => {
       const id = nextId++;
       const { promise, resolve, reject } = Promise.withResolvers<unknown>();
       pending.set(id, { resolve, reject });
       ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
       return promise;
-    };
+    });
+  } finally {
+    ws.close();
+  }
+}
 
+/**
+ * Removes the provider through the kernel socket (not the UI) so the keyring entry and the
+ * SQLite row are both deleted; a spec must not leave a credential in the host vault.
+ */
+export async function deleteProviderThroughKernel(dataDir: string, name: string): Promise<void> {
+  await withKernel(dataDir, async (request) => {
     const listed: unknown = await request("provider.list");
     const providers = typeof listed === "object" && listed !== null && "providers" in listed && Array.isArray(listed.providers)
       ? listed.providers
@@ -133,8 +147,6 @@ export async function deleteProviderThroughKernel(dataDir: string, name: string)
     }
     if (targetId === undefined) throw new Error(`provider "${name}" not found over the kernel socket`);
     await request("provider.delete", { id: targetId });
-  } finally {
-    ws.close();
-  }
+  });
 }
 

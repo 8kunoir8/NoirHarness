@@ -365,7 +365,9 @@ is fetched at runtime.
 
 A schedule is a workspace, an agent, a prompt, and a cadence: every `N` minutes, or every `N` days
 at a wall-clock time. The **Automations** view lists them with their next run, edits one at a time,
-and shows the run history; `Run now` records a manual run and opens its chat. The kernel's scheduler
+and shows the run history; `Run now` records a manual run and opens its chat. The open view re-reads
+its rows and the selected schedule's history every 15 seconds — a fire is recorded in the kernel with
+no event to announce it, so the pane polls rather than waiting to be told. The kernel's scheduler
 holds one timer, armed for the earliest enabled `next_run_at`, and re-arms after every tick and after
 every create, edit, or delete, so a schedule added while the app is open fires without a restart.
 
@@ -406,8 +408,8 @@ pnpm --filter @noir/desktop test
 pnpm --filter @noir/desktop test:e2e
 ```
 
-`test:e2e` builds the app and drives Electron with Playwright against a local mock provider. Ten
-specs, thirteen tests: `smoke` (2) — boot, process spawn, health, and a provider surviving an app
+`test:e2e` builds the app and drives Electron with Playwright against a local mock provider. Eleven
+specs, fourteen tests: `smoke` (2) — boot, process spawn, health, and a provider surviving an app
 restart; `chat` (2) — a streamed reply and a permission-approved tool call; `shell` (1) — a tool turn
 that survives the restart, a prompt queued behind a slow turn, an interrupt, the queued turn draining
 after it, and a restart that replays the transcript; `editor` (2) — open a file, edit it, save
@@ -420,7 +422,9 @@ history; `artifacts` (1) — Markdown, CSV, and PDF previews, hostile Markdown s
 restored tab, and a deleted file; `office` (1) — two agents painted from the roster, an approval
 bubble that clears, desks that survive a cold start, and `Enter` opening a chat from a focused row;
 `mcp` (1) — an MCP server configured in Setup and probed, an agent bound to it, and a brokered
-`mcp__calc__add` call approved through the card.
+`mcp__calc__add` call approved through the card; `automations` (1) — a schedule created in the panel,
+retimed to a minute, fired by the kernel's own timer into a real agent, and the run appearing in the
+open pane without a remount.
 Each spec gets its own temporary data directory and its own Electron profile
 (`--user-data-dir` inside that directory), so engine state and restored tabs stay inside it.
 

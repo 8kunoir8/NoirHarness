@@ -1,8 +1,8 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { RequestFn } from "../src/renderer/api.js";
-import { Automations } from "../src/renderer/Automations.js";
+import { Automations, REFRESH_MS } from "../src/renderer/Automations.js";
 
 const schedule = {
   id: "s-1",
@@ -117,5 +117,40 @@ describe("Automations", () => {
     await waitFor(() =>
       expect(calls).toContainEqual({ method: "schedule.update", params: { id: "s-1", enabled: false } }),
     );
+  });
+
+  it("re-reads the list while it is open, so a fire shows up without a remount", async () => {
+    // The kernel broadcasts no schedule event: `AgentEvent` requires a `sessionId` and
+    // `events.session_id` is NOT NULL, so a fire has nothing to travel in. The pane polls instead.
+    vi.useFakeTimers();
+    try {
+      let running = false;
+      const handler = vi.fn(async (method: string): Promise<unknown> => {
+        if (method === "agent.list") return { agents: [agent] };
+        if (method === "schedule.list") {
+          return { schedules: [{ ...schedule, running, nextRunAt: schedule.nextRunAt + (running ? 86_400_000 : 0) }] };
+        }
+        if (method === "schedule.runs") return { runs: [], nextBefore: null };
+        throw new Error(method);
+      });
+      const request = handler as unknown as RequestFn;
+      render(<Automations workspaceId="ws-1" request={request} onOpenSession={() => undefined} />);
+      const list = screen.getByRole("region", { name: "Schedules" });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(list.textContent).toContain("Nightly");
+      expect(list.textContent).not.toContain("Running now");
+
+      // The app sat open past a fire: the row is now working and its next run moved a day out.
+      running = true;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(REFRESH_MS);
+      });
+      expect(list.textContent).toContain("Running now");
+      expect(handler.mock.calls.filter(([method]) => method === "schedule.list").length).toBeGreaterThan(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

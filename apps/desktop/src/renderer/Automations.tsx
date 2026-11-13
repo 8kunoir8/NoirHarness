@@ -26,6 +26,14 @@ const CADENCES: Array<{ minutes: number; label: string }> = [
   { minutes: 7 * 1_440, label: "Weekly" },
 ];
 
+/**
+ * How often the open pane re-reads the list. The kernel broadcasts no schedule event — `AgentEvent`
+ * carries a required `sessionId` and `events.session_id` is NOT NULL, so a fire has no envelope to
+ * arrive in — and a fire changes `running` and `nextRunAt` with nothing else on screen to notice.
+ * Fifteen seconds keeps a 15-minute cadence visibly live without asking the kernel on every tick.
+ */
+export const REFRESH_MS = 15_000;
+
 const DAY_MINUTES = 1_440;
 
 interface Draft {
@@ -109,7 +117,7 @@ export function Automations({ workspaceId, request, onOpenSession }: Automations
   }, [draft.id]);
 
   const load = useCallback(
-    async (ticket: number, workspace: string): Promise<void> => {
+    async (ticket: number, workspace: string, quiet = false): Promise<void> => {
       try {
         const [list, roster] = await Promise.all([
           request<unknown>("schedule.list", { workspaceId: workspace }).then((value) => ScheduleListResult.parse(value)),
@@ -118,9 +126,27 @@ export function Automations({ workspaceId, request, onOpenSession }: Automations
         if (generation.current !== ticket) return;
         setSchedules(list.schedules);
         setAgents(roster.agents);
-        setError(undefined);
+        // A background refresh must not wipe the message from a write the user just attempted.
+        if (!quiet) setError(undefined);
       } catch (loadError) {
+        // Even a quiet refresh reports failure: the pane is showing rows it could not confirm.
         if (generation.current === ticket) setError(errorMessage(loadError));
+      }
+    },
+    [request],
+  );
+
+  const loadRuns = useCallback(
+    async (scheduleId: string, ticket: number, quiet = false): Promise<void> => {
+      try {
+        const result = ScheduleRunsResult.parse(await request<unknown>("schedule.runs", { id: scheduleId }));
+        // Both guards matter: the workspace may have switched, and a slower answer for the previous
+        // row would otherwise render under the row now selected.
+        if (generation.current !== ticket || draftId.current !== scheduleId) return;
+        setRuns(result.runs);
+        if (!quiet) setError(undefined);
+      } catch (loadError) {
+        if (generation.current === ticket && draftId.current === scheduleId) setError(errorMessage(loadError));
       }
     },
     [request],
@@ -136,6 +162,20 @@ export function Automations({ workspaceId, request, onOpenSession }: Automations
     void load(generation.current, workspaceId);
   }, [workspaceId, load]);
 
+  // A fire happens in the kernel with nothing to notify this pane, so the open view re-reads on its
+  // own: the rows (a fire flips `running` and moves `nextRunAt`) and, for the row on screen, its
+  // history (a fire appends a run). The editor's draft is the user's work in progress and is never
+  // touched by a refresh.
+  useEffect(() => {
+    if (workspaceId === "") return;
+    const timer = setInterval(() => {
+      void load(generation.current, workspaceId, true);
+      const selected = draftId.current;
+      if (selected !== null) void loadRuns(selected, generation.current, true);
+    }, REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [workspaceId, load, loadRuns]);
+
   // The first usable agent is the sensible default for a new schedule.
   useEffect(() => {
     if (draft.id !== null || draft.agentId !== "") return;
@@ -143,18 +183,6 @@ export function Automations({ workspaceId, request, onOpenSession }: Automations
     if (first === undefined) return;
     setDraft((current) => (current.agentId === "" ? { ...current, agentId: first.id } : current));
   }, [agents, draft.id, draft.agentId]);
-
-  async function loadRuns(scheduleId: string, ticket: number): Promise<void> {
-    try {
-      const result = ScheduleRunsResult.parse(await request<unknown>("schedule.runs", { id: scheduleId }));
-      // Both guards matter: the workspace may have switched, and a slower answer for the previous
-      // row would otherwise render under the row now selected.
-      if (generation.current !== ticket || draftId.current !== scheduleId) return;
-      setRuns(result.runs);
-    } catch (loadError) {
-      if (generation.current === ticket && draftId.current === scheduleId) setError(errorMessage(loadError));
-    }
-  }
 
   function select(schedule: ScheduleView): void {
     setDraft(draftFrom(schedule));
