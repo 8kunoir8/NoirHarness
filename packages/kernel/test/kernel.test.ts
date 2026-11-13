@@ -276,9 +276,8 @@ describe("startKernel", () => {
 
       const removed = await call(kernel.port, kernel.token, "skill.remove", { workspaceId, scope: "project", name: "rpc-skill" });
       expect(removed.error).toBeUndefined();
-      expect(removed.result).toEqual({ ok: true, skills: [] });
-      const after = await call(kernel.port, kernel.token, "skill.list", { workspaceId });
-      expect(after.result.skills).toEqual([]);
+      // The whole listing shape `skill.list` returns, so the panel needs no follow-up call.
+      expect(removed.result).toEqual({ ok: true, skills: [], shadowed: [], warnings: [] });
       expect(existsSync(join(root, ".noir", "skills", "rpc-skill"))).toBe(false);
     } finally {
       await kernel.close();

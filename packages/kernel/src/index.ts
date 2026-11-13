@@ -338,7 +338,9 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets } 
           const root = workspaceId === undefined ? undefined : workspaceRoot(workspaceId);
           await skillSources.remove(workspaceId ?? "", root, scope, name);
           const listed = workspaceId === undefined ? await skills.list("", undefined) : await skills.list(workspaceId, root);
-          return { ok: true as const, skills: withSources(listed, workspaceId ?? "").skills };
+          // The whole listing, not just `skills`: removing a project copy unshadows a global of the
+          // same name, so `shadowed` is stale in any answer that omits it.
+          return { ok: true as const, ...withSources(listed, workspaceId ?? "") };
         },
         [Methods.mcpList]: async () => ({ servers: mcp.list() }),
         [Methods.mcpCreate]: async (params) => mcp.create(McpServerCreateParams.parse(params)),

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { Dirent } from "node:fs";
+import type { Dirent, Stats } from "node:fs";
 import { cp, lstat, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
@@ -20,8 +20,12 @@ export interface DiscoveredSkill {
 
 export interface SkillScan {
   skills: DiscoveredSkill[];
-  /** Global names hidden by a project skill of the same name. */
-  shadowed: string[];
+  /**
+   * Global entries a project skill hides. They carry their directory: the scan is the only place
+   * that knows where a name lives, so `remove` and `install` must resolve a shadowed copy through
+   * it instead of guessing `<root>/<name>`.
+   */
+  shadowed: Array<{ name: string; dir: string }>;
   /** `"<scope>:<dir>: <reason>"` for every directory that could not be used. */
   warnings: string[];
 }
@@ -30,6 +34,18 @@ export const MAX_SKILL_FILE_BYTES = 1024 * 1024;
 export const MAX_SKILL_FILES = 200;
 export const MAX_SKILL_BYTES = 8 * 1024 * 1024;
 export const SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+/**
+ * True for `<name>.installing-<uuid>` and `<name>.previous-<uuid>`: the scratch siblings `place`
+ * and `update` create next to a destination. They are ours by construction — a valid skill name,
+ * a reserved suffix, and a uuidv7 tail — so a scan skips them and a write path may delete them
+ * without touching anything a user placed.
+ */
+export function isStaleSibling(name: string): boolean {
+  const match = /^(.*)\.(?:installing|previous)-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.exec(
+    name,
+  );
+  return match !== null && SKILL_NAME.test(match[1] ?? "");
+}
 
 /** Code-unit order, so output does not move with the machine's locale. */
 const compareCodeUnits = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
@@ -145,6 +161,8 @@ async function scanRoot(
   const seen = process.platform === "win32" ? new Set<string>() : undefined;
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+    // A scratch sibling holds a full copy of some skill; scanning it would list a duplicate.
+    if (isStaleSibling(entry.name)) continue;
     const dir = join(rootDir, entry.name);
     try {
       const read = await readSkill(scope, dir);
@@ -168,7 +186,7 @@ async function scanRoot(
 export async function discoverSkills(globalDir: string, projectDir: string | undefined): Promise<SkillScan> {
   const skills = new Map<string, DiscoveredSkill>();
   const warnings: string[] = [];
-  const shadowed: string[] = [];
+  const shadowed: Array<{ name: string; dir: string }> = [];
   await scanRoot("project", projectDir, skills, warnings);
   const projectNames = new Set(skills.keys());
   const projectNamesLower =
@@ -179,12 +197,12 @@ export async function discoverSkills(globalDir: string, projectDir: string | und
   warnings.push(...globalWarnings);
   for (const [name, skill] of global) {
     if (projectNames.has(name)) {
-      shadowed.push(name);
+      shadowed.push({ name, dir: skill.dir });
       continue;
     }
     // One NTFS directory cannot hold both spellings; project precedence wins case-insensitively.
     if (projectNamesLower?.has(name.toLowerCase()) === true) {
-      shadowed.push(name);
+      shadowed.push({ name, dir: skill.dir });
       warnings.push(`global:${skill.dir}: "${name}" differs only by case from a project skill`);
       continue;
     }
@@ -192,7 +210,7 @@ export async function discoverSkills(globalDir: string, projectDir: string | und
   }
   return {
     skills: [...skills.values()].sort((a, b) => compareCodeUnits(a.name, b.name)),
-    shadowed: shadowed.sort(compareCodeUnits),
+    shadowed: shadowed.sort((a, b) => compareCodeUnits(a.name, b.name)),
     warnings: warnings.sort(compareCodeUnits),
   };
 }
@@ -229,6 +247,19 @@ async function copySkill(src: string, dest: string): Promise<void> {
 }
 
 /**
+ * `lstat` that reports a missing path as `undefined`. Any other failure propagates: "absent" and
+ * "unreadable" are different answers, and only the caller knows which one is safe.
+ */
+async function lstatOrUndefined(path: string): Promise<Stats | undefined> {
+  try {
+    return await lstat(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+/**
  * Ensures `path` is a real directory, creating it only when nothing exists there yet. `makeFault`
  * lets a caller that owes an `RpcFault` report the refusal with its own code and message.
  */
@@ -237,10 +268,7 @@ async function ensureRealDirectory(
   label: string,
   makeFault: (message: string) => Error = (message) => new Error(message),
 ): Promise<void> {
-  const marker = await lstat(path).catch((error: unknown) => {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw error;
-  });
+  const marker = await lstatOrUndefined(path);
   if (marker === undefined) {
     await mkdir(path, { recursive: true });
     return;
@@ -267,9 +295,12 @@ export class SkillService {
     return join(this.dataDir, "skills");
   }
 
-  /** The directory a scope installs into and scans: the data dir for global, `<ws>/.noir/skills` for project. */
-  async rootFor(workspaceId: string, scope: SkillScope, root: string | undefined): Promise<string> {
-    if (scope === "global") return this.globalRoot;
+  /**
+   * The workspace root and its `.noir` must be real directories, and `<root>/.noir/skills` must be
+   * a real directory or absent; the returned path is the leaf when it exists. It never creates
+   * anything — `rootFor` creates the leaf after this passes, `dirFor` never writes.
+   */
+  private async checkedWorkspace(root: string | undefined): Promise<string | undefined> {
     if (root === undefined) throw new RpcFault(ErrorCodes.invalidParams, "A project skill needs a workspace");
     // A workspace whose directory is gone is never recreated here; `materialize` refuses it too.
     const marker = await stat(root).catch((error: unknown) => {
@@ -280,18 +311,45 @@ export class SkillService {
       throw new RpcFault(ErrorCodes.invalidParams, "Workspace root is not a directory");
     }
     if (await hasUntrustedNoir(root)) throw new RpcFault(ErrorCodes.invalidParams, "Workspace .noir is not a directory");
-    const dir = join(root, ".noir", "skills");
+    const leaf = join(root, ".noir", "skills");
+    const leafMarker = await lstatOrUndefined(leaf);
     // A linked leaf is refused, not followed: an install, update, or remove must never operate on
     // bytes outside the workspace just because a cloned repo carried `<root>/.noir/skills`.
-    await ensureRealDirectory(dir, "Workspace .noir/skills", (message) => new RpcFault(ErrorCodes.invalidParams, message));
-    return dir;
+    if (leafMarker !== undefined && (leafMarker.isSymbolicLink() || !leafMarker.isDirectory())) {
+      throw new RpcFault(ErrorCodes.invalidParams, "Workspace .noir/skills is not a directory");
+    }
+    return leafMarker === undefined ? undefined : leaf;
   }
 
-  /** The directory the scan resolved for a name, or undefined when no scope root holds it. */
-  async dirFor(workspaceId: string, scope: SkillScope, name: string, root: string | undefined): Promise<string | undefined> {
-    const projectDir = root === undefined || (await hasUntrustedNoir(root)) ? undefined : join(root, ".noir", "skills");
+  /** The directory a scope installs into and scans: the data dir for global, `<ws>/.noir/skills` for project. */
+  async rootFor(workspaceId: string, scope: SkillScope, root: string | undefined): Promise<string> {
+    if (scope === "global") return this.globalRoot;
+    const leaf = await this.checkedWorkspace(root);
+    if (leaf !== undefined) return leaf;
+    // `checkedWorkspace` rejects an undefined root, so this branch always has one.
+    const created = join(root as string, ".noir", "skills");
+    await mkdir(created, { recursive: true });
+    return created;
+  }
+
+  /**
+   * The directory the scan resolved for a name, or undefined when the scope holds none. A shadowed
+   * global is absent from `skills` — the project copy won the name — but it still owns a directory,
+   * and the scan is the only thing that knows it. Refuses an unreadable workspace rather than
+   * answering "absent" for it: a caller that deletes by this answer must never act on a workspace
+   * whose files it could not look at.
+   */
+  async dirFor(
+    workspaceId: string,
+    scope: SkillScope,
+    name: string,
+    root: string | undefined,
+  ): Promise<string | undefined> {
+    const projectDir = scope === "project" ? await this.checkedWorkspace(root) : undefined;
     const scan = await discoverSkills(this.globalRoot, projectDir);
-    return scan.skills.find((skill) => skill.scope === scope && skill.name === name)?.dir;
+    const found = scan.skills.find((skill) => skill.scope === scope && skill.name === name);
+    if (found !== undefined) return found.dir;
+    return scope === "global" ? scan.shadowed.find((entry) => entry.name === name)?.dir : undefined;
   }
 
   private readEnabled(workspaceId: string): Map<string, boolean> {
@@ -350,7 +408,7 @@ export class SkillService {
         hash: skill.hash,
         enabled: this.enabledFor(workspaceId, flags, skill),
       })),
-      shadowed: scan.shadowed,
+      shadowed: scan.shadowed.map((entry) => entry.name),
       warnings: warnings.sort(compareCodeUnits),
     };
   }
@@ -402,13 +460,11 @@ export class SkillService {
     const noir = join(root, ".noir");
     await ensureRealDirectory(noir, "Workspace .noir");
     const projectDir = join(noir, "skills");
-    // Created on materialize, never by `list`: listing a workspace must not write into it.
-    const projectLeaf = await lstat(projectDir).catch((error: unknown) => {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-      throw error;
-    });
-    // Never create through a linked leaf; `discoverSkills` reports it and refuses to scan it.
-    if (projectLeaf === undefined) await mkdir(projectDir, { recursive: true });
+    // Created on materialize, never by `list`: listing a workspace must not write into it. Unlike
+    // `rootFor`, a linked or non-directory leaf is tolerated here rather than refused: `materialize`
+    // never writes through the leaf, `discoverSkills` refuses to scan it and reports it as a warning,
+    // and failing the whole engine write would deny the workspace its global skills.
+    if ((await lstatOrUndefined(projectDir)) === undefined) await mkdir(projectDir, { recursive: true });
     const scan = await discoverSkills(this.globalRoot, projectDir);
     const flags = this.readEnabled(workspaceId);
     const target = join(noir, "skills-engine");

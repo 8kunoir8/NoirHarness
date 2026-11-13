@@ -11,6 +11,7 @@ import {
   MAX_SKILL_FILES,
   SKILL_NAME,
   hashSkillDir,
+  isStaleSibling,
   parseSkillFrontmatter,
   type SkillScope,
   type SkillService,
@@ -237,6 +238,25 @@ export class SkillSourceService {
     return join(this.dataDir, "skill-staging");
   }
 
+  /**
+   * Deletes scratch siblings a crashed install or update left behind. `place` removes its own temp
+   * on failure and `update` restores its aside, so a survivor means the process died or the
+   * filesystem refused; nothing else will ever look at it. Best effort: a reap that fails must not
+   * block the write the caller is about to make, and the scan skips these names either way.
+   */
+  private async reapStaleSiblings(root: string): Promise<void> {
+    let entries;
+    try {
+      entries = await readdir(root, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!isStaleSibling(entry.name)) continue;
+      await rm(join(root, entry.name), { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+
   private row(workspaceId: string, scope: SkillScope, name: string): SourceRow | undefined {
     return this.db
       .prepare(
@@ -263,7 +283,6 @@ export class SkillSourceService {
         ref: row.ref,
         commit: row.commit_sha,
         hash: row.hash,
-        updateAvailable: false,
       });
     }
     return map;
@@ -296,13 +315,16 @@ export class SkillSourceService {
   ): Promise<{ name: string; hash: string }> {
     const target: FetchTarget = kind === "local" ? await parseLocalTarget(source) : parseGitTarget(source, ref);
     const destination = await this.skills.rootFor(workspaceId, scope, root);
+    // A sibling from a killed process is dead weight the scan hides; clear it before writing.
+    await this.reapStaleSiblings(destination);
     const fetched = await fetchSkill(target, this.stagingRoot);
     try {
       // A name is taken when the scan reports it for this scope, whatever directory holds it; a
-      // path check alone misses a hand-placed `foo/SKILL.md` that declares `name: dup`.
-      const listed = await this.skills.list(workspaceId, root);
+      // path check alone misses a hand-placed `foo/SKILL.md` that declares `name: dup`. `dirFor`
+      // also sees a global hidden by a project skill, which `list().skills` does not report.
+      const scanned = await this.skills.dirFor(workspaceId, scope, fetched.name, root);
       const taken =
-        listed.skills.some((skill) => skill.scope === scope && skill.name === fetched.name) ||
+        scanned !== undefined ||
         (await lstat(join(destination, fetched.name)).catch(() => undefined)) !== undefined;
       if (taken) {
         throw new RpcFault(ErrorCodes.conflict, `${fetched.name} is already installed in ${scope}; update it instead`);
@@ -342,6 +364,12 @@ export class SkillSourceService {
     }
   }
 
+  /**
+   * Takes no `root` on purpose: this answers from the provenance row and the network alone, and
+   * writes nothing, so it must not require a workspace directory to exist. The other three resolve
+   * a root because they touch it; asking for one here would make a check fail on a workspace whose
+   * files are irrelevant to the answer.
+   */
   async checkUpdate(workspaceId: string, scope: SkillScope, name: string): Promise<{ commit: string | null; hash: string; changed: boolean }> {
     const row = this.row(workspaceId, scope, name);
     if (row === undefined) throw new RpcFault(ErrorCodes.notFound, `${name} was not installed from a source`);
@@ -374,7 +402,9 @@ export class SkillSourceService {
       if (fetched.name !== name) {
         throw new RpcFault(ErrorCodes.invalidParams, `${name} now declares the name "${fetched.name}"; install it instead`);
       }
-      const destination = join(await this.skills.rootFor(workspaceId, scope, root), name);
+      const scopeRoot = await this.skills.rootFor(workspaceId, scope, root);
+      await this.reapStaleSiblings(scopeRoot);
+      const destination = join(scopeRoot, name);
       const aside = `${destination}.previous-${uuidv7()}`;
       let moved = false;
       try {
@@ -390,9 +420,12 @@ export class SkillSourceService {
           try {
             await rename(aside, destination);
           } catch (restore) {
+            // Both failures matter: the first says why the update stopped, the second that the old
+            // copy is gone from `<name>` and only recoverable by hand. Dropping either misleads.
             throw new RpcFault(
               ErrorCodes.internal,
-              `${name} was not updated and its previous copy is stranded at ${aside}: ` +
+              `${name} was not updated: ${error instanceof Error ? error.message : String(error)}; ` +
+                `its previous copy could not be restored and is stranded at ${aside}: ` +
                 `${restore instanceof Error ? restore.message : String(restore)}`,
             );
           }
@@ -422,16 +455,15 @@ export class SkillSourceService {
     if (!SKILL_NAME.test(name)) throw new RpcFault(ErrorCodes.invalidParams, `"${name}" is not a valid skill name`);
     // The scan keys a skill by its manifest name and keeps the directory it was found in, so that
     // directory is the only right thing to delete: `join(root, name)` is just the layout `install`
-    // writes, and a hand-placed or renamed directory can sit anywhere under the scope root.
+    // writes, and a hand-placed or renamed directory can sit anywhere under the scope root. It
+    // resolves a shadowed global too, which no name-derived path can find.
     const scanned = await this.skills.dirFor(workspaceId, scope, name, root);
-    if (scanned === undefined) {
-      // Absent from the scan: a provenance row or a shadowed global still names a directory under
-      // the scope root, and nothing else does. Refusing must not create that root.
-      const row = this.row(workspaceId, scope, name);
-      const shadowed = scope === "global" && (await this.skills.list(workspaceId, root)).shadowed.includes(name);
-      if (row === undefined && !shadowed) throw new RpcFault(ErrorCodes.notFound, `Skill not found: ${name}`);
+    // A provenance row whose directory is already gone still has to lose its row, so the name is
+    // removable when either half survives. Refusing must not create a scope root, and nothing here does.
+    if (scanned === undefined && this.row(workspaceId, scope, name) === undefined) {
+      throw new RpcFault(ErrorCodes.notFound, `Skill not found: ${name}`);
     }
-    await rm(scanned ?? join(await this.skills.rootFor(workspaceId, scope, root), name), { recursive: true, force: true });
+    if (scanned !== undefined) await rm(scanned, { recursive: true, force: true });
     this.db
       .prepare("DELETE FROM skill_sources WHERE workspace_id = ? AND scope = ? AND name = ?")
       .run(scope === "global" ? "" : workspaceId, scope, name);

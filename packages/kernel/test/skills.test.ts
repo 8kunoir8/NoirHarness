@@ -41,7 +41,8 @@ describe("skill discovery", () => {
       ["only-global", "global"],
       ["shared", "project"],
     ]);
-    expect(scan.shadowed).toEqual(["shared"]);
+    // A shadowed entry carries its directory, because the directory name need not match the name.
+    expect(scan.shadowed.map((entry) => [entry.name, entry.dir])).toEqual([["shared", join(global, "shared")]]);
     expect(scan.warnings).toEqual([]);
   });
 
@@ -199,7 +200,7 @@ describe("skill discovery", () => {
     writeFileSync(join(lower, "SKILL.md"), "---\nname: dup\ndescription: project\n---\n");
     const scan = await discoverSkills(global, project);
     expect(scan.skills.map((s) => [s.name, s.scope])).toEqual([["dup", "project"]]);
-    expect(scan.shadowed).toEqual(["DUP"]);
+    expect(scan.shadowed.map((entry) => [entry.name, entry.dir])).toEqual([["DUP", upper]]);
     expect(scan.warnings.join("\n")).toContain("differs only by case");
   });
 });
