@@ -640,4 +640,148 @@ describe("skill sources", () => {
     // The guard is what keeps a project install out of the global root.
     expect(existsSync(join(dataDir, "skills"))).toBe(false);
   });
+
+  it("removes a shadowed global from the directory the scan resolved, whatever its name", async () => {
+    const { db, service: skills, dataDir } = service();
+    const sources = new SkillSourceService(db, skills, dataDir);
+    const work = scratch();
+    const globalSource = join(work, "g");
+    const projectSource = join(work, "p");
+    mkdirSync(globalSource);
+    mkdirSync(projectSource);
+    plainSkill(globalSource, "shared");
+    plainSkill(projectSource, "shared");
+    const workspace = join(work, "ws");
+    mkdirSync(workspace);
+    await sources.install("ws-1", workspace, "global", "local", globalSource, undefined);
+    await sources.install("ws-1", workspace, "project", "local", projectSource, undefined);
+    // Rename the global copy: its manifest still says `shared`, so only the scan knows where it is.
+    const globalRoot = join(dataDir, "skills");
+    renameSync(join(globalRoot, "shared"), join(globalRoot, "renamed"));
+    expect((await skills.list("ws-1", workspace)).shadowed).toEqual(["shared"]);
+
+    await sources.remove("ws-1", undefined, "global", "shared");
+
+    expect(existsSync(join(globalRoot, "renamed"))).toBe(false);
+    expect(sources.sourcesFor("ws-1").has("global|shared")).toBe(false);
+    expect(sources.sourcesFor("ws-1").has("project|shared")).toBe(true);
+    const listed = await skills.list("ws-1", workspace);
+    expect(listed.skills.map((s) => [s.scope, s.name])).toEqual([["project", "shared"]]);
+    expect(listed.shadowed).toEqual([]);
+  });
+
+  it("records the hash the listing reports, after install and after update", async () => {
+    const { db, service: skills, dataDir } = service();
+    const sources = new SkillSourceService(db, skills, dataDir);
+    const work = scratch();
+    const source = join(work, "src");
+    mkdirSync(source);
+    plainSkill(source, "pinned", "ONE");
+    const workspace = join(work, "ws");
+    mkdirSync(workspace);
+
+    const installed = await sources.install("ws-1", workspace, "project", "local", source, undefined);
+    const afterInstall = (await skills.list("ws-1", workspace)).skills.find((s) => s.name === "pinned");
+    // A row hash that disagreed with the listing would make the panel print an old → new line
+    // comparing two different quantities, and every later `expectHash` would be wrong.
+    expect(sources.sourcesFor("ws-1").get("project|pinned")?.hash).toBe(afterInstall?.hash);
+    expect(installed.hash).toBe(afterInstall?.hash);
+
+    writeFileSync(join(source, "pinned", "SKILL.md"), "---\nname: pinned\ndescription: d\n---\n\nTWO\n");
+    const checked = await sources.checkUpdate("ws-1", "project", "pinned");
+    const updated = await sources.update("ws-1", workspace, "project", "pinned", checked.hash);
+    const afterUpdate = (await skills.list("ws-1", workspace)).skills.find((s) => s.name === "pinned");
+    expect(afterUpdate?.hash).toBe(updated.hash);
+    expect(sources.sourcesFor("ws-1").get("project|pinned")?.hash).toBe(afterUpdate?.hash);
+    expect(afterUpdate?.hash).not.toBe(afterInstall?.hash);
+  });
+
+  it("deletes the enabled flag of a removed skill and keeps the others", async () => {
+    const { db, service: skills, dataDir } = service();
+    const sources = new SkillSourceService(db, skills, dataDir);
+    const work = scratch();
+    // A source must name exactly one skill, so each name comes from its own directory.
+    const goneSource = join(work, "gone-src");
+    const staysSource = join(work, "stays-src");
+    mkdirSync(goneSource);
+    mkdirSync(staysSource);
+    plainSkill(goneSource, "gone");
+    plainSkill(staysSource, "stays");
+    const workspace = join(work, "ws");
+    mkdirSync(workspace);
+    await sources.install("ws-1", workspace, "project", "local", goneSource, undefined);
+    await sources.install("ws-1", workspace, "project", "local", staysSource, undefined);
+    await skills.setEnabled("ws-1", workspace, "project", "stays", false);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM skills WHERE name = ?").get("gone")).toEqual({ n: 1 });
+
+    await sources.remove("ws-1", workspace, "project", "gone");
+
+    // A flag row for a skill that no longer exists would make the name reappear on the next install
+    // in whatever state the user had left it.
+    expect(db.prepare("SELECT COUNT(*) AS n FROM skills WHERE name = ?").get("gone")).toEqual({ n: 0 });
+    expect(db.prepare("SELECT enabled FROM skills WHERE name = ?").pluck().get("stays")).toBe(0);
+  });
+
+  it("skips a scratch sibling a killed process left behind, and reaps it on the next write", async () => {
+    const { db, service: skills, dataDir } = service();
+    const sources = new SkillSourceService(db, skills, dataDir);
+    const work = scratch();
+    const source = join(work, "src");
+    mkdirSync(source);
+    plainSkill(source, "tidy", "ONE");
+    const workspace = join(work, "ws");
+    mkdirSync(workspace);
+    await sources.install("ws-1", workspace, "project", "local", source, undefined);
+    const skillsRoot = join(workspace, ".noir", "skills");
+    // Both are full copies of the same skill; one is what `place` or `update` failed to remove.
+    const installing = join(skillsRoot, "tidy.installing-0190f0a0-0000-7000-8000-000000000000");
+    const previous = join(skillsRoot, "tidy.previous-0190f0a0-0000-7000-8000-000000000001");
+    mkdirSync(installing);
+    mkdirSync(previous);
+    writeFileSync(join(installing, "SKILL.md"), "---\nname: tidy\ndescription: d\n---\n\nOLD\n");
+    writeFileSync(join(previous, "SKILL.md"), "---\nname: tidy\ndescription: d\n---\n\nOLDER\n");
+
+    // Skipped by the scan: a stale copy must never be listed, shadowed, or materialized.
+    const listed = await skills.list("ws-1", workspace);
+    expect(listed.skills.map((s) => s.name)).toEqual(["tidy"]);
+    expect(listed.warnings).toEqual([]);
+
+    // `install` reaps before it refuses on the taken name; both paths must clear the siblings.
+    await expect(sources.install("ws-1", workspace, "project", "local", source, undefined))
+      .rejects.toThrow(/already installed/);
+    expect(existsSync(installing)).toBe(false);
+    expect(existsSync(previous)).toBe(false);
+    expect(readFileSync(join(skillsRoot, "tidy", "SKILL.md"), "utf8")).toContain("ONE");
+  });
+
+  it("keeps the original failure in the fault when the previous copy cannot be restored", async () => {
+    const { db, service: skills, dataDir } = service();
+    const sources = new SkillSourceService(db, skills, dataDir);
+    const work = scratch();
+    const source = join(work, "src");
+    mkdirSync(source);
+    plainSkill(source, "double", "ONE");
+    const workspace = join(work, "ws");
+    mkdirSync(workspace);
+    await sources.install("ws-1", workspace, "project", "local", source, undefined);
+    writeFileSync(join(source, "double", "SKILL.md"), "---\nname: double\ndescription: d\n---\n\nTWO\n");
+    const checked = await sources.checkUpdate("ws-1", "project", "double");
+
+    // Both legs fail: copying the new files in, and putting the old ones back.
+    copyGate.fail = () => {
+      throw new Error("simulated copy failure");
+    };
+    renameGate.fail = () => {
+      throw new Error("simulated restore failure");
+    };
+    try {
+      const failure = sources.update("ws-1", workspace, "project", "double", checked.hash);
+      // The first error says why the update stopped; dropping it leaves only the symptom.
+      await expect(failure).rejects.toThrow(/simulated copy failure[\s\S]*simulated restore failure/);
+      await expect(failure).rejects.toMatchObject({ code: ErrorCodes.internal });
+    } finally {
+      copyGate.fail = undefined;
+      renameGate.fail = undefined;
+    }
+  });
 });
