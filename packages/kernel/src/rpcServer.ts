@@ -149,6 +149,7 @@ export async function createRpcListener(opts: ListenerOptions): Promise<RpcListe
 
 export interface RpcServer extends RpcListener {
   broadcast(event: AgentEvent): void;
+  hub: Hub;
 }
 
 /** What the control plane needs to know about a stop request; the kernel owns the policy. */
@@ -160,6 +161,8 @@ export interface ShutdownDecision {
 export interface RpcOptions {
   token: string;
   handlers: Record<string, Handler>;
+  /** Share an existing hub when another listener is going to join it. */
+  hub?: Hub;
   buildId?: string | null;
   requestShutdown?: (force: boolean) => ShutdownDecision;
   onStopped?: () => void;
@@ -167,7 +170,7 @@ export interface RpcOptions {
 
 /** The loopback listener: runtime token on the upgrade, Bearer token on the one route that stops us. */
 export async function startRpcServer(opts: RpcOptions): Promise<RpcServer> {
-  const hub = createHub(opts.handlers);
+  const hub = opts.hub ?? createHub(opts.handlers);
   const listener = await createRpcListener({
     host: "127.0.0.1",
     hub,
@@ -180,6 +183,7 @@ export async function startRpcServer(opts: RpcOptions): Promise<RpcServer> {
   });
   return {
     port: listener.port,
+    hub,
     broadcast: (event) => hub.broadcast(event),
     close: () => listener.close(),
   };

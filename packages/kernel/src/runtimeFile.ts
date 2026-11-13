@@ -2,7 +2,13 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { dirname, join } from "node:path";
 import { z } from "zod";
 
-const RuntimeInfoSchema = z.object({ pid: z.number().int(), port: z.number().int(), token: z.string() });
+const RuntimeInfoSchema = z.object({
+  pid: z.number().int(),
+  port: z.number().int(),
+  token: z.string(),
+  /** Present only while the LAN listener is up; the token is never valid on it. */
+  remotePort: z.number().int().optional(),
+});
 const LockInfoSchema = z.object({ pid: z.number().int(), token: z.string(), startedAt: z.number() });
 
 export type RuntimeInfo = z.infer<typeof RuntimeInfoSchema>;

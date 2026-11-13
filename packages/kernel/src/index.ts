@@ -32,6 +32,8 @@ import {
   ProjectAddParams,
   ProviderCreateParams,
   ProviderDeleteParams,
+  RemoteRenameParams,
+  RemoteRevokeParams,
   RpcFault,
   ScheduleCreateParams,
   ScheduleDeleteParams,
@@ -74,7 +76,9 @@ import { clearProfileModels, profileAgentDir, syncProfile } from "./profile.js";
 import { ProjectService } from "./projects.js";
 import { ProviderService } from "./providers.js";
 import { parseRedactionPatterns, Redactor } from "./redact.js";
-import { startRpcServer, type RpcServer } from "./rpcServer.js";
+import { createHub, startRpcServer, type Handler, type RpcServer } from "./rpcServer.js";
+import { DeviceService } from "./devices.js";
+import { RemoteAccess } from "./remoteAccess.js";
 import { SkillService } from "./skills.js";
 import { SkillSourceService } from "./skillSources.js";
 import { ScheduleService } from "./schedules.js";
@@ -201,6 +205,7 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; o
 
     let db: Database.Database | undefined;
     let server: RpcServer | undefined;
+    let remoteAccess: RemoteAccess | undefined;
     let engines: EngineManager | undefined;
     let scheduler: Scheduler | undefined;
     // Assigned once the kernel exists; a stop cannot arrive before the server is listening.
@@ -251,6 +256,7 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; o
         dataDir: dir,
       });
       engines = engineManager;
+      const devices = new DeviceService(db);
       const schedules = new ScheduleService(db);
       const schedulerInstance = new Scheduler({
         schedules,
@@ -273,7 +279,32 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; o
         throw cause;
       };
 
-      const handlers: Record<string, (params: unknown) => Promise<unknown>> = {
+      // The hub is the whole of "one kernel": both listeners read this map and share this client set.
+      const hub = createHub({});
+      let listeningPort = 0;
+      const writeRuntime = (remotePort?: number): void => {
+        writeRuntimeFile(file, {
+          pid: process.pid,
+          port: listeningPort,
+          token,
+          ...(remotePort === undefined ? {} : { remotePort }),
+        });
+      };
+      const remote = new RemoteAccess({
+        hub,
+        devices,
+        ...(process.env.NOIR_WEB_ROOT === undefined ? {} : { webRoot: process.env.NOIR_WEB_ROOT }),
+      });
+      remoteAccess = remote;
+      /** The admin verbs: a paired browser may drive sessions, but not the door it came in by. */
+      const localOnly = (fn: Handler): Handler => async (params, ctx) => {
+        if (ctx?.local !== true) {
+          throw new RpcFault(ErrorCodes.forbidden, "Remote access is managed from this machine");
+        }
+        return fn(params, ctx);
+      };
+
+      const handlers: Record<string, Handler> = {
         [Methods.systemHealth]: async () => ({ status: "ok", pid: process.pid, engineDir: profileAgentDir(dir) }),
         [Methods.projectAdd]: async (params) => projects.add(ProjectAddParams.parse(params).path),
         [Methods.projectList]: async () => ({ projects: projects.list() }),
@@ -475,6 +506,39 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; o
           const { id, limit, before } = ScheduleRunsParams.parse(params);
           return schedules.runs(id, limit, before);
         },
+        [Methods.remoteStatus]: localOnly(async () => remote.status()),
+        [Methods.remoteEnable]: localOnly(async () => {
+          const status = await remote.enable();
+          writeRuntime(status.port ?? undefined);
+          return status;
+        }),
+        [Methods.remoteDisable]: localOnly(async () => {
+          await remote.disable();
+          writeRuntime();
+          return remote.status();
+        }),
+        [Methods.remotePair]: localOnly(async () => remote.pair()),
+        [Methods.remoteDevices]: localOnly(async () => ({
+          devices: devices.list().map((device) => ({
+            ...device,
+            connected: [...hub.clients.values()].some((client) => client.deviceId === device.id),
+          })),
+        })),
+        [Methods.remoteRename]: localOnly(async (params) => {
+          const { id, label } = RemoteRenameParams.parse(params);
+          const device = devices.rename(id, label);
+          if (device === undefined) throw new RpcFault(ErrorCodes.notFound, "No such device");
+          return { device };
+        }),
+        [Methods.remoteRevoke]: localOnly(async (params) => {
+          const { id } = RemoteRevokeParams.parse(params);
+          const revoked = devices.revoke(id);
+          // A revoked device loses the sockets it already holds, not just the next handshake.
+          for (const [socket, client] of hub.clients) {
+            if (client.deviceId === id) socket.close();
+          }
+          return { ok: revoked };
+        }),
         [Methods.sessionSubscribe]: async (params) => {
           const { sessionId, sinceSeq } = SessionSubscribeParams.parse(params);
           engineManager.reconcileSession(sessionId);
@@ -483,9 +547,11 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; o
         },
       };
 
+      hub.handlers = handlers;
       const started = await startRpcServer({
         token,
         handlers,
+        hub,
         buildId,
         requestShutdown: (force) => {
           const live = liveCount(sessions.list());
@@ -500,7 +566,8 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; o
       engineManager.reconcileAll();
       // After the socket is listening, so a fire can broadcast; before the first tick's catch-up.
       scheduler.start();
-      writeRuntimeFile(file, { pid: process.pid, port: started.port, token });
+      listeningPort = started.port;
+      writeRuntime();
     } catch (error) {
       if (engines) {
         try {
@@ -525,6 +592,7 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; o
     }
 
     if (!db || !server || !engines) throw new Error("Kernel failed to start");
+    const runningRemote = remoteAccess;
     const runningDb = db;
     const runningServer = server;
     const runningEngines = engines;
@@ -538,6 +606,7 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; o
         closed = true;
         try {
           scheduler.stop();
+          await runningRemote?.close();
           await runningEngines.shutdown();
         } finally {
           try {
