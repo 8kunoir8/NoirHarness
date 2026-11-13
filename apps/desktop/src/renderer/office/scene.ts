@@ -1,5 +1,6 @@
 import type Phaser from "phaser";
 import tilesUrl from "./assets/tiles.png?url";
+import roomUrl from "./assets/room.png?url";
 import charactersUrl from "./assets/characters.png?url";
 import { hashAgentId, type AgentOfficeState, type OfficeAction, type OfficePoint } from "./mapper.js";
 import { findPath } from "./pathfinding.js";
@@ -20,13 +21,32 @@ export const STEP_MS = 120;
 export const IDLE_WANDER_MS = 8_000;
 
 const SELECTED_TINT = 0x9ad0ff;
-/** Pixels above the character's feet, where the status glyph and the speech bubble sit. */
-const MARKER_OFFSET = 10;
-const BUBBLE_OFFSET = 20;
+/** Text stays on a fixed layer: y-sorting glyphs would let a far agent's bubble cover a near one. */
+const MARKER_DEPTH = 1_000;
+const BUBBLE_DEPTH = 1_001;
+/** Pixels above the top of the character's art, where the status glyph and the bubble sit. */
+const MARKER_GAP = 2;
+const BUBBLE_GAP = 12;
+
+/** The three drawn facings. `left` has no row of its own, so it reuses `right` mirrored. */
+export type Direction = "down" | "up" | "right";
+/** A looping clip from the manifest, plus the still pose an idle agent holds. */
+export type CharacterClip = "walk" | "type" | "read" | "seated";
+export type Pose = CharacterClip | "stand";
+
+/** Milliseconds per frame. Walk frames are driven by tile steps instead, so they never drift. */
+const POSE_MS: Record<Pose, number> = {
+  walk: STEP_MS,
+  type: 300,
+  read: 300,
+  seated: 300,
+  stand: 300,
+};
 
 /** The committed art, hashed into the renderer bundle by Vite — never fetched from a URL. */
 const ASSET_URLS: Record<string, string> = {
   "tiles.png": tilesUrl,
+  "room.png": roomUrl,
   "characters.png": charactersUrl,
 };
 
@@ -34,6 +54,13 @@ interface FurniturePlacement {
   frame: string;
   x: number;
   y: number;
+  /**
+   * Pixels below the tile's top edge. The cast's seated frames sit five pixels lower in the sheet
+   * than its standing ones, and their typing hands move on sprite rows 21-24, so the art hangs far
+   * enough down for its top edge to land below those hands: a tile-aligned desk hides the one part
+   * of the sprite that animates.
+   */
+  dy?: number;
 }
 
 export interface OfficeMap {
@@ -58,10 +85,22 @@ export interface AssetFrame {
   h: number;
 }
 
+/** The cast atlas: `count` characters, `columns` frames each, one row per drawn direction. */
+export interface CharacterSheet {
+  file: string;
+  frameWidth: number;
+  frameHeight: number;
+  columns: number;
+  count: number;
+  directions: Direction[];
+  clips: Record<CharacterClip, number[]>;
+}
+
 export interface AssetManifest {
   tile: number;
   files: string[];
   frames: Record<string, AssetFrame>;
+  characters: CharacterSheet;
 }
 
 export interface OfficeAssets {
@@ -87,7 +126,9 @@ export interface PhaserModule {
  */
 export async function loadOfficeAssets(): Promise<OfficeAssets> {
   const [map, manifest] = await Promise.all([import("./map.json"), import("./assets/manifest.json")]);
-  return { map: map.default, manifest: manifest.default };
+  // A JSON import widens `directions` and every clip list to `string[]`/`number[]`; the manifest is
+  // the contract, so it is asserted once here rather than at every read.
+  return { map: map.default, manifest: manifest.default as unknown as AssetManifest };
 }
 
 interface Mover {
@@ -102,7 +143,43 @@ interface Mover {
   step: number;
   arrivedAt: number;
   atLounge: boolean;
-  actionTween: Phaser.Tweens.Tween | undefined;
+  /** Index into the cast atlas: fixed per agent, so a re-spawn keeps the same character. */
+  character: number;
+  direction: Direction;
+  flipX: boolean;
+  /** `undefined` until the first pose is chosen, which is what makes the first paint happen. */
+  pose: Pose | undefined;
+  poseElapsed: number;
+  poseFrame: number;
+}
+
+/**
+ * Which atlas row a step uses, and whether it is mirrored. Movement picks a facing from the tile
+ * delta, so a sprite never turns mid-tile; a pure vertical step decides up from down.
+ */
+export function directionBetween(
+  from: OfficePoint,
+  to: OfficePoint,
+): { direction: Direction; flipX: boolean } {
+  const dx = to.x - from.x;
+  if (dx !== 0) return { direction: "right", flipX: dx < 0 };
+  return { direction: to.y < from.y ? "up" : "down", flipX: false };
+}
+
+/** Which clip an office action holds. Agents work and read at their station, and sit out a block. */
+function poseFor(action: OfficeAction): Pose {
+  switch (action) {
+    case "working":
+    case "shell":
+      return "type";
+    case "reading":
+      return "read";
+    case "blocked":
+    case "error":
+      return "seated";
+    default:
+      return "stand";
+  }
 }
 
 /**
@@ -118,7 +195,6 @@ export function createOfficeScene(
   class OfficeScene extends Phaser.Scene {
     private assets: OfficeAssets | undefined;
     private grid: boolean[][] = [];
-    private characterFrames: string[] = [];
     private readonly movers = new Map<string, Mover>();
     private selectedId: string | undefined;
     private reducedMotion = false;
@@ -141,9 +217,6 @@ export function createOfficeScene(
         this.grid = assets.map.collision.map((row) => [...row].map((cell) => cell !== "#"));
         await this.queueImages(assets.manifest);
         if (this.disposed) return;
-        this.characterFrames = Object.keys(assets.manifest.frames)
-          .filter((name) => name.startsWith("char-"))
-          .sort((left, right) => Number(left.slice(5)) - Number(right.slice(5)));
         this.drawMap(assets);
 
         const { tile, width, height } = assets.map;
@@ -168,9 +241,9 @@ export function createOfficeScene(
 
     update(time: number, delta: number): void {
       if (this.assets === undefined || this.reducedMotion) return;
-      const { tile } = this.assets.map;
       for (const mover of this.movers.values()) {
         if (mover.path.length === 0) {
+          this.tickPose(mover, delta);
           this.maybeWander(mover, time);
           continue;
         }
@@ -179,18 +252,19 @@ export function createOfficeScene(
           mover.carry -= STEP_MS;
           const next = mover.path.shift();
           if (next === undefined) break;
+          const facing = directionBetween(mover.tile, next);
           mover.tile = next;
           mover.step += 1;
-          const px = next.x * tile + tile / 2;
-          const py = next.y * tile + tile / 2;
-          mover.sprite.setPosition(px, py);
-          mover.sprite.setFlipX(mover.step % 2 === 1);
-          mover.marker.setPosition(px, py - MARKER_OFFSET);
-          mover.bubble.setPosition(px, py - BUBBLE_OFFSET);
+          mover.pose = "walk";
+          mover.direction = facing.direction;
+          mover.flipX = facing.flipX;
+          // Walk frames advance with the tile, so the cycle can never drift from the distance.
+          mover.poseFrame = mover.step % this.framesFor("walk").length;
+          this.place(mover);
+          this.paint(mover);
         }
         if (mover.path.length === 0) {
           mover.arrivedAt = time;
-          mover.sprite.setFlipX(false);
           this.startAction(mover);
         }
       }
@@ -215,7 +289,11 @@ export function createOfficeScene(
         }
       }
       for (const item of map.furniture) {
-        this.addFrame(assets, item.frame, item.x * tile, item.y * tile, 2);
+        // Sorting furniture by the bottom of its art puts a desk in front of the agent seated at it,
+        // and behind the agents walking on the rows below. The half pixel wins the tie with a seat.
+        const height = assets.manifest.frames[item.frame]?.h ?? tile;
+        const top = item.y * tile + (item.dy ?? 0);
+        this.addFrame(assets, item.frame, item.x * tile, top, top + height + 0.5);
       }
     }
 
@@ -240,8 +318,33 @@ export function createOfficeScene(
       await promise;
       this.events.off("destroy", settleOnDestroy);
       if (this.disposed) return;
+      for (const file of manifest.files) {
+        // A blocked or broken load still leaves a texture key behind, and painting one shows the
+        // missing-texture tile instead of a failure. A decoded source is the only proof of success.
+        const source = this.textures.get(file).getSourceImage() as { width: number };
+        if (source.width === 0) throw new Error("office asset failed to decode: " + file);
+      }
       for (const [name, frame] of Object.entries(manifest.frames)) {
         this.textures.get(frame.file).add(name, 0, frame.x, frame.y, frame.w, frame.h);
+      }
+      // One named frame per character, direction and column, so a pose is a name and not an index.
+      const sheet = manifest.characters;
+      const stride = sheet.columns * sheet.frameWidth;
+      for (let character = 0; character < sheet.count; character += 1) {
+        sheet.directions.forEach((direction, row) => {
+          for (let column = 0; column < sheet.columns; column += 1) {
+            this.textures
+              .get(sheet.file)
+              .add(
+                `char-${character}-${direction}-${column}`,
+                0,
+                character * stride + column * sheet.frameWidth,
+                row * sheet.frameHeight,
+                sheet.frameWidth,
+                sheet.frameHeight,
+              );
+          }
+        });
       }
     }
 
@@ -264,8 +367,7 @@ export function createOfficeScene(
       }
       for (const [agentId, mover] of [...this.movers]) {
         if (seen.has(agentId)) continue;
-        // The seated tween targets the sprite and repeats forever; stop it before the sprite dies.
-        this.stopAction(mover);
+        // A removed agent keeps no reference alive: its three objects die with the roster entry.
         mover.sprite.destroy();
         mover.marker.destroy();
         mover.bubble.destroy();
@@ -278,25 +380,29 @@ export function createOfficeScene(
       const assets = this.assets;
       if (assets === undefined) return;
       const { tile } = assets.map;
-      const frame = this.characterFrames[hashAgentId(state.agentId) % this.characterFrames.length];
-      const file = frame === undefined ? undefined : assets.manifest.frames[frame]?.file;
-      if (frame === undefined || file === undefined) return;
+      const sheet = assets.manifest.characters;
+      const character = hashAgentId(state.agentId) % sheet.count;
 
+      // Feet on the tile's bottom edge: the art is two tiles tall, so its upper half covers the row
+      // above and the furniture there hides the agent's legs instead of its head.
       const px = state.desk.x * tile + tile / 2;
-      const py = state.desk.y * tile + tile / 2;
-      const sprite = this.add.image(px, py, file, frame).setDepth(3);
+      const py = (state.desk.y + 1) * tile;
+      const sprite = this.add
+        .image(px, py, sheet.file, `char-${character}-down-0`)
+        .setOrigin(0.5, 1)
+        .setDepth(py);
       const marker = this.add
-        .text(px, py - MARKER_OFFSET, this.markerFor(state.action), {
+        .text(px, py - sheet.frameHeight - MARKER_GAP, this.markerFor(state.action), {
           fontFamily: "monospace",
           fontSize: "8px",
           color: "#f6c95c",
         })
         .setOrigin(0.5, 1)
-        .setDepth(4);
+        .setDepth(MARKER_DEPTH);
       // Spec §9.4: the approval title rides above the character; the roster row carries the same
       // text, so nothing here is the only copy.
       const bubble = this.add
-        .text(px, py - BUBBLE_OFFSET, state.bubble ?? "", {
+        .text(px, py - sheet.frameHeight - MARKER_GAP - BUBBLE_GAP, state.bubble ?? "", {
           fontFamily: "monospace",
           fontSize: "8px",
           color: "#16161c",
@@ -305,7 +411,7 @@ export function createOfficeScene(
           wordWrap: { width: 96 },
         })
         .setOrigin(0.5, 1)
-        .setDepth(5)
+        .setDepth(BUBBLE_DEPTH)
         .setVisible(state.bubble !== null);
 
       sprite.setInteractive();
@@ -324,7 +430,12 @@ export function createOfficeScene(
         step: 0,
         arrivedAt: 0,
         atLounge: false,
-        actionTween: undefined,
+        character,
+        direction: "down",
+        flipX: false,
+        pose: undefined,
+        poseElapsed: 0,
+        poseFrame: 0,
       };
       this.movers.set(state.agentId, mover);
       this.applyState(mover, state, true);
@@ -345,17 +456,16 @@ export function createOfficeScene(
       if (this.reducedMotion) {
         if (!changed && mover.path.length === 0) return;
         mover.path = [];
-        this.stopAction(mover);
         this.snap(mover, this.destinationFor(state));
+        this.startAction(mover);
         return;
       }
       if (!changed) {
         // Roster snapshots arrive every 250 ms; an unchanged agent must not restart its animation.
-        if (mover.path.length === 0 && mover.actionTween === undefined) this.startAction(mover);
+        if (mover.path.length === 0) this.startAction(mover);
         return;
       }
 
-      this.stopAction(mover);
       const destination = this.destinationFor(state);
       const path = findPath(this.grid, mover.tile, destination);
       if (path === null) {
@@ -369,6 +479,7 @@ export function createOfficeScene(
       mover.carry = 0;
       mover.atLounge = false;
       if (path.length === 0) this.startAction(mover);
+      else this.startWalk(mover);
     }
 
     private destinationFor(state: AgentOfficeState): OfficePoint {
@@ -400,38 +511,85 @@ export function createOfficeScene(
       mover.path = path;
       mover.carry = 0;
       mover.atLounge = !mover.atLounge;
+      this.startWalk(mover);
     }
 
     private snap(mover: Mover, tile: OfficePoint): void {
-      const size = this.assets?.map.tile ?? 16;
       mover.tile = { x: tile.x, y: tile.y };
-      const px = tile.x * size + size / 2;
-      const py = tile.y * size + size / 2;
-      mover.sprite.setPosition(px, py);
-      mover.sprite.setFlipX(false);
-      mover.marker.setPosition(px, py - MARKER_OFFSET);
-      mover.bubble.setPosition(px, py - BUBBLE_OFFSET);
+      this.place(mover);
     }
 
-    /** The seated action animation. Reduced motion reaches here only through the early return. */
+    /** Positions the sprite, marker and bubble from the mover's tile, feet on the tile's bottom. */
+    private place(mover: Mover): void {
+      const assets = this.assets;
+      if (assets === undefined) return;
+      const { tile } = assets.map;
+      const { frameHeight } = assets.manifest.characters;
+      const px = mover.tile.x * tile + tile / 2;
+      const py = (mover.tile.y + 1) * tile;
+      mover.sprite.setPosition(px, py).setDepth(py);
+      mover.marker.setPosition(px, py - frameHeight - MARKER_GAP);
+      mover.bubble.setPosition(px, py - frameHeight - MARKER_GAP - BUBBLE_GAP);
+    }
+
+    /** The frame list a pose cycles through; a still pose is a single element, never a special case. */
+    private framesFor(pose: Pose): number[] {
+      if (pose === "stand") return [0];
+      const frames = this.assets?.manifest.characters.clips[pose];
+      return frames === undefined || frames.length === 0 ? [0] : frames;
+    }
+
+    /** Applies the current frame; the only place a cast frame name is ever built. */
+    private paint(mover: Mover): void {
+      if (mover.pose === undefined) return;
+      const frames = this.framesFor(mover.pose);
+      const column = frames[mover.poseFrame % frames.length] ?? 0;
+      mover.sprite.setFrame(`char-${mover.character}-${mover.direction}-${column}`);
+      mover.sprite.setFlipX(mover.flipX);
+    }
+
+    /** Advances a looping clip on the game clock; walk is excluded because tile steps drive it. */
+    private tickPose(mover: Mover, delta: number): void {
+      if (mover.pose === undefined) return;
+      const frames = this.framesFor(mover.pose);
+      if (frames.length < 2) return;
+      mover.poseElapsed += delta;
+      const interval = POSE_MS[mover.pose];
+      if (mover.poseElapsed < interval) return;
+      mover.poseElapsed -= interval;
+      mover.poseFrame = (mover.poseFrame + 1) % frames.length;
+      this.paint(mover);
+    }
+
+    /**
+     * The still-or-looping pose an agent holds at its station. Idempotent, so the 250 ms roster
+     * snapshots cannot restart a clip mid-cycle.
+     */
     private startAction(mover: Mover): void {
-      this.stopAction(mover);
-      if (this.reducedMotion || mover.state.action === "idle") return;
-      mover.actionTween = this.tweens.add({
-        targets: mover.sprite,
-        scaleY: { from: 1, to: 0.94 },
-        duration: 520,
-        yoyo: true,
-        repeat: -1,
-        ease: "Sine.easeInOut",
-      });
+      const pose = poseFor(mover.state.action);
+      // Every station's art sits on its own row, so the agent faces the row above it.
+      if (mover.pose === pose && mover.direction === "up" && !mover.flipX) return;
+      if (mover.pose !== pose) {
+        mover.poseElapsed = 0;
+        mover.poseFrame = 0;
+      }
+      mover.pose = pose;
+      mover.direction = "up";
+      mover.flipX = false;
+      this.paint(mover);
     }
 
-    private stopAction(mover: Mover): void {
-      mover.actionTween?.stop();
-      mover.actionTween = undefined;
-      this.tweens.killTweensOf(mover.sprite);
-      mover.sprite.setScale(1);
+    /** Switches to the walk clip before the first tile lands, so the very first step is animated. */
+    private startWalk(mover: Mover): void {
+      const next = mover.path[0];
+      if (next === undefined) return;
+      const facing = directionBetween(mover.tile, next);
+      mover.pose = "walk";
+      mover.direction = facing.direction;
+      mover.flipX = facing.flipX;
+      mover.poseElapsed = 0;
+      mover.poseFrame = 0;
+      this.paint(mover);
     }
 
     private applySelection(mover: Mover): void {

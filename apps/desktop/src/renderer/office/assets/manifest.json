@@ -1,28 +1,28 @@
 {
   "tile": 16,
-  "files": ["tiles.png", "characters.png"],
+  "files": ["tiles.png", "room.png", "characters.png"],
   "frames": {
     "floor": { "file": "tiles.png", "x": 17, "y": 442, "w": 16, "h": 16 },
     "floor-alt": { "file": "tiles.png", "x": 68, "y": 442, "w": 16, "h": 16 },
     "wall": { "file": "tiles.png", "x": 289, "y": 255, "w": 16, "h": 16 },
     "window": { "file": "tiles.png", "x": 680, "y": 17, "w": 16, "h": 16 },
-    "desk": { "file": "tiles.png", "x": 459, "y": 85, "w": 16, "h": 16 },
-    "chair": { "file": "tiles.png", "x": 323, "y": 34, "w": 16, "h": 16 },
-    "shelf": { "file": "tiles.png", "x": 748, "y": 238, "w": 16, "h": 16 },
-    "rack": { "file": "tiles.png", "x": 442, "y": 119, "w": 16, "h": 16 },
-    "table": { "file": "tiles.png", "x": 748, "y": 0, "w": 16, "h": 16 },
-    "plant": { "file": "tiles.png", "x": 459, "y": 153, "w": 16, "h": 16 },
-    "char-0": { "file": "characters.png", "x": 0, "y": 85, "w": 16, "h": 16 },
-    "char-1": { "file": "characters.png", "x": 17, "y": 85, "w": 16, "h": 16 },
-    "char-2": { "file": "characters.png", "x": 0, "y": 102, "w": 16, "h": 16 },
-    "char-3": { "file": "characters.png", "x": 17, "y": 102, "w": 16, "h": 16 },
-    "char-4": { "file": "characters.png", "x": 0, "y": 119, "w": 16, "h": 16 },
-    "char-5": { "file": "characters.png", "x": 17, "y": 119, "w": 16, "h": 16 },
-    "char-6": { "file": "characters.png", "x": 0, "y": 136, "w": 16, "h": 16 },
-    "char-7": { "file": "characters.png", "x": 17, "y": 136, "w": 16, "h": 16 },
-    "char-8": { "file": "characters.png", "x": 0, "y": 153, "w": 16, "h": 16 },
-    "char-9": { "file": "characters.png", "x": 17, "y": 153, "w": 16, "h": 16 },
-    "char-10": { "file": "characters.png", "x": 0, "y": 170, "w": 16, "h": 16 },
-    "char-11": { "file": "characters.png", "x": 17, "y": 170, "w": 16, "h": 16 }
+    "desk": { "file": "room.png", "x": 0, "y": 0, "w": 48, "h": 32 },
+    "shelf": { "file": "room.png", "x": 48, "y": 0, "w": 32, "h": 32 },
+    "table": { "file": "room.png", "x": 80, "y": 0, "w": 32, "h": 32 },
+    "plant": { "file": "room.png", "x": 112, "y": 0, "w": 16, "h": 32 }
+  },
+  "characters": {
+    "file": "characters.png",
+    "frameWidth": 16,
+    "frameHeight": 32,
+    "columns": 8,
+    "count": 6,
+    "directions": ["down", "up", "right"],
+    "clips": {
+      "walk": [0, 1, 2, 1],
+      "type": [3, 4],
+      "read": [5, 6],
+      "seated": [7]
+    }
   }
 }

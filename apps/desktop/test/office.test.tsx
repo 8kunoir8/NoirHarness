@@ -408,13 +408,18 @@ describe("office scene", () => {
   interface FakeGameObject {
     x: number;
     y: number;
+    depth: number;
     frame: string;
     text: string;
     visible: boolean;
+    flipX: boolean;
+    /** Every frame this object was ever given, in order, so a repaint is observable. */
+    paints: string[];
+    destroyed: boolean;
     setOrigin: (x?: number, y?: number) => FakeGameObject;
     setDepth: (value: number) => FakeGameObject;
     setPosition: (x: number, y: number) => FakeGameObject;
-    setScale: (x: number, y?: number) => FakeGameObject;
+    setFrame: (value: string) => FakeGameObject;
     setFlipX: (value: boolean) => FakeGameObject;
     setTint: (value: number) => FakeGameObject;
     clearTint: () => FakeGameObject;
@@ -470,6 +475,8 @@ describe("office scene", () => {
     failAssets?: boolean;
     /** Make the image loader emit `loaderror` instead of `complete`. */
     failImages?: boolean;
+    /** Keep the texture keys but leave their sources empty, the way a blocked load does. */
+    failDecode?: boolean;
   }
 
   function harness(): {
@@ -478,8 +485,6 @@ describe("office scene", () => {
       events: Emitter;
       loop: { sleep: () => void; wake: () => void };
     };
-    tweens: unknown[];
-    tweenStops: Array<{ stop: () => void }>;
     sprites: FakeGameObject[];
     texts: FakeGameObject[];
     createScene: (
@@ -488,8 +493,6 @@ describe("office scene", () => {
       options?: HarnessOptions,
     ) => Promise<{ scene: SceneLike }>;
   } {
-    const tweens: unknown[] = [];
-    const tweenStops: Array<{ stop: () => void }> = [];
     const sprites: FakeGameObject[] = [];
     const texts: FakeGameObject[] = [];
     const registry = new Map<string, unknown>();
@@ -502,11 +505,13 @@ describe("office scene", () => {
     class GameObject implements FakeGameObject {
       x: number;
       y: number;
+      depth = 0;
       frame: string;
       text = "";
-      scale = 1;
       flipX = false;
       visible = true;
+      paints: string[] = [];
+      destroyed = false;
       tint: number | undefined = undefined;
       private handlers = new Map<string, () => void>();
 
@@ -514,17 +519,22 @@ describe("office scene", () => {
         this.x = x;
         this.y = y;
         this.frame = frame;
+        this.paints.push(frame);
       }
 
       setOrigin = (): FakeGameObject => this;
-      setDepth = (): FakeGameObject => this;
+      setDepth = (value: number): FakeGameObject => {
+        this.depth = value;
+        return this;
+      };
       setPosition = (x: number, y: number): FakeGameObject => {
         this.x = x;
         this.y = y;
         return this;
       };
-      setScale = (x: number, y?: number): FakeGameObject => {
-        this.scale = y ?? x;
+      setFrame = (value: string): FakeGameObject => {
+        this.frame = value;
+        this.paints.push(value);
         return this;
       };
       setFlipX = (value: boolean): FakeGameObject => {
@@ -555,12 +565,15 @@ describe("office scene", () => {
         this.visible = value;
         return this;
       };
-      destroy = (): void => undefined;
+      destroy = (): void => {
+        this.destroyed = true;
+      };
     }
 
     let completeHandler: (() => void) | undefined;
     let errorHandler: (() => void) | undefined;
     let failImages = false;
+    let failDecode = false;
 
     class Scene extends (Object as unknown as new () => object) {
       game = game;
@@ -589,23 +602,12 @@ describe("office scene", () => {
           else completeHandler?.();
         },
       };
-      textures = { get: () => ({ add: vi.fn() }) };
-      tweens = {
-        add: (config: unknown): { stop: () => void } => {
-          tweens.push(config);
-          const tween = { stop: vi.fn() };
-          tweenStops.push(tween);
-          return tween;
-        },
-        killTweensOf: vi.fn(),
-      };
+      textures = { get: () => ({ add: vi.fn(), getSourceImage: () => ({ width: failDecode ? 0 : 1 }) }) };
       cameras = { main: { setZoom: vi.fn(), setBounds: vi.fn(), centerOn: vi.fn() } };
     }
 
     return {
       game,
-      tweens,
-      tweenStops,
       sprites,
       texts,
       createScene: async (
@@ -614,6 +616,7 @@ describe("office scene", () => {
         options: HarnessOptions = {},
       ) => {
         failImages = options.failImages === true;
+        failDecode = options.failDecode === true;
         const factory = realScene.createOfficeScene(
           { AUTO: 0, Scene, Game: class {} } as never,
           {
@@ -632,36 +635,85 @@ describe("office scene", () => {
     };
   }
 
-  it("skips tweens but still seats the agent at its destination under reduced motion", async () => {
+  it("holds a still frame at the station under reduced motion", async () => {
     const harnessed = harness();
-    const state: AgentOfficeState = officeState({
-      agentId: "a-1",
-      name: "Scout",
-      status: "working",
-      action: "reading",
-      desk: { x: 2, y: 4 },
-    });
-    await harnessed.createScene(true, [state]);
-
-    expect(harnessed.tweens).toHaveLength(0);
-    const sprite = harnessed.sprites[0];
-    const shelf = (officeMap.zones.shelf as OfficePoint[])[hashAgentId("a-1") % officeMap.zones.shelf.length];
-    expect(sprite?.x).toBe((shelf?.x ?? 0) * 16 + 8);
-    expect(sprite?.y).toBe((shelf?.y ?? 0) * 16 + 8);
-  });
-
-  it("plays the action animation when motion is allowed", async () => {
-    const harnessed = harness();
-    await harnessed.createScene(false, [
+    const { scene } = await harnessed.createScene(true, [
       officeState({
         agentId: "a-1",
         name: "Scout",
         status: "working",
-        action: "working",
+        action: "reading",
         desk: { x: 2, y: 4 },
       }),
     ]);
-    expect(harnessed.tweens.length).toBeGreaterThan(0);
+
+    const character = hashAgentId("a-1") % manifest.characters.count;
+    const shelf = (officeMap.zones.shelf as OfficePoint[])[
+      hashAgentId("a-1") % officeMap.zones.shelf.length
+    ];
+    const sprite = harnessed.sprites[0];
+    expect(sprite?.x).toBe((shelf?.x ?? 0) * 16 + 8);
+    // The art is two tiles tall, so the feet sit on the tile's bottom edge, not its centre.
+    expect(sprite?.y).toBe((shelf?.y ?? 0) * 16 + 16);
+    expect(sprite?.frame).toBe(`char-${character}-up-5`);
+
+    // Reduced motion never advances a frame, however much game time passes.
+    const painted = sprite?.paints.length ?? 0;
+    scene.update(0, 5_000);
+    expect(sprite?.paints).toHaveLength(painted);
+  });
+
+  it("maps each action onto its own clip frame", async () => {
+    const harnessed = harness();
+    await harnessed.createScene(true, [
+      officeState({ agentId: "a-work", status: "working", action: "working", desk: { x: 2, y: 4 } }),
+      officeState({
+        agentId: "a-read",
+        status: "working",
+        action: "reading",
+        desk: { x: 5, y: 4 },
+        deskIndex: 1,
+      }),
+      officeState({
+        agentId: "a-block",
+        status: "needs_you",
+        action: "blocked",
+        desk: { x: 8, y: 4 },
+        deskIndex: 2,
+      }),
+      officeState({
+        agentId: "a-idle",
+        status: "idle",
+        action: "idle",
+        desk: { x: 11, y: 4 },
+        deskIndex: 3,
+      }),
+    ]);
+
+    const columnFor = (index: number, agentId: string): string | undefined => {
+      const character = hashAgentId(agentId) % manifest.characters.count;
+      return harnessed.sprites[index]?.frame.slice(`char-${character}-up-`.length);
+    };
+    // `type` opens at column 3, `read` at 5, `seated` at 7; an idle agent stands on frame 0.
+    expect(columnFor(0, "a-work")).toBe("3");
+    expect(columnFor(1, "a-read")).toBe("5");
+    expect(columnFor(2, "a-block")).toBe("7");
+    expect(columnFor(3, "a-idle")).toBe("0");
+  });
+
+  it("advances the working clip on the game clock", async () => {
+    const harnessed = harness();
+    const { scene } = await harnessed.createScene(false, [
+      officeState({ agentId: "a-1", status: "working", action: "working", desk: { x: 2, y: 4 } }),
+    ]);
+    const character = hashAgentId("a-1") % manifest.characters.count;
+    const sprite = harnessed.sprites[0];
+    expect(sprite?.frame).toBe(`char-${character}-up-3`);
+
+    scene.update(0, 300);
+    expect(sprite?.frame).toBe(`char-${character}-up-4`);
+    scene.update(300, 300);
+    expect(sprite?.frame).toBe(`char-${character}-up-3`);
   });
 
   it("does not restart the action animation for an unchanged snapshot", async () => {
@@ -673,10 +725,13 @@ describe("office scene", () => {
       action: "working",
       desk: { x: 2, y: 4 },
     });
-    await harnessed.createScene(false, [state]);
-    const started = harnessed.tweens.length;
+    const { scene } = await harnessed.createScene(false, [state]);
+    const sprite = harnessed.sprites[0];
+    scene.update(0, 300);
+    const painted = sprite?.paints.length ?? 0;
+
     harnessed.game.events.emit(keys.OFFICE_STATES_EVENT, [state]);
-    expect(harnessed.tweens).toHaveLength(started);
+    expect(sprite?.paints).toHaveLength(painted);
   });
 
   it("walks towards the destination one tile per 120 ms", async () => {
@@ -692,9 +747,29 @@ describe("office scene", () => {
     ]);
     const sprite = harnessed.sprites[0];
     expect(sprite?.x).toBe(2 * 16 + 8);
-    expect(sprite?.y).toBe(4 * 16 + 8);
+    expect(sprite?.y).toBe(5 * 16);
     scene.update(0, 120);
-    expect(sprite?.x === 2 * 16 + 8 && sprite?.y === 4 * 16 + 8).toBe(false);
+    expect(sprite?.x === 2 * 16 + 8 && sprite?.y === 5 * 16).toBe(false);
+  });
+
+  it("picks the atlas row from the step and mirrors leftwards", () => {
+    const { directionBetween } = realScene;
+    expect(directionBetween({ x: 4, y: 4 }, { x: 5, y: 4 })).toEqual({
+      direction: "right",
+      flipX: false,
+    });
+    expect(directionBetween({ x: 4, y: 4 }, { x: 3, y: 4 })).toEqual({
+      direction: "right",
+      flipX: true,
+    });
+    expect(directionBetween({ x: 4, y: 4 }, { x: 4, y: 3 })).toEqual({
+      direction: "up",
+      flipX: false,
+    });
+    expect(directionBetween({ x: 4, y: 4 }, { x: 4, y: 5 })).toEqual({
+      direction: "down",
+      flipX: false,
+    });
   });
 
   it("draws the approval title as a bubble and keeps the error marker", async () => {
@@ -749,6 +824,14 @@ describe("office scene", () => {
     expect(
       failedImages.game.events.log.filter((entry) => entry.event === keys.OFFICE_UNAVAILABLE_EVENT),
     ).toHaveLength(1);
+
+    // A load the browser refuses keeps its texture key but never decodes: the scene has to fail
+    // rather than paint the missing-texture tile over the whole room.
+    const emptyTextures = harness();
+    await emptyTextures.createScene(false, [], { failDecode: true });
+    expect(
+      emptyTextures.game.events.log.filter((entry) => entry.event === keys.OFFICE_UNAVAILABLE_EVENT),
+    ).toHaveLength(1);
   });
 
   it("idles a new agent for the full window instead of wandering on frame one", async () => {
@@ -766,16 +849,16 @@ describe("office scene", () => {
     // The game clock is already far past the wander window when this snapshot spawns the agent.
     scene.update(60_000, 16);
     expect(sprite?.x).toBe(2 * 16 + 8);
-    expect(sprite?.y).toBe(4 * 16 + 8);
+    expect(sprite?.y).toBe(5 * 16);
 
     scene.update(68_001, 16);
     scene.update(68_017, 200);
-    expect(sprite?.x === 2 * 16 + 8 && sprite?.y === 4 * 16 + 8).toBe(false);
+    expect(sprite?.x === 2 * 16 + 8 && sprite?.y === 5 * 16).toBe(false);
   });
 
-  it("stops a removed agent's action tween before destroying its sprite", async () => {
+  it("destroys a removed agent's objects and stops painting it", async () => {
     const harnessed = harness();
-    await harnessed.createScene(false, [
+    const { scene } = await harnessed.createScene(false, [
       officeState({
         agentId: "a-1",
         name: "Scout",
@@ -784,9 +867,14 @@ describe("office scene", () => {
         desk: { x: 2, y: 4 },
       }),
     ]);
-    expect(harnessed.tweenStops).toHaveLength(1);
+    const sprite = harnessed.sprites[0];
+    const painted = sprite?.paints.length ?? 0;
 
     harnessed.game.events.emit(keys.OFFICE_STATES_EVENT, []);
-    expect(harnessed.tweenStops[0]?.stop).toHaveBeenCalledTimes(1);
+    expect(sprite?.destroyed).toBe(true);
+    expect(harnessed.texts.every((text) => text.destroyed)).toBe(true);
+
+    scene.update(0, 5_000);
+    expect(sprite?.paints).toHaveLength(painted);
   });
 });
