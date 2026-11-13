@@ -404,6 +404,18 @@ The daemon is spawned with no inherited handles — an inherited stdout would ke
 process's pipe open for as long as the daemon runs — so it logs to `<dataDir>/logs/kernel.log`,
 rotated to `kernel.1.log` once it passes 2 MB.
 
+The same daemon can be reached from another device on the local network. Setup → *Devices* →
+*Allow devices on this network* starts a second listener (the loopback one is untouched and still
+uses the runtime token); *Create a pairing link* shows a URL whose `#` fragment carries a one-time
+code good for ten minutes. Opening it on a phone exchanges the code for an `HttpOnly` cookie, and the
+full harness loads: same sessions, same approvals, same event stream, because both listeners share
+one kernel. A paired device is listed with what it is doing right now and is revocable; revoking
+closes the sockets it already holds. Host and `Origin` must both name this machine, which is what
+stops DNS rebinding from reaching the socket. There is **no TLS** here: the cookie crosses the
+network in cleartext, so this is for a network you trust, and the pane says so. The `remote.*`
+methods — enable, disable, pair, devices, rename, revoke — refuse anything that is not loopback, so a
+stolen cookie cannot mint or remove devices.
+
 ## Configuration
 
 | variable | default | meaning |
@@ -414,6 +426,7 @@ rotated to `kernel.1.log` once it passes 2 MB.
 | `NOIR_GIT_COMMAND` | `git` | binary used for `git.status` and `git.diff`; set it when `git` is not on `PATH` |
 | `NOIR_KERNEL_LOG` | `<dataDir>/logs/kernel.log` | where the spawned daemon writes its own log; set by the app, read by `apps/kernel` |
 | `NOIR_NO_TRAY` | unset | `1` skips the tray, so closing the window quits the app; the end-to-end specs use it |
+| `NOIR_WEB_ROOT` | unset | directory of the built renderer served to a paired browser; the app passes its own `dist/renderer`, unset means a paired device has no page to load |
 
 The desktop shell also honours `NOIR_DATA_DIR`, `NOIR_KERNEL_ENTRY`, and `NOIR_NODE_BIN`.
 
@@ -426,8 +439,8 @@ pnpm --filter @noir/desktop test
 pnpm --filter @noir/desktop test:e2e
 ```
 
-`test:e2e` builds the app and drives Electron with Playwright against a local mock provider. Thirteen
-specs, sixteen tests: `smoke` (2) — boot, process spawn, health, and a provider surviving an app
+`test:e2e` builds the app and drives Electron with Playwright against a local mock provider. Fourteen
+specs, seventeen tests: `smoke` (2) — boot, process spawn, health, and a provider surviving an app
 restart; `chat` (2) — a streamed reply and a permission-approved tool call; `shell` (1) — a tool turn
 that survives the restart, a prompt queued behind a slow turn, an interrupt, the queued turn draining
 after it, and a restart that replays the transcript; `editor` (2) — open a file, edit it, save
@@ -444,7 +457,10 @@ bubble that clears, desks that survive a cold start, and `Enter` opening a chat 
 retimed to a minute, fired by the kernel's own timer into a real agent, and the run appearing in the
 open pane without a remount; `daemon` (1) — the kernel still answering `/health` after the app's
 window closes, and a relaunch reattaching to the same pid; `daemon-fire` (1) — a schedule firing with
-no window open at all, observed over the kernel socket and only then seen in the reopened panel.
+no window open at all, observed over the kernel socket and only then seen in the reopened panel;
+`remote` (1) — a browser with no Electron behind it, paired by code, running the harness over the
+LAN listener, then revoked and refused on the next load (needs `pnpm exec playwright install
+chromium`).
 Each spec gets its own temporary data directory and its own Electron profile
 (`--user-data-dir` inside that directory), so engine state and restored tabs stay inside it. Since
 the daemon outlives the app, each spec's teardown asks it to stop through `/shutdown` before the
