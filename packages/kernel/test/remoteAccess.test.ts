@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -54,9 +54,17 @@ function service(): DeviceService {
   return new DeviceService(db);
 }
 
-async function enabled(now?: () => number): Promise<{ remote: RemoteAccess; port: number; devices: DeviceService }> {
+async function enabled(
+  now?: () => number,
+  webRoot?: string,
+): Promise<{ remote: RemoteAccess; port: number; devices: DeviceService }> {
   const devices = service();
-  const remote = new RemoteAccess({ hub: createHub({}), devices, ...(now === undefined ? {} : { now }) });
+  const remote = new RemoteAccess({
+    hub: createHub({}),
+    devices,
+    ...(now === undefined ? {} : { now }),
+    ...(webRoot === undefined ? {} : { webRoot }),
+  });
   closes.push(() => remote.close());
   await remote.enable();
   const status = remote.status();
@@ -177,6 +185,35 @@ describe("remote access", () => {
     }
     expect(statuses.slice(0, 5)).toEqual([401, 401, 401, 401, 401]);
     expect(statuses[5]).toBe(429);
+  });
+
+  it("serves the shell to a stranger and the API to nobody", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "noir remote shell "));
+    dirs.push(dir);
+    writeFileSync(join(dir, "index.html"), "<!doctype html><title>harness</title>");
+    const { port, remote } = await enabled(undefined, dir);
+    expect(remote.status().canServe).toBe(true);
+
+    const page = await send(port, { path: "/" });
+    expect(page.status).toBe(200);
+    expect(page.body).toContain("harness");
+    expect(page.headers["cache-control"]).toBe("no-store");
+
+    // The page itself is public; the socket it opens is not.
+    await expect(
+      new Promise((resolve, reject) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${port}/`);
+        ws.once("open", () => resolve(ws));
+        ws.once("error", reject);
+      }),
+    ).rejects.toThrow();
+  });
+
+  it("says so when there is no shell to serve", async () => {
+    const { port } = await enabled();
+    const reply = await send(port, { path: "/" });
+    expect(reply.status).toBe(404);
+    expect(JSON.parse(reply.body)).toEqual({ error: "no web root configured" });
   });
 
   it("only opens a socket for a paired cookie", async () => {

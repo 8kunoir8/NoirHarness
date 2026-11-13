@@ -4,6 +4,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { RpcFault, ErrorCodes, type RemotePairResult, type RemoteStatusResult } from "@noir/protocol";
 import { createRpcListener, sendHttp, type ClientContext, type Hub, type RpcListener } from "./rpcServer.js";
 import { deviceCookieHeader, type DeviceService } from "./devices.js";
+import { serveAsset } from "./webAssets.js";
 
 const CODE_TTL_MS = 10 * 60 * 1000;
 const CODE_MAX_ATTEMPTS = 5;
@@ -178,6 +179,11 @@ export class RemoteAccess {
     const path = new URL(req.url ?? "/", "http://localhost").pathname;
     if (req.method === "POST" && path === "/pair/redeem") {
       await this.redeem(req, res);
+      return true;
+    }
+    if (this.opts.webRoot !== undefined && serveAsset(req, res, this.opts.webRoot)) return true;
+    if (path === "/" || (this.opts.webRoot === undefined && !path.startsWith("/pair"))) {
+      sendHttp(res, 404, { error: this.opts.webRoot === undefined ? "no web root configured" : "not found" });
       return true;
     }
     return false;
