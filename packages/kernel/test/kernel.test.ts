@@ -2,8 +2,9 @@ import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
-import WebSocket, { WebSocketServer } from "ws";
+import WebSocket from "ws";
 import { ErrorCodes } from "@noir/protocol";
 import type { Kernel } from "../src/index.js";
 import { memorySecrets, startKernel } from "./support.js";
@@ -164,22 +165,28 @@ describe("startKernel", () => {
     await first.close();
   });
 
-  it("correlates the health reply by id when a broadcast arrives first", async () => {
+  it("refuses a runtime file whose endpoint answers as its own pid", async () => {
     const dir = tempDir();
-    const wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
-    await new Promise<void>((resolve) => wss.once("listening", () => resolve()));
-    wss.on("connection", (socket) => {
-      socket.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: { event: { type: "session.status" } } }));
-      socket.on("message", () => {
-        socket.send(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { status: "ok", pid: process.ppid } }));
-      });
+    const fake = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json", connection: "close" });
+      res.end(JSON.stringify({ status: "ok", pid: process.ppid, buildId: null }));
     });
-    const address = wss.address();
-    if (!address || typeof address === "string") throw new Error("fake server has no port");
-    mkdirSync(join(dir, "runtime"), { recursive: true });
-    writeFileSync(join(dir, "runtime", "kernel.json"), JSON.stringify({ pid: process.ppid, port: address.port, token: "probe-token" }));
-    await expect(startKernel({ dataDir: dir })).rejects.toThrow(/already running/i);
-    await new Promise<void>((resolve) => wss.close(() => resolve()));
+    const listening = Promise.withResolvers<number>();
+    fake.listen(0, "127.0.0.1", () => {
+      const address = fake.address();
+      if (address === null || typeof address === "string") listening.reject(new Error("no port"));
+      else listening.resolve(address.port);
+    });
+    const port = await listening.promise;
+    try {
+      mkdirSync(join(dir, "runtime"), { recursive: true });
+      writeFileSync(join(dir, "runtime", "kernel.json"), JSON.stringify({ pid: process.ppid, port, token: "probe-token" }));
+      await expect(startKernel({ dataDir: dir })).rejects.toThrow(/already running/i);
+    } finally {
+      const closed = Promise.withResolvers<void>();
+      fake.close(() => closed.resolve());
+      await closed.promise;
+    }
   });
 
   it("refuses a recent claim whose owner is still starting", async () => {
@@ -334,6 +341,35 @@ describe("startKernel", () => {
       expect(listedB.skills[0].source.hash).toBe(installB.result.hash);
     } finally {
       await kernel.close();
+    }
+  });
+
+  it("reclaims a claim whose endpoint answers for a different pid", async () => {
+    // Pid reuse: the lock and runtime files name this process, but the endpoint that answers
+    // /health is somebody else. A health reply naming another pid is not a kernel.
+    const dir = tempDir();
+    mkdirSync(join(dir, "runtime"), { recursive: true });
+    const impostor = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json", connection: "close" });
+      res.end(JSON.stringify({ status: "ok", pid: process.ppid, buildId: null }));
+    });
+    const listening = Promise.withResolvers<number>();
+    impostor.listen(0, "127.0.0.1", () => {
+      const address = impostor.address();
+      if (address === null || typeof address === "string") listening.reject(new Error("no port"));
+      else listening.resolve(address.port);
+    });
+    const port = await listening.promise;
+    try {
+      writeFileSync(join(dir, "runtime", "kernel.lock"), JSON.stringify({ pid: process.pid, token: "old", startedAt: Date.now() - 60_000 }));
+      writeFileSync(join(dir, "runtime", "kernel.json"), JSON.stringify({ pid: process.pid, port, token: "old" }));
+      const kernel = await startKernel({ dataDir: dir });
+      expect(kernel.port).not.toBe(port);
+      await kernel.close();
+    } finally {
+      const closed = Promise.withResolvers<void>();
+      impostor.close(() => closed.resolve());
+      await closed.promise;
     }
   });
 });

@@ -2,7 +2,6 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
-import WebSocket from "ws";
 import { z } from "zod";
 import {
   AgentArchiveParams,
@@ -104,60 +103,35 @@ export interface Kernel {
   close(): Promise<void>;
 }
 
-const ProbeFrame = z.object({
-  id: z.number().int(),
-  result: z.object({ status: z.literal("ok"), pid: z.number().int() }).optional(),
-});
-
 /** `agent.roster` takes no fields; strict so a typo is `invalidParams` rather than silently ignored. */
 const AgentRosterParams = z.object({}).strict();
 
-const PROBE_REQUEST_ID = 1;
 const PROBE_TIMEOUT_MS = 750;
 const STARTUP_GRACE_MS = 30_000;
 const CLAIM_ATTEMPTS = 2;
 
 /**
- * Answers true only when the recorded endpoint identifies the same pid and accepts our token.
- * Every inbound frame is inspected: notifications (no id) and unrelated replies are ignored so
- * a broadcast that arrives before the health reply cannot make a serving kernel look stale.
+ * True only when the endpoint answers `/health` as the pid the caller expects. The runtime file's
+ * token is deliberately not sent: the reply carries no secret, and a process able to bind this port
+ * on this machine can already read the file.
  */
-function probeKernel(info: RuntimeInfo, timeoutMs: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${info.port}/?token=${info.token}`);
-    let settled = false;
-    const finish = (alive: boolean) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      ws.terminate();
-      resolve(alive);
-    };
-    const timer = setTimeout(() => finish(false), timeoutMs);
-    ws.once("open", () => {
-      ws.send(JSON.stringify({ jsonrpc: "2.0", id: PROBE_REQUEST_ID, method: Methods.systemHealth }));
-    });
-    ws.on("message", (data) => {
-      try {
-        const parsed = ProbeFrame.safeParse(JSON.parse(String(data)));
-        if (!parsed.success || parsed.data.id !== PROBE_REQUEST_ID) return;
-        finish(parsed.data.result?.status === "ok" && parsed.data.result.pid === info.pid);
-      } catch {
-        // Undecodable frames are ignored; the timeout decides.
-      }
-    });
-    ws.once("error", () => finish(false));
-    ws.once("close", () => finish(false));
-  });
+async function probeHealth(info: RuntimeInfo, timeoutMs: number): Promise<boolean> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${info.port}/health`, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok) return false;
+    const body: unknown = await res.json();
+    return typeof body === "object" && body !== null && "status" in body && body.status === "ok" && "pid" in body && body.pid === info.pid;
+  } catch {
+    return false;
+  }
 }
 
 type ClaimState = "running" | "starting" | "stale";
 
 /**
- * Classifies a lock holder. Fail closed: a live pid whose claim is still within the startup
- * grace is "starting" (refused), and a matching runtime file counts as "running" even when
- * the health probe times out. Only a dead pid, or a live pid with no handshake and an old
- * claim, is reclaimable.
+ * Classifies a lock holder. A pid that is alive but whose endpoint disowns it (pid reuse) or never
+ * answers within the startup grace is reclaimable, so a stale file cannot wedge the data directory;
+ * a holder that answers as its own pid is running.
  */
 async function inspectClaim(owner: LockInfo, runtimeFile: string): Promise<ClaimState> {
   if (!isProcessAlive(owner.pid)) return "stale";
@@ -165,8 +139,8 @@ async function inspectClaim(owner: LockInfo, runtimeFile: string): Promise<Claim
   for (;;) {
     const info = readRuntimeFile(runtimeFile);
     if (info && info.pid === owner.pid && info.token === owner.token) {
-      await probeKernel(info, Math.max(50, deadline - Date.now()));
-      return "running";
+      if (await probeHealth(info, Math.max(50, deadline - Date.now()))) return "running";
+      break;
     }
     if (Date.now() >= deadline) break;
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
@@ -221,7 +195,7 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; o
   try {
     // A runtime file without a matching live lock is only trusted when it still serves as its own pid.
     const prior = readRuntimeFile(file);
-    if (prior && isProcessAlive(prior.pid) && (await probeKernel(prior, PROBE_TIMEOUT_MS))) {
+    if (prior && isProcessAlive(prior.pid) && (await probeHealth(prior, PROBE_TIMEOUT_MS))) {
       throw new Error(`Kernel already running (pid ${prior.pid})`);
     }
 
