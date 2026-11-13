@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import type { AgentEvent } from "@noir/protocol";
-import { startRpcServer, type RpcServer } from "../src/rpcServer.js";
+import { createHub, createRpcListener, startRpcServer, type RpcServer } from "../src/rpcServer.js";
 
 let server: RpcServer | undefined;
 afterEach(async () => { await server?.close(); server = undefined; });
@@ -88,6 +88,34 @@ describe("rpc server", () => {
     server.broadcast(event);
     expect(await remainingGot).toEqual(frame);
     second.close();
+  });
+
+  it("shares one event stream across two listeners", async () => {
+    const event: AgentEvent = {
+      v: 1, id: "evt-2", seq: 2, ts: 0, sessionId: "s1", agentId: "a1",
+      type: "session.created", payload: { title: "t" },
+      provenance: { engine: "native", engineName: "test", adapterVersion: "0" },
+    };
+    const frame = { jsonrpc: "2.0", method: "event", params: { event } };
+    const hub = createHub({ "system.health": async () => ({ ok: true }) });
+    const allow = { authorize: () => ({ local: true }), handleHttp: async () => false };
+    const first = await createRpcListener({ host: "127.0.0.1", hub, ...allow });
+    const second = await createRpcListener({ host: "127.0.0.1", hub, ...allow });
+    try {
+      const a = await connect(first.port, "unused");
+      const b = await connect(second.port, "unused");
+      const gotA = nextMessage(a);
+      const gotB = nextMessage(b);
+      hub.broadcast(event);
+      expect(await gotA).toEqual(frame);
+      expect(await gotB).toEqual(frame);
+      expect((await call(a, "system.health")).result).toEqual({ ok: true });
+      a.close();
+      b.close();
+    } finally {
+      await first.close();
+      await second.close();
+    }
   });
 });
 async function httpGet(port: number, path: string): Promise<{ status: number; body: unknown }> {
