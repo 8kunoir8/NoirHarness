@@ -411,10 +411,14 @@ code good for ten minutes. Opening it on a phone exchanges the code for an `Http
 full harness loads: same sessions, same approvals, same event stream, because both listeners share
 one kernel. A paired device is listed with what it is doing right now and is revocable; revoking
 closes the sockets it already holds. Host and `Origin` must both name this machine, which is what
-stops DNS rebinding from reaching the socket. There is **no TLS** here: the cookie crosses the
-network in cleartext, so this is for a network you trust, and the pane says so. The `remote.*`
-methods — enable, disable, pair, devices, rename, revoke — refuse anything that is not loopback, so a
-stolen cookie cannot mint or remove devices.
+stops DNS rebinding from reaching the socket. The network listener speaks only TLS: it signs its own
+X.509 certificate with a P-256 key under `<dataDir>/tls` (no `openssl`, no CA — the DER is encoded in
+`packages/kernel/src/tls.ts`), the device cookie is `Secure`, and plaintext on that port never
+reaches the application. Nothing vouched for that certificate, so the browser warns once: the
+Devices pane prints its SHA-256 fingerprint to compare before accepting, and a certificate is
+reissued — with a new fingerprint — when the machine's addresses change. The `remote.*` methods —
+enable, disable, pair, devices, revoke — refuse anything that is not loopback, so a stolen cookie
+cannot mint or remove devices.
 
 ## Configuration
 
