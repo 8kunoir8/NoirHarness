@@ -1,7 +1,12 @@
+import { appendFileSync } from "node:fs";
 import { join } from "node:path";
-import { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, shell } from "electron";
-import { hostKernel, type HostedKernel } from "./kernelHost.js";
+import { app, BrowserWindow, Menu, Notification, Tray, dialog, ipcMain, nativeImage, shell } from "electron";
+import { KernelEvents } from "./kernelEvents.js";
+import { hostKernel, probeHealth, type HostedKernel } from "./kernelHost.js";
+import type { NotificationSink } from "./notifications.js";
 import { packagedKernelEntry, packagedNodeBinary, packagedRendererRoot } from "./packagedPaths.js";
+import { readSettings, writeSettings } from "./settings.js";
+import { Supervision } from "./supervision.js";
 import { armedLabel, trayMenu, type TrayActions } from "./tray.js";
 
 const dataDir = process.env.NOIR_DATA_DIR ?? app.getPath("userData");
@@ -17,6 +22,31 @@ let mainWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
 let armed = 0;
 let quitting = false;
+let settings = readSettings(dataDir);
+let supervisor: Supervision | undefined;
+let witness: KernelEvents | undefined;
+
+const notifyLogPath = process.env.NOIR_NOTIFY_LOG;
+
+/**
+ * A run that finished with no window open has to say so somewhere. When a log path is set the line
+ * goes there as well, so an e2e can prove the notification without a notification daemon.
+ */
+const notifySink: NotificationSink = {
+  show(title, body) {
+    if (notifyLogPath !== undefined && notifyLogPath !== "") {
+      try {
+        appendFileSync(notifyLogPath, `${JSON.stringify({ title, body })}\n`);
+      } catch {
+        // A log that cannot be written must not take the notification with it.
+      }
+    }
+    if (!Notification.isSupported()) return;
+    const notification = new Notification({ title, body });
+    notification.on("click", showWindow);
+    notification.show();
+  },
+};
 
 async function createWindow(): Promise<void> {
   const win = new BrowserWindow({
@@ -95,6 +125,13 @@ function createTray(): void {
     quitAndStop: () => {
       void stopHosted().finally(quitNow);
     },
+    openAtLogin: () => settings.openAtLogin,
+    setOpenAtLogin: (on) => {
+      settings = { ...settings, openAtLogin: on };
+      writeSettings(dataDir, settings);
+      app.setLoginItemSettings({ openAtLogin: on, args: [] });
+      rebuild();
+    },
   };
   const rebuild = (): void => {
     tray?.setContextMenu(Menu.buildFromTemplate(trayMenu(armed, actions)));
@@ -113,8 +150,8 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   app.on("second-instance", showWindow);
 
-  app.whenReady().then(async () => {
-    hosted = await hostKernel(
+  const startKernel = (): Promise<HostedKernel> =>
+    hostKernel(
       { dataDir, kernelEntry, nodeBin, webRoot: rendererRoot },
       {
         promptBusy: async (live) => {
@@ -130,11 +167,38 @@ if (!app.requestSingleInstanceLock()) {
           return choice === 0 ? "stop" : "keep";
         },
       },
-    ).catch((error: unknown) => {
+    );
+
+  /** Sixteen seconds of retry backoff is longer than the thing it waits for is worth. */
+  const startWitness = (kernel: HostedKernel): void => {
+    witness?.stop();
+    witness = new KernelEvents({ port: kernel.port, token: kernel.token, sink: notifySink });
+    witness.start();
+  };
+
+  app.whenReady().then(async () => {
+    hosted = await startKernel().catch((error: unknown) => {
       // The window still opens: the banner says nothing survives it.
       console.error("Kernel failed to start:", error instanceof Error ? error.message : error);
       return undefined;
     });
+    if (hosted !== undefined) startWitness(hosted);
+    // Stored value wins over whatever the OS thinks: a reinstall must not resurrect a choice.
+    app.setLoginItemSettings({ openAtLogin: settings.openAtLogin, args: [] });
+
+    supervisor = new Supervision({
+      probe: async () => {
+        if (hosted === undefined) return false;
+        const health = await probeHealth(hosted.port, 2_000);
+        // A different pid is a kernel someone else started; the respawn path adopts it.
+        return health !== null && health.pid === hosted.pid;
+      },
+      respawn: async () => {
+        hosted = await startKernel();
+        startWitness(hosted);
+      },
+    });
+    supervisor.start();
     ipcMain.handle("kernel:info", () => {
       if (hosted === undefined) throw new Error("Kernel did not start");
       return { port: hosted.port, token: hosted.token, buildMatches: hosted.buildMatches, daemon: hosted.daemon };
@@ -159,6 +223,8 @@ if (!app.requestSingleInstanceLock()) {
   app.on("before-quit", () => {
     // The window's `close` handler decides whether a close is a hide; this only opens the gate.
     quitting = true;
+    supervisor?.stop();
+    witness?.stop();
   });
   app.on("window-all-closed", () => {
     // With a tray the window never truly closes, so this fires only when nothing can reopen it.

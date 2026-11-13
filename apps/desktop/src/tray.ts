@@ -4,6 +4,9 @@ export interface TrayActions {
   show(): void;
   quit(): void;
   quitAndStop(): void;
+  /** Read at menu build time, so the checkmark matches the stored preference. */
+  openAtLogin(): boolean;
+  setOpenAtLogin(on: boolean): void;
 }
 
 /** Always a full sentence: the menu must not change height when the count does. */
@@ -20,6 +23,13 @@ export function trayMenu(armed: number, actions: TrayActions): MenuItemConstruct
   return [
     { label: "Show NoirHarness", click: () => actions.show() },
     { label: armedLabel(armed), enabled: false },
+    { type: "separator" },
+    {
+      label: "Start when I sign in",
+      type: "checkbox",
+      checked: actions.openAtLogin(),
+      click: (item) => actions.setOpenAtLogin(item.checked),
+    },
     { type: "separator" },
     { label: "Quit", click: () => actions.quit() },
     { label: "Quit and stop daemon", click: () => actions.quitAndStop() },

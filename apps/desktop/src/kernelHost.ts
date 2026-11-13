@@ -118,7 +118,7 @@ export function logPath(dataDir: string): string {
   return file;
 }
 
-async function probeHealth(port: number, timeoutMs: number): Promise<HealthInfo | null> {
+export async function probeHealth(port: number, timeoutMs: number): Promise<HealthInfo | null> {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(timeoutMs) });
     if (!res.ok) return null;
