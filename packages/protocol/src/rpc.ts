@@ -63,6 +63,13 @@ export const Methods = {
   scheduleDelete: "schedule.delete",
   scheduleRunNow: "schedule.runNow",
   scheduleRuns: "schedule.runs",
+  remoteStatus: "remote.status",
+  remoteEnable: "remote.enable",
+  remoteDisable: "remote.disable",
+  remotePair: "remote.pair",
+  remoteDevices: "remote.devices",
+  remoteRename: "remote.rename",
+  remoteRevoke: "remote.revoke",
 } as const;
 
 /** `system.health` result. `engineDir` is the agent directory the kernel materializes and omp reads. */
@@ -483,6 +490,40 @@ export const McpTestResult = z.object({
 });
 export type McpTestResult = z.infer<typeof McpTestResult>;
 
+/** Paired browsers. `url` is null until the LAN listener exists and the machine has an address. */
+export const RemoteStatusResult = z.object({
+  enabled: z.boolean(),
+  port: z.number().int().nullable(),
+  url: z.string().nullable(),
+  /** False when the kernel was started without assets to serve; pairing would have nothing to show. */
+  canServe: z.boolean(),
+});
+export type RemoteStatusResult = z.infer<typeof RemoteStatusResult>;
+
+export const RemotePairResult = z.object({
+  url: z.string(),
+  code: z.string(),
+  expiresAt: z.number().int(),
+});
+export type RemotePairResult = z.infer<typeof RemotePairResult>;
+
+export const DeviceView = z.object({
+  id: z.string(),
+  label: z.string(),
+  createdAt: z.number().int(),
+  lastSeenAt: z.number().int(),
+  revokedAt: z.number().int().nullable(),
+  connected: z.boolean(),
+});
+export type DeviceView = z.infer<typeof DeviceView>;
+export const RemoteDevicesResult = z.object({ devices: z.array(DeviceView) });
+export type RemoteDevicesResult = z.infer<typeof RemoteDevicesResult>;
+
+export const RemoteRenameParams = z.object({ id: z.string().min(1), label: z.string().trim().min(1).max(60) });
+export type RemoteRenameParams = z.infer<typeof RemoteRenameParams>;
+export const RemoteRevokeParams = z.object({ id: z.string().min(1) });
+export type RemoteRevokeParams = z.infer<typeof RemoteRevokeParams>;
+
 export const EventNotificationParams = z.object({ event: AgentEvent });
 export type EventNotificationParams = z.infer<typeof EventNotificationParams>;
 
@@ -537,6 +578,7 @@ export const ErrorCodes = {
   methodNotFound: -32601,
   internal: -32603,
   unauthorized: -32001,
+  forbidden: -32003,
   notFound: -32004,
   conflict: -32009,
 } as const;

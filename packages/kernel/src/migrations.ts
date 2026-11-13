@@ -182,6 +182,20 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
       ALTER TABLE sessions ADD COLUMN schedule_id TEXT REFERENCES schedules(id) ON DELETE SET NULL;
     `,
   },
+  {
+    id: 10,
+    sql: `
+      CREATE TABLE devices (
+        id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        created_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        revoked_at INTEGER
+      );
+      CREATE INDEX idx_devices_revoked ON devices (revoked_at);
+    `,
+  },
 ];
 
 export function migrate(db: Database.Database): void {
