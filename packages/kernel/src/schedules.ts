@@ -181,16 +181,20 @@ export class ScheduleService {
     this.db.prepare("DELETE FROM schedules WHERE id = ?").run(id);
   }
 
+  /**
+   * A run is only live if its own session is. The newest `fired` run answers that, not the newest
+   * run: once a skip is recorded the newest row is the skip, and reading it would report a still-
+   * working session as free and fire a second one on top of it.
+   */
   isRunning(scheduleId: string): boolean {
     const row = this.db
       .prepare(
-        `SELECT r.status AS run_status, s.status AS session_status
-         FROM schedule_runs r LEFT JOIN sessions s ON s.id = r.session_id
-         WHERE r.schedule_id = ? ORDER BY r.due_at DESC LIMIT 1`,
+        `SELECT s.status AS session_status
+         FROM schedule_runs r JOIN sessions s ON s.id = r.session_id
+         WHERE r.schedule_id = ? AND r.status = 'fired' ORDER BY r.due_at DESC LIMIT 1`,
       )
-      .get(scheduleId) as { run_status: ScheduleRunStatus; session_status: string | null } | undefined;
-    if (row === undefined || row.run_status !== "fired") return false;
-    return row.session_status !== null && ACTIVE_SESSION[row.session_status] === true;
+      .get(scheduleId) as { session_status: string } | undefined;
+    return row !== undefined && ACTIVE_SESSION[row.session_status] === true;
   }
 
   /** A manual run's due instant: after every recorded run, so the (scheduleId, due_at) cursor stays strict. */

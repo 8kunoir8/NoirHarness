@@ -155,6 +155,22 @@ describe("Scheduler.tick", () => {
     expect(f.schedules.view(created.id).nextRunAt).toBeGreaterThan(f.now());
   });
 
+  it("keeps skipping while the same run is still working", () => {
+    const f = setup();
+    const created = f.create();
+    f.at(created.nextRunAt);
+    f.scheduler.tick();
+    f.db.prepare("UPDATE sessions SET status = 'waiting' WHERE id = 'sess-1'").run();
+    // Two more intervals pass with the first session still live: neither may start a second one.
+    f.at(created.nextRunAt + 86_400_000);
+    f.scheduler.tick();
+    f.at(created.nextRunAt + 2 * 86_400_000);
+    f.scheduler.tick();
+    const { runs } = f.schedules.runs(created.id, 20, undefined);
+    expect(runs.map((run) => run.status)).toEqual(["skipped", "skipped", "fired"]);
+    expect(f.sessionsCreated).toEqual(["sess-1"]);
+  });
+
   it("records failed and keeps the schedule enabled when the session cannot be created", () => {
     const f = setup();
     const created = f.create();
@@ -202,6 +218,26 @@ describe("Scheduler.tick", () => {
     f.scheduler.stop();
     expect([...f.timers.values()].some((timer) => timer.cleared)).toBe(true);
     expect([...f.timers.values()].filter((timer) => !timer.cleared)).toEqual([]);
+  });
+
+  it("clamps an armed delay past the 32-bit limit instead of spinning", () => {
+    const f = setup();
+    // 69 days out: a bare setTimeout would overflow to 1 ms, fire at once, and re-arm forever.
+    f.create({ intervalMinutes: 69 * 1_440 });
+    f.scheduler.start();
+    const armed = [...f.timers.values()].filter((timer) => !timer.cleared);
+    expect(armed).toHaveLength(1);
+    expect(armed[0]?.ms).toBe(2 ** 31 - 1);
+
+    // One chunk elapses and the schedule is still far out: it wakes, finds nothing due, and sleeps
+    // another full chunk rather than spinning or firing early.
+    f.at(f.now() + 2 ** 31 - 1);
+    armed[0]?.fn();
+    expect(f.sessionsCreated).toEqual([]);
+    const next = [...f.timers.values()].filter((timer) => !timer.cleared);
+    expect(next).toHaveLength(1);
+    expect(next[0]?.ms).toBe(2 ** 31 - 1);
+    expect(f.schedules.earliestEnabled()).toBeGreaterThan(f.now());
   });
 });
 

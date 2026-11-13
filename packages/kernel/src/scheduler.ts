@@ -2,6 +2,9 @@ import { ErrorCodes, RpcFault, type ScheduleRunStatus, type ScheduleRunView } fr
 import { occurrencesBetween } from "./cadence.js";
 import type { ScheduleRecord, ScheduleService } from "./schedules.js";
 
+/** `setTimeout` stores its delay in 32 bits; a larger one is clamped by the runtime to 1 ms. */
+const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
+
 /**
  * A tick that lands this far past the due instant is on time. Event-loop latency and a slow disk
  * both fit here; without the slack every fire would record itself as missed.
@@ -121,7 +124,12 @@ export class Scheduler {
     if (this.stopped) return;
     const next = this.opts.schedules.earliestEnabled();
     if (next === undefined) return;
-    const timer = (this.opts.setTimer ?? setTimeout)(() => this.tick(), Math.max(0, next - (this.opts.now ?? Date.now)()));
+    const due = next - (this.opts.now ?? Date.now)();
+    // Node stores a delay in 32 bits: anything larger silently becomes 1 ms, so a schedule more than
+    // ~24.8 days out would wake immediately, find nothing due, and re-arm to 1 ms in a tight loop.
+    // Sleeping the maximum and re-arming is exact, because `tick()` re-reads the clock.
+    const delay = Math.min(Math.max(0, due), MAX_TIMER_DELAY_MS);
+    const timer = (this.opts.setTimer ?? setTimeout)(() => this.tick(), delay);
     // Nothing to wake for must not keep the process alive; a test double need not implement it.
     timer.unref?.();
     this.timer = timer;

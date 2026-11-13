@@ -141,6 +141,34 @@ describe("ScheduleService runs", () => {
     expect(schedule.view(created.id).running).toBe(false);
   });
 
+  it("still reports running after a skip is recorded on top of a live run", () => {
+    const { db, schedule, workspaceId } = setup();
+    const created = schedule.create(createInput(workspaceId), T0);
+    db.prepare(
+      "INSERT INTO sessions (id, workspace_id, agent_id, engine, status, created_at) VALUES (?,?,?,?,?,?)",
+    ).run("s-1", workspaceId, "ag-1", "acp", "waiting", T0);
+    const fired = schedule.recordRun({
+      scheduleId: created.id,
+      status: "fired",
+      dueAt: created.nextRunAt,
+      startedAt: created.nextRunAt,
+      reason: null,
+      nextRunAt: created.nextRunAt + 1_440_000,
+    });
+    schedule.attachSession(fired, "s-1");
+    // The skip is the newest row by due_at, but the session it skipped for is still live.
+    schedule.recordRun({
+      scheduleId: created.id,
+      status: "skipped",
+      dueAt: created.nextRunAt + 1_440_000,
+      startedAt: created.nextRunAt + 1_440_000,
+      reason: "still working",
+      nextRunAt: created.nextRunAt + 2_880_000,
+    });
+    expect(schedule.view(created.id).running).toBe(true);
+    expect(schedule.isRunning(created.id)).toBe(true);
+  });
+
   it("pages runs on dueAt descending and stops at the end", () => {
     const { schedule, workspaceId } = setup();
     const created = schedule.create(createInput(workspaceId), T0);
