@@ -472,4 +472,43 @@ describe("Skills", () => {
     expect(within(global).getByRole("button", { name: "Remove kept" })).toBeDefined();
     expect(within(global).queryByRole("button", { name: "Confirm remove kept" })).toBeNull();
   });
+
+  it("drops a removed row's pin so a later install of the same name cannot inherit it", async () => {
+    const calls: Array<{ method: string; params: unknown }> = [];
+    let installed = true;
+    const row = {
+      scope: "project", name: "cycled", description: "d", hash: "c".repeat(64), enabled: true,
+      source: { kind: "local", url: "/seed/cycled", ref: null, commit: null, hash: "c".repeat(64) },
+    };
+    const request = vi.fn(async (method: string, params: unknown): Promise<unknown> => {
+      calls.push({ method, params });
+      if (method === "skill.list") return { skills: installed ? [row] : [], shadowed: [], warnings: [] };
+      if (method === "skill.checkUpdate") return { commit: null, hash: "f".repeat(64), changed: true };
+      if (method === "skill.remove") {
+        installed = false;
+        return { ok: true, skills: [], shadowed: [], warnings: [] };
+      }
+      if (method === "skill.install") {
+        installed = true;
+        return { ok: true, name: "cycled", hash: "c".repeat(64) };
+      }
+      throw new Error(method);
+    }) as unknown as RequestFn;
+
+    render(<Skills workspaceId="ws-1" request={request} />);
+    const project = screen.getByRole("region", { name: "Project skills" });
+    await userEvent.click(await within(project).findByRole("button", { name: "Check for updates cycled" }));
+    await within(project).findByRole("button", { name: "Update cycled" });
+
+    await userEvent.click(within(project).getByRole("button", { name: "Remove cycled" }));
+    await userEvent.click(within(project).getByRole("button", { name: "Confirm remove cycled" }));
+    await waitFor(() => expect(within(project).getByText("No project skills")).toBeDefined());
+
+    // Reinstall the same name in the same scope: the pin belonged to the deleted bytes.
+    await userEvent.type(screen.getByLabelText("Skill source"), "/seed/cycled");
+    await userEvent.click(screen.getByRole("button", { name: "Install skill" }));
+    await waitFor(() => expect(within(project).queryByRole("button", { name: "View cycled" })).not.toBeNull());
+    expect(within(project).queryByRole("button", { name: "Update cycled" })).toBeNull();
+    expect(calls.some((call) => call.method === "skill.update")).toBe(false);
+  });
 });

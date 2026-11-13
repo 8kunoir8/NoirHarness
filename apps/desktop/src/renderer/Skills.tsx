@@ -358,6 +358,9 @@ export function Skills({ workspaceId, request }: SkillsProps) {
         setSelected(undefined);
         setBody(undefined);
       }
+      // A pin names installed bytes. The row is gone, so a later install of the same name in this
+      // scope must not inherit it: it would offer an update against a hash nothing here holds.
+      forgetUpdate(key);
     } catch (removeError) {
       if (generation.current !== ticket) return;
       setError(errorMessage(removeError));
