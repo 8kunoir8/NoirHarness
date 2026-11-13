@@ -36,6 +36,12 @@ export const REFRESH_MS = 15_000;
 
 const DAY_MINUTES = 1_440;
 
+/**
+ * Minutes past the hour. A sub-daily cadence is lined up by its phase, so 15-minute runs can start
+ * at :07 and an hourly one at :15; the kernel keeps that phase through every step.
+ */
+const MINUTE_PHASES = Array.from({ length: 60 }, (_, minute) => minute);
+
 interface Draft {
   id: string | null;
   /** The row the draft was loaded from, so saving sends only what the user changed. */
@@ -74,6 +80,15 @@ function draftFrom(schedule: ScheduleView): Draft {
   };
 }
 
+/**
+ * The anchor a cadence can actually hold: a wall-clock time for anything measured in days, a minute
+ * past the hour below that. A daily schedule's 09:00 is not "09:15 past the hour" when it is retimed
+ * to hourly, so the two are kept in one place and compared in the same terms.
+ */
+function anchorFor(intervalMinutes: number, anchorMinutes: number): number {
+  return intervalMinutes % DAY_MINUTES === 0 ? anchorMinutes : anchorMinutes % 60;
+}
+
 /** Only the fields the user actually changed; the kernel rejects an update with no field. */
 function draftPatch(draft: Draft): Record<string, unknown> {
   const loaded = draft.loaded;
@@ -82,7 +97,10 @@ function draftPatch(draft: Draft): Record<string, unknown> {
   if (draft.name !== loaded.name) patch.name = draft.name.trim();
   if (draft.prompt !== loaded.prompt) patch.prompt = draft.prompt.trim();
   if (draft.intervalMinutes !== loaded.intervalMinutes) patch.intervalMinutes = draft.intervalMinutes;
-  if (draft.anchorMinutes !== loaded.anchorMinutes) patch.anchorMinutes = draft.anchorMinutes;
+  // Compared in the same terms as the row: retiming daily 09:00 to hourly means "at :00", which is
+  // a real change even though the stored anchor did not move.
+  const anchor = anchorFor(draft.intervalMinutes, draft.anchorMinutes);
+  if (anchor !== anchorFor(loaded.intervalMinutes, loaded.anchorMinutes)) patch.anchorMinutes = anchor;
   if (draft.enabled !== loaded.enabled) patch.enabled = draft.enabled;
   return patch;
 }
@@ -201,7 +219,7 @@ export function Automations({ workspaceId, request, onOpenSession }: Automations
           name: draft.name.trim(),
           prompt: draft.prompt.trim(),
           intervalMinutes: draft.intervalMinutes,
-          anchorMinutes: draft.intervalMinutes % DAY_MINUTES === 0 ? draft.anchorMinutes : 0,
+          anchorMinutes: anchorFor(draft.intervalMinutes, draft.anchorMinutes),
           enabled: draft.enabled,
         });
       } else {
@@ -418,7 +436,24 @@ export function Automations({ workspaceId, request, onOpenSession }: Automations
                 }}
               />
             </>
-          ) : null}
+          ) : (
+            <>
+              <label htmlFor="schedule-minute">Minute</label>
+              <select
+                id="schedule-minute"
+                value={String(draft.anchorMinutes % 60)}
+                onChange={(event) =>
+                  setDraft((current) => ({ ...current, anchorMinutes: Number(event.target.value) }))
+                }
+              >
+                {MINUTE_PHASES.map((minute) => (
+                  <option key={minute} value={String(minute)}>
+                    :{String(minute).padStart(2, "0")}
+                  </option>
+                ))}
+              </select>
+            </>
+          )}
           <div className="automations-actions">
             <button type="button" disabled={!canSave} onClick={() => void save()}>
               Save schedule

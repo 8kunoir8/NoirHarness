@@ -364,12 +364,16 @@ is fetched at runtime.
 ## Automations
 
 A schedule is a workspace, an agent, a prompt, and a cadence: every `N` minutes, or every `N` days
-at a wall-clock time. The **Automations** view lists them with their next run, edits one at a time,
-and shows the run history; `Run now` records a manual run and opens its chat. The open view re-reads
-its rows and the selected schedule's history every 15 seconds — a fire is recorded in the kernel with
-no event to announce it, so the pane polls rather than waiting to be told. The kernel's scheduler
-holds one timer, armed for the earliest enabled `next_run_at`, and re-arms after every tick and after
-every create, edit, or delete, so a schedule added while the app is open fires without a restart.
+at a wall-clock time. A cadence below a day also carries a phase — the minute past the hour it is
+lined up on — so "every 15 minutes" can start at :07 and an hourly schedule can run at :15; the
+kernel keeps that phase through every step, and a wall-clock anchor left over from a daily schedule
+is read as its minute, not as 540 minutes past the hour. The **Automations** view lists them with
+their next run, edits one at a time, and shows the run history; `Run now` records a manual run and
+opens its chat. The open view re-reads its rows and the selected schedule's history every 15 seconds
+— a fire is recorded in the kernel with no event to announce it, so the pane polls rather than
+waiting to be told. The kernel's scheduler holds one timer, armed for the earliest enabled
+`next_run_at`, and re-arms after every tick and after every create, edit, or delete, so a schedule
+added while the app is open fires without a restart.
 
 Each due schedule gets exactly one row in `schedule_runs` before anything else happens: the run is
 recorded and `next_run_at` advanced in a single transaction, so a crash in between cannot fire the

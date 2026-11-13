@@ -66,4 +66,13 @@ describe("nextAfter", () => {
     const after = at(2026, 2, 13, 10, 0);
     expect(nextAfter(from, 1440, after)).toBe(occurrencesBetween(from, 1440, after).next);
   });
+
+  it("keeps a sub-day anchor as the minute each hour lands on", () => {
+    // "Hourly at :15": the chain starts on the anchor, so every step is at :15, never :00.
+    const start = anchoredOn(at(2026, 2, 10, 9, 0), 15);
+    expect(nextAfter(start, 60, at(2026, 2, 10, 10, 0), 15)).toBe(at(2026, 2, 10, 10, 15));
+    // Past the step budget the re-aligned answer still carries the phase.
+    expect(nextAfter(start, 60, at(2027, 0, 1, 10, 0), 15)).toBe(at(2027, 0, 1, 10, 15));
+  });
 });
+

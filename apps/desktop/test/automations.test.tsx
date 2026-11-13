@@ -87,6 +87,65 @@ describe("Automations", () => {
     await waitFor(() => expect(calls.filter((call) => call.method === "schedule.list")).toHaveLength(2));
   });
 
+  it("creates an hourly schedule on a chosen minute", async () => {
+    const hourly = { ...schedule, id: "s-3", name: "Quarter past", intervalMinutes: 60, anchorMinutes: 15 };
+    let created = false;
+    const { request, calls } = requestWith({
+      "schedule.create": () => {
+        created = true;
+        return hourly;
+      },
+      "schedule.list": () => ({ schedules: created ? [hourly] : [schedule] }),
+    });
+    render(<Automations workspaceId="ws-1" request={request} onOpenSession={() => undefined} />);
+    const list = screen.getByRole("region", { name: "Schedules" });
+    await waitFor(() => expect(list.textContent).toContain("Nightly"));
+    await userEvent.click(screen.getByRole("button", { name: "New schedule" }));
+    await userEvent.type(screen.getByLabelText("Name"), "Quarter past");
+    await userEvent.type(screen.getByLabelText("Prompt"), "check the build");
+    await userEvent.selectOptions(screen.getByLabelText("Cadence"), "60");
+    await userEvent.selectOptions(screen.getByLabelText("Minute"), "15");
+    await userEvent.click(screen.getByRole("button", { name: "Save schedule" }));
+
+    await waitFor(() =>
+      expect(calls).toContainEqual({
+        method: "schedule.create",
+        params: {
+          workspaceId: "ws-1",
+          agentId: "ag-1",
+          name: "Quarter past",
+          prompt: "check the build",
+          intervalMinutes: 60,
+          anchorMinutes: 15,
+          enabled: true,
+        },
+      }),
+    );
+    // The row reads back the minute it will actually fire on.
+    await waitFor(() => expect(list.textContent).toContain("hourly at :15"));
+  });
+
+  it("retimes a daily schedule without carrying its wall clock into the cadence", async () => {
+    const { request, calls } = requestWith({
+      "schedule.update": () => ({ ...schedule, intervalMinutes: 60, anchorMinutes: 0 }),
+    });
+    render(<Automations workspaceId="ws-1" request={request} onOpenSession={() => undefined} />);
+    const list = screen.getByRole("region", { name: "Schedules" });
+    await waitFor(() => expect(list.textContent).toContain("Nightly"));
+    await userEvent.click(within(list).getByText("Nightly"));
+    await userEvent.selectOptions(screen.getByLabelText("Cadence"), "60");
+    // 09:00 is a wall clock, not a phase: hourly means "on the hour", never ":540".
+    expect(screen.getByLabelText("Minute")).toHaveProperty("value", "0");
+    await userEvent.click(screen.getByRole("button", { name: "Save schedule" }));
+
+    await waitFor(() =>
+      expect(calls).toContainEqual({
+        method: "schedule.update",
+        params: { id: "s-1", intervalMinutes: 60, anchorMinutes: 0 },
+      }),
+    );
+  });
+
   it("runs a schedule now and opens the session", async () => {
     const opened: string[] = [];
     const { request } = requestWith({
