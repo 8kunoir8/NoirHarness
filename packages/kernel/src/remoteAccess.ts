@@ -5,6 +5,7 @@ import { RpcFault, ErrorCodes, type RemotePairResult, type RemoteStatusResult } 
 import { createRpcListener, sendHttp, type ClientContext, type Hub, type RpcListener } from "./rpcServer.js";
 import { deviceCookieHeader, type DeviceService } from "./devices.js";
 import { serveAsset } from "./webAssets.js";
+import { ensureCertificate, type StoredCertificate } from "./tls.js";
 
 const CODE_TTL_MS = 10 * 60 * 1000;
 const CODE_MAX_ATTEMPTS = 5;
@@ -75,6 +76,8 @@ function labelFromUserAgent(userAgent: string | undefined): string {
 export interface RemoteAccessOptions {
   hub: Hub;
   devices: DeviceService;
+  /** Where the TLS pair lives; the listener cannot start without one. */
+  dataDir: string;
   /** The built renderer, when there is one to serve. Without it the listener still pairs. */
   webRoot?: string;
   /** Injected so a test can expire a code without waiting ten minutes. */
@@ -87,6 +90,7 @@ export interface RemoteAccessOptions {
  */
 export class RemoteAccess {
   private listener: RpcListener | undefined;
+  private certificate: StoredCertificate | undefined;
   private pending: PendingCode | undefined;
   private readonly attempts = new Map<string, RateWindow>();
   private hosts: Record<string, true> = allowedHosts();
@@ -103,18 +107,27 @@ export class RemoteAccess {
     return {
       enabled: this.listener !== undefined,
       port,
-      url: port !== null && address !== undefined ? `http://${address}:${port}/` : null,
+      url: port !== null && address !== undefined ? `https://${address}:${port}/` : null,
       canServe: this.opts.webRoot !== undefined,
+      fingerprint: this.certificate?.fingerprint ?? null,
     };
   }
 
   async enable(): Promise<RemoteStatusResult> {
     if (this.listener !== undefined) return this.status();
+    let certificate: StoredCertificate;
+    try {
+      certificate = ensureCertificate(this.opts.dataDir);
+    } catch (error) {
+      const code = error instanceof Error && "code" in error ? String(error.code) : "unknown";
+      throw new RpcFault(ErrorCodes.internal, `cannot write the TLS certificate (${code})`);
+    }
     this.hosts = allowedHosts();
     try {
       this.listener = await createRpcListener({
         host: "0.0.0.0",
         hub: this.opts.hub,
+        tls: { key: certificate.keyPem, cert: certificate.certPem },
         authorize: (req) => this.authorizeSocket(req),
         handleHttp: (req, res) => this.handleHttp(req, res),
       });
@@ -122,6 +135,7 @@ export class RemoteAccess {
       const code = error instanceof Error && "code" in error ? String(error.code) : "unknown";
       throw new RpcFault(ErrorCodes.internal, `cannot listen on the local network (${code})`);
     }
+    this.certificate = certificate;
     return this.status();
   }
 
@@ -129,6 +143,7 @@ export class RemoteAccess {
     this.pending = undefined;
     const listener = this.listener;
     this.listener = undefined;
+    this.certificate = undefined;
     await listener?.close();
   }
 
@@ -144,7 +159,7 @@ export class RemoteAccess {
     const code = randomBytes(24).toString("base64url");
     const expiresAt = this.now() + CODE_TTL_MS;
     this.pending = { code, expiresAt, attempts: 0 };
-    return { url: `http://${address}:${this.listener.port}/pair#${code}`, code, expiresAt };
+    return { url: `https://${address}:${this.listener.port}/pair#${code}`, code, expiresAt };
   }
 
   /** Exposed for the e2e and the pane's countdown; a code neither of them can see is not paired. */
@@ -166,7 +181,7 @@ export class RemoteAccess {
     if (host === undefined || this.hosts[hostnameOf(host)] !== true) return 421;
     const origin = req.headers.origin;
     // Absent Origin means a non-browser client; a present one has to be this very page.
-    if (origin !== undefined && origin !== `http://${host}`) return 403;
+    if (origin !== undefined && origin !== `https://${host}`) return 403;
     return undefined;
   }
 
@@ -225,7 +240,7 @@ export class RemoteAccess {
     res.writeHead(200, {
       "content-type": "application/json",
       "content-length": Buffer.byteLength(payload),
-      "set-cookie": deviceCookieHeader(cookie),
+      "set-cookie": deviceCookieHeader(cookie, { secure: true }),
       "cache-control": "no-store",
       connection: "close",
     });

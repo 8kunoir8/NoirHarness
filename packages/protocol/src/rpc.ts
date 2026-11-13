@@ -496,6 +496,8 @@ export const RemoteStatusResult = z.object({
   url: z.string().nullable(),
   /** False when the kernel was started without assets to serve; pairing would have nothing to show. */
   canServe: z.boolean(),
+  /** SHA-256 of the LAN certificate, colon-separated; null while the listener is off. */
+  fingerprint: z.string().nullable(),
 });
 export type RemoteStatusResult = z.infer<typeof RemoteStatusResult>;
 

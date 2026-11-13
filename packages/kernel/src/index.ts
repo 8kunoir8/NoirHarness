@@ -292,6 +292,7 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; o
       const remote = new RemoteAccess({
         hub,
         devices,
+        dataDir: dir,
         ...(process.env.NOIR_WEB_ROOT === undefined ? {} : { webRoot: process.env.NOIR_WEB_ROOT }),
       });
       remoteAccess = remote;

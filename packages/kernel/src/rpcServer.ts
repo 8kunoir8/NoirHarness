@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer as createSecureServer } from "node:https";
 import type { Socket } from "node:net";
 import { WebSocketServer, type WebSocket } from "ws";
 import { ZodError } from "zod";
@@ -39,6 +40,8 @@ export function createHub(handlers: Record<string, Handler>): Hub {
 export interface ListenerOptions {
   host: string;
   hub: Hub;
+  /** PEM pair; the listener speaks TLS when present and refuses plaintext otherwise. */
+  tls?: { key: string; cert: string };
   /** Decide a socket's identity; `undefined` refuses the upgrade. */
   authorize(req: IncomingMessage, local: boolean): ClientContext | undefined;
   /** Answer a plain HTTP request. `false` leaves it to the caller's 404. */
@@ -76,7 +79,7 @@ function sendJson(ws: WebSocket, payload: unknown): void {
  * a different `authorize` and a different `handleHttp`, so a rule cannot drift between them.
  */
 export async function createRpcListener(opts: ListenerOptions): Promise<RpcListener> {
-  const http = createServer();
+  const http = opts.tls === undefined ? createServer() : createSecureServer({ key: opts.tls.key, cert: opts.tls.cert });
   const wss = new WebSocketServer({ noServer: true });
   const sockets = new Set<WebSocket>();
 

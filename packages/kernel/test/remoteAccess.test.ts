@@ -1,5 +1,6 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -25,13 +26,22 @@ interface Reply {
   headers: Record<string, string | string[] | undefined>;
 }
 
+/** The LAN listener is TLS-only; `plain` is the downgrade that must not work. */
 function send(
   port: number,
-  opts: { method?: string; path?: string; headers?: Record<string, string>; body?: string },
+  opts: { method?: string; path?: string; headers?: Record<string, string>; body?: string; plain?: boolean },
 ): Promise<Reply> {
   return new Promise((resolve, reject) => {
-    const req = httpRequest(
-      { host: "127.0.0.1", port, method: opts.method ?? "GET", path: opts.path ?? "/", headers: opts.headers ?? {} },
+    const request = opts.plain === true ? httpRequest : httpsRequest;
+    const req = request(
+      {
+        host: "127.0.0.1",
+        port,
+        method: opts.method ?? "GET",
+        path: opts.path ?? "/",
+        headers: opts.headers ?? {},
+        ...(opts.plain === true ? {} : { rejectUnauthorized: false }),
+      },
       (res) => {
         const chunks: Buffer[] = [];
         res.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -46,22 +56,23 @@ function send(
   });
 }
 
-function service(): DeviceService {
+function service(): { devices: DeviceService; dir: string } {
   const dir = mkdtempSync(join(tmpdir(), "noir remote "));
   dirs.push(dir);
   const db = openDb(join(dir, "noir.db"));
   dbs.push(db);
-  return new DeviceService(db);
+  return { devices: new DeviceService(db), dir };
 }
 
 async function enabled(
   now?: () => number,
   webRoot?: string,
 ): Promise<{ remote: RemoteAccess; port: number; devices: DeviceService }> {
-  const devices = service();
+  const { devices, dir: dataDir } = service();
   const remote = new RemoteAccess({
     hub: createHub({}),
     devices,
+    dataDir,
     ...(now === undefined ? {} : { now }),
     ...(webRoot === undefined ? {} : { webRoot }),
   });
@@ -74,14 +85,28 @@ async function enabled(
 
 describe("remote access", () => {
   it("is off until it is asked for", async () => {
-    const devices = service();
-    const remote = new RemoteAccess({ hub: createHub({}), devices });
-    expect(remote.status()).toMatchObject({ enabled: false, port: null, url: null, canServe: false });
+    const { devices, dir } = service();
+    const remote = new RemoteAccess({ hub: createHub({}), devices, dataDir: dir });
+    expect(remote.status()).toMatchObject({ enabled: false, port: null, url: null, canServe: false, fingerprint: null });
     await remote.enable();
     expect(remote.status().enabled).toBe(true);
     expect(remote.status().port).toBeGreaterThan(0);
     await remote.disable();
     expect(remote.status().enabled).toBe(false);
+  });
+
+  it("speaks TLS and nothing else", async () => {
+    const { port } = await enabled();
+    const page = await send(port, { path: "/" });
+    expect(page.status).toBe(404);
+    // The same request in plaintext never reaches the application at all.
+    await expect(send(port, { path: "/", plain: true })).rejects.toThrow();
+  });
+
+  it("reports a fingerprint once the certificate exists", async () => {
+    const { remote } = await enabled();
+    expect(remote.status().fingerprint).toMatch(/^([0-9A-F]{2}:){31}[0-9A-F]{2}$/);
+    expect(remote.status().url ?? "").toContain("https://");
   });
 
   it("does not answer the control plane on the network", async () => {
@@ -101,7 +126,7 @@ describe("remote access", () => {
     const reply = await send(port, {
       method: "POST",
       path: "/pair/redeem",
-      headers: { "content-type": "application/json", origin: "http://evil.example" },
+      headers: { "content-type": "application/json", origin: "https://evil.example" },
       body: JSON.stringify({ code: "x" }),
     });
     expect(reply.status).toBe(403);
@@ -121,6 +146,8 @@ describe("remote access", () => {
     const cookie = first.headers["set-cookie"]?.[0] ?? "";
     expect(cookie).toContain("HttpOnly");
     expect(cookie).toContain("SameSite=Strict");
+    // Issued over TLS, so the browser may only send it back over TLS.
+    expect(cookie).toContain("Secure");
     expect(devices.list()).toHaveLength(1);
 
     const second = await send(port, {
@@ -222,12 +249,12 @@ describe("remote access", () => {
     const host = `127.0.0.1:${port}`;
     const open = (headers: Record<string, string>): Promise<WebSocket> =>
       new Promise((resolve, reject) => {
-        const ws = new WebSocket(`ws://${host}/`, { headers });
+        const ws = new WebSocket(`wss://${host}/`, { headers, rejectUnauthorized: false });
         ws.once("open", () => resolve(ws));
         ws.once("error", reject);
       });
     await expect(open({})).rejects.toThrow();
-    const ws = await open({ cookie, origin: `http://${host}` });
+    const ws = await open({ cookie, origin: `https://${host}` });
     expect(ws.readyState).toBe(WebSocket.OPEN);
     ws.close();
     expect(remote.status().enabled).toBe(true);

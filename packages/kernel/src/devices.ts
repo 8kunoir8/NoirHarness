@@ -62,8 +62,10 @@ export function parseDeviceCookie(header: string | undefined): { id: string; sec
   return undefined;
 }
 
-export function deviceCookieHeader(value: string): string {
-  return `${DEVICE_COOKIE}=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${COOKIE_MAX_AGE_SECONDS}`;
+export function deviceCookieHeader(value: string, opts: { secure: boolean } = { secure: false }): string {
+  const attributes = ["HttpOnly", "SameSite=Strict", "Path=/", `Max-Age=${COOKIE_MAX_AGE_SECONDS}`];
+  if (opts.secure) attributes.push("Secure");
+  return `${DEVICE_COOKIE}=${value}; ${attributes.join("; ")}`;
 }
 
 /**

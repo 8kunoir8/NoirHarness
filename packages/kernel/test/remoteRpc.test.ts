@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -41,12 +41,13 @@ async function call(port: number, token: string, method: string, params?: unknow
 function post(port: number, path: string, body: unknown): Promise<{ status: number; cookie: string; json: { deviceId?: string } }> {
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify(body);
-    const req = httpRequest(
+    const req = httpsRequest(
       {
         host: "127.0.0.1",
         port,
         method: "POST",
         path,
+        rejectUnauthorized: false,
         headers: { "content-type": "application/json", "content-length": Buffer.byteLength(payload), host: `127.0.0.1:${port}` },
       },
       (res) => {
@@ -104,7 +105,7 @@ describe("remote over rpc", () => {
     const listed = await call(kernel.port, kernel.token, "remote.devices");
     expect(listed.result.devices.map((device: { id: string }) => device.id)).toContain(deviceId);
 
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/`, { headers: { cookie } });
+    const ws = new WebSocket(`wss://127.0.0.1:${port}/`, { headers: { cookie }, rejectUnauthorized: false });
     await once(ws, "open");
     const connected = await call(kernel.port, kernel.token, "remote.devices");
     expect(connected.result.devices.find((device: { id: string }) => device.id === deviceId)?.connected).toBe(true);
@@ -126,7 +127,7 @@ describe("remote over rpc", () => {
     const redeemed = await post(port, "/pair/redeem", { code: pair.result.code });
     const cookie = redeemed.cookie.split(";")[0] ?? "";
 
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/`, { headers: { cookie } });
+    const ws = new WebSocket(`wss://127.0.0.1:${port}/`, { headers: { cookie }, rejectUnauthorized: false });
     await once(ws, "open");
     const reply = once(ws, "message");
     ws.send(JSON.stringify({ jsonrpc: "2.0", id: 7, method: "remote.devices" }));
@@ -143,7 +144,7 @@ describe("remote over rpc", () => {
     const pair = await call(kernel.port, kernel.token, "remote.pair");
     const cookie = (await post(port, "/pair/redeem", { code: pair.result.code })).cookie.split(";")[0] ?? "";
 
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/`, { headers: { cookie } });
+    const ws = new WebSocket(`wss://127.0.0.1:${port}/`, { headers: { cookie }, rejectUnauthorized: false });
     await once(ws, "open");
     const reply = once(ws, "message");
     ws.send(JSON.stringify({ jsonrpc: "2.0", id: 9, method: "session.list", params: {} }));
