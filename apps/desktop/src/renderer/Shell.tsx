@@ -25,7 +25,7 @@ export function Shell({ topbar, nav, rail, list, main, sidebar, status }: ShellP
       <aside className="shell-rail" aria-label="Filters and projects">
         {rail}
       </aside>
-      <aside className="shell-list" aria-label="Sessions and workspace">
+      <aside className="shell-list" aria-label="Chats and files">
         {list}
       </aside>
       <main className="shell-main">{main}</main>

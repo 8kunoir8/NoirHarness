@@ -162,18 +162,27 @@ Only the native engine has it. An ACP agent reaches the network through whatever
 
 ## The chat shell
 
-The **Chats** view is five regions:
+The window is one grid: a top bar, a horizontal nav strip, and four columns under it.
 
-- **Rail** — `Chats` / `Setup` and the theme toggle. Entering `Chats` reloads providers, models,
+- **Top bar** — brand, the workspace's branch and chat count, `⌘K` (`Commands`), and `Inspector`
+  while chats are on screen.
+- **Nav strip** — `Chats`, `Agents`, `Skills`, `Automations`, `Setup`, each carrying its live count
+  (chats with an unread badge, agents in the roster, project skills, armed schedules), then the
+  kernel state, the clock, and the theme toggle. Entering `Chats` reloads providers, models,
   workspaces, and sessions, so setup changes show up without a restart.
-- **List pane** — `Projects` (project path, project, workspace) over `Sessions`: the new-chat model
-  picker, `New chat`, a search box, filter buttons, and sessions grouped by `Today` / `Yesterday` /
-  `Earlier` from the last event time.
+- **Rail** — the `Chats` filters over `Projects` (project path, project, workspace).
+- **List pane** — the file tree, or `Sessions`: the new-chat model picker, `New chat`, a search box,
+  and sessions grouped by `Today` / `Yesterday` / `Earlier` from the last event time.
 - **Main pane** — tab strip, chat header (session status, model picker, token usage, `Interrupt`),
   transcript (assistant text, tool cards, permission cards, diffs), and the composer.
-- **Inspector** — optional right panel with usage, the changed files (git's uncommitted changes plus
-  the files the session reported), the plan, and pending approvals.
+- **Live sidebar** — the pixel office, the agent behind the open chat, and, when asked for, the
+  inspector: usage, the changed files (git's uncommitted changes plus the files the session
+  reported), the plan, and pending approvals.
 - **Status bar** — kernel health, turns running, approvals waiting, and the engine directory in use.
+
+The sidebar is never collapsed: the office is the point of the column, so the inspector opens inside
+it rather than covering the transcript. Narrow windows shrink the rail, the list, and the sidebar,
+and keep all four reachable.
 
 The list is a page of a hundred, newest first, with *Load older chats* when the kernel holds more;
 the filter buttons and the search box are answered by the kernel, so a filter never hides a match on
@@ -344,8 +353,8 @@ the user may want gone.
 
 ## Agents and the office
 
-The **Agents** view is three regions: the `Agents` roster, the `Office` main pane, and the
-`Agent config` inspector.
+The **Agents** view is three regions: the `Office` canvas across the top, the `Agents` roster under
+it, and the `Agent config` inspector beside the roster.
 
 An agent carries a name, a role, an engine, an optional model, an optional default workspace, the MCP
 servers it may use, and a decision for each of the six permission categories (`shell`, `delete`,
@@ -359,17 +368,21 @@ can be edited without first clearing that model.
 The roster refreshes for live events (`session.status`, `turn.*`, `tool.*`, `permission.*`,
 `usage.updated`) with a trailing 250 ms debounce, and applies snapshots in request order, so a slow
 answer cannot overwrite a newer one. An approval that needs you shows as a `Needs you` row carrying
-the approval title, and as a speech bubble over the agent's character.
+the approval title, and as a speech bubble over the agent's character. The shell and the Agents view
+share one subscription — the ticket is read before the request, so a batch load that started earlier
+cannot land on top of a newer refresh.
 
 The **Office** pane renders a Phaser pixel office from the same roster data: each agent gets a stable
 desk derived from its id, wanders to the lounge after an idle spell, and shows its state on the
-character. The canvas is `aria-hidden` and publishes `data-office-ready`, `data-office-count`,
-`data-office-desks`, and `data-office-selected` for tests; the roster and the inspector carry the
-same information in text, so nothing is canvas-only. The `List view` / `Office view` toggle hides the
-canvas and keeps the roster. Phaser and the scene load through dynamic imports, so the startup
-bundle never contains them, and the office art is a CC0 Kenney pack committed under
-`apps/desktop/src/renderer/office/assets/` with its licence and a frame manifest beside it — nothing
-is fetched at runtime.
+character. It appears in two places: full width on the Agents view, and permanently in the chat
+shell's live sidebar, which highlights the agent behind the open chat. Only one of the two is
+mounted at a time, so the window never runs two Phaser render loops. The canvas is `aria-hidden` and
+publishes `data-office-ready`, `data-office-count`, `data-office-desks`, and `data-office-selected`
+for tests; the roster and the inspector carry the same information in text, so nothing is
+canvas-only. The `List view` / `Office view` toggle hides the canvas and keeps the roster. Phaser
+and the scene load through dynamic imports, so the startup bundle never contains them, and the
+office art is a CC0 Kenney pack committed under `apps/desktop/src/renderer/office/assets/` with its
+licence and a frame manifest beside it — nothing is fetched at runtime.
 
 ## Automations
 

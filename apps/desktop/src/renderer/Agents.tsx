@@ -99,7 +99,6 @@ function modelLabel(models: readonly ModelView[], modelRef: string | null): stri
   return model === undefined ? modelRef : model.displayName;
 }
 
-
 interface AgentDraft {
   name: string;
   role: string;
@@ -414,7 +413,6 @@ export function Agents({ workspaceId, request, onOpenChat, configRef }: AgentsPr
   useEffect(() => {
     void load();
   }, [load]);
-
 
   // Keep one row selected so the office pane and the inspector always describe a real agent, but
   // never steal the selection while a blank create form is open.
