@@ -290,3 +290,17 @@ Direction after M1: M2 native engine + Office view + agents dashboard; M3 skill 
 - ADR-0003: kernel-owned provider registry with materialized engine profiles.
 - ADR-0004: OS credential vault over app-managed encryption.
 - ADR-0005: ACP as the first engine contract; native engine second.
+
+## 16. After the milestones
+
+M5 closed the automation story (outcome notifications, kernel supervision, start at login). What the
+design still names as owed:
+
+| Item | State |
+|---|---|
+| `session.fork` | shipped — prefix copy, palette entry; the engine's context is replayed only for the native engine |
+| Paged `session.list` | shipped — page, total, keyset cursor, kernel-answered filters |
+| ADRs 0009–0012 | recorded (pairing, TLS, supervision, notifications) |
+| ACP → `--mode rpc` | **blocked on verification**: the wire is documented in `docs/superpowers/notes/2026-11-13-omp-rpc-mode.md`; a probe executed a file write with no permission request, and an engine that never asks would bypass the approval model |
+| `lsp.*` | unstarted; reserved since M2, needs a product decision before code |
+| Mobile shell | unstarted; a phone loads the desktop layout today |
