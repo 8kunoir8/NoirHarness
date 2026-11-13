@@ -697,3 +697,5 @@ export function createAcpEngine(opts: CreateAcpClientOptions): Engine {
 export { ClientRequestHandler, resolveInsideWorkspace } from "./terminals.js";
 export { JsonRpcClient, JsonRpcError, JsonRpcMethodError } from "./jsonRpc.js";
 export type { JsonRpcTransport } from "./jsonRpc.js";
+
+export { createRpcEngine, type RpcEngineOptions } from "./rpc.js";

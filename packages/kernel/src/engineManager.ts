@@ -5,6 +5,7 @@ import { v7 as uuidv7 } from "uuid";
 import {
   ADAPTER_VERSION,
   createAcpEngine,
+  createRpcEngine,
   type CreateAcpClientOptions,
 } from "@noir/engine-acp";
 import { ADAPTER_VERSION as NATIVE_ADAPTER_VERSION, createNativeEngine, reconstructHistory } from "@noir/engine-native";
@@ -58,8 +59,17 @@ function provenanceFor(engine: EngineKind): { engine: EngineKind; engineName: st
   }
 }
 
+/**
+ * `NOIR_OMP_TRANSPORT=rpc` moves the OMP engine from ACP to `--mode rpc` without changing the
+ * kernel contract: both answer as `id: "acp"`, and rpc mode asks for approval through its own
+ * `extension_ui_request`, so the approval card still owns every tool call. Default stays ACP until
+ * the rpc path has seen a full run in the field.
+ */
+const acpFactory = (options: CreateAcpClientOptions): Engine =>
+  process.env.NOIR_OMP_TRANSPORT === "rpc" ? createRpcEngine(options) : createAcpEngine(options);
+
 const ENGINE_FACTORIES: Record<string, (options: CreateAcpClientOptions) => Engine> = {
-  acp: (options) => createAcpEngine(options),
+  acp: (options) => acpFactory(options),
   native: () => createNativeEngine(),
 };
 

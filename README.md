@@ -446,6 +446,7 @@ cannot mint or remove devices.
 | --- | --- | --- |
 | `NOIR_OMP_COMMAND` | `omp` | binary to spawn |
 | `NOIR_OMP_ARGS_JSON` | `[]` | JSON array of strings inserted before the generated `--session-dir … acp` flags |
+| `NOIR_OMP_TRANSPORT` | `acp` | `rpc` runs the same engine through omp's `--mode rpc` stream (per-message usage, tool intents); it asks for approval through its own select prompt, so the approval card still governs every tool call |
 | `NOIR_TURN_TIMEOUT_MS` | `120000` | per-turn watchdog; on expiry the kernel sends `session/cancel` and reports the turn as failed |
 | `NOIR_GIT_COMMAND` | `git` | binary used for `git.status` and `git.diff`; set it when `git` is not on `PATH` |
 | `NOIR_KERNEL_LOG` | `<dataDir>/logs/kernel.log` | where the spawned daemon writes its own log; set by the app, read by `apps/kernel` |
@@ -514,7 +515,8 @@ can run it.
 
 - `packages/protocol` — wire types and the session reducer
 - `packages/kernel` — SQLite, event store, services, RPC, engine manager
-- `packages/engines/acp` — ACP client over stdio (JSON-RPC framing, terminals, turn watchdog)
+- `packages/engines/acp` — the omp client: ACP over stdio (JSON-RPC framing, terminals, turn
+  watchdog) and, behind `NOIR_OMP_TRANSPORT=rpc`, the same contract over `omp --mode rpc`
 - `packages/engines/native` — in-process chat-completions engine: SSE parser, tool registry, turn
   loop, history reconstruction
 - `packages/adapters/omp-profile` — `models.yml`/`config.yml` renderer
@@ -523,4 +525,5 @@ can run it.
 - `apps/desktop/src/renderer/preview` — the artifact renderers; `…/office` — the pixel office
 
 The `omp acp` wire behaviour this is built against is documented in
-`docs/superpowers/notes/2026-11-10-acp-spike.md`.
+`docs/superpowers/notes/2026-11-10-acp-spike.md`; `omp --mode rpc` is in
+`docs/superpowers/notes/2026-11-13-omp-rpc-mode.md`.

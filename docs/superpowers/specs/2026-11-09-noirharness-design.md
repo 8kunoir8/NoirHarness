@@ -301,6 +301,6 @@ design still names as owed:
 | `session.fork` | shipped — prefix copy, palette entry; the engine's context is replayed only for the native engine |
 | Paged `session.list` | shipped — page, total, keyset cursor, kernel-answered filters |
 | ADRs 0009–0012 | recorded (pairing, TLS, supervision, notifications) |
-| ACP → `--mode rpc` | **blocked on verification**: the wire is documented in `docs/superpowers/notes/2026-11-13-omp-rpc-mode.md`; a probe executed a file write with no permission request, and an engine that never asks would bypass the approval model |
+| ACP → `--mode rpc` | transport shipped behind `NOIR_OMP_TRANSPORT=rpc`: same `Engine`, one approve-per-tool prompt (`extension_ui_request` select, answered from the approval card), usage per message. The earlier "write ran without asking" reading was omp's default auto-approve; `--approval-mode always-ask` is now always passed. Default stays ACP until a field run; `docs/superpowers/notes/2026-11-13-omp-rpc-mode.md` has the wire |
 | `lsp.*` | unstarted; reserved since M2, needs a product decision before code |
 | Mobile shell | unstarted; a phone loads the desktop layout today |

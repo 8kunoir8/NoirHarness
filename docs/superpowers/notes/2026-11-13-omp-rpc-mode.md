@@ -108,3 +108,32 @@ An `RpcEngine` beside the ACP adapter, behind the same `Engine` interface, spawn
    the next thing this note needs, and the gate on shipping the adapter.
 4. Keep ACP as the default engine until the permission path is proven: a tool call that cannot be
    approved is a worse regression than a thinner stream.
+
+## Resolved by the adapter, 2026-11-13
+
+Driving `omp/18.19.0` through the new transport (`packages/engines/acp/src/rpc.ts`) against the
+mirrored mock provider answered every unknown above:
+
+- **Approvals.** omp's default `--approval-mode` is effectively auto-approve, which is why the first
+  probe's write ran silently. With `--approval-mode always-ask` a tool call emits
+  `{"type":"extension_ui_request","id":…,"method":"select","title":"Allow tool: bash\nCommand: echo hi",
+  "options":["Approve","Approve bash for this session","Deny"]}` and blocks until the client answers
+  `{"type":"extension_ui_response","id":…,"value":"Approve"}`. The adapter always asks, so the card
+  still owns every tool call. Labels vary by tool (`write`, `bash`), so the adapter classifies by
+  shape — `Approve` is once, `Approve … for this session` is remembered, `Deny` rejects — and replies
+  with omp's own label as the value.
+- **Cancellation.** `{"type":"abort"}`; the process stays up, and the next prompt works.
+- **Model selection.** `{"type":"set_model","provider":…,"modelId":…}`.
+- **Turn boundaries.** `turn_end` fires **once per model turn**, so a tool loop sends several — it is
+  not the end of the prompt. The prompt is over at
+  `{"type":"prompt_result","agentInvoked":true,"status":"completed","sessionSettled":true}`, which
+  follows `agent_end`. Resolving on `turn_end` ended the kernel's turn after the tool call and
+  dropped the follow-up reply; resolving on `prompt_result` keeps the whole loop inside one turn.
+- **Usage.** On `message_end` of each assistant message: `usage:{input,output,cacheRead,cacheWrite,
+  totalTokens,cost:{…}}` — integers and a cost object, unlike the fake used in the first draft.
+- **Session continuity.** Unchanged from ACP: `--session-dir` is passed, but the kernel's history is
+  not replayed, so the engine's own session file is the only memory. A fork therefore starts an
+  empty engine context, exactly as it does on ACP.
+- **Still not mapped.** `tool_execution_update` (partial tool output) and `toolcall_*` (the model
+  streaming a call) are ignored; the card draws on `tool_execution_start`/`_end`, which is the same
+  fidelity ACP gives.
