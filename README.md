@@ -328,6 +328,10 @@ global one. A remove is a confirmation, not a single click. The panel resolves a
 directory through the scan rather than assuming the folder is named after the skill, and refuses to
 report a workspace it cannot read as having no such skill.
 
+A global hidden behind a project skill is listed as shadowed and offers only a remove: it cannot be
+read or toggled into effect while the project copy holds the name, but it is still a real directory
+the user may want gone.
+
 ## Agents and the office
 
 The **Agents** view is three regions: the `Agents` roster, the `Office` main pane, and the
