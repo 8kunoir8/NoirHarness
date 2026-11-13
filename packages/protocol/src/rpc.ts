@@ -57,6 +57,12 @@ export const Methods = {
   mcpUpdate: "mcp.update",
   mcpDelete: "mcp.delete",
   mcpTest: "mcp.test",
+  scheduleList: "schedule.list",
+  scheduleCreate: "schedule.create",
+  scheduleUpdate: "schedule.update",
+  scheduleDelete: "schedule.delete",
+  scheduleRunNow: "schedule.runNow",
+  scheduleRuns: "schedule.runs",
 } as const;
 
 /** `system.health` result. `engineDir` is the agent directory the kernel materializes and omp reads. */
@@ -102,7 +108,10 @@ export type ModelSetEngineParams = z.infer<typeof ModelSetEngineParams>;
 
 export const SessionView = z.object({
   id: z.string(), workspaceId: z.string(), agentId: z.string(), engine: z.string(),
-  title: z.string(), status: SessionStatus, modelId: z.string().nullable(), createdAt: z.number().int(),
+  title: z.string(), status: SessionStatus, modelId: z.string().nullable(),
+  /** The schedule that fired this session, or null for a session a person started. */
+  scheduleId: z.string().nullable(),
+  createdAt: z.number().int(),
   /** Seq of the newest event; 0 when the session has none. Lets the shell sort and de-duplicate. */
   lastEventSeq: z.number().int().nonnegative(),
   /** Timestamp of the newest event, or the row's creation time when the session has none. */
