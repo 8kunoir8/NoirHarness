@@ -1,10 +1,10 @@
 // @vitest-environment node
 import type { SpawnOptions } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { hostKernel, openLog, type HostDeps, type HostTarget } from "../src/kernelHost.js";
+import { hostKernel, logPath, type HostDeps, type HostTarget } from "../src/kernelHost.js";
 
 const target = (dataDir: string): HostTarget => ({ dataDir, kernelEntry: "/k/index.cjs", nodeBin: "/bin/node" });
 
@@ -38,6 +38,17 @@ describe("hostKernel", () => {
     const hosted = await hostKernel(target(dir), baseDeps({ spawnProcess }));
     expect(spawnProcess).toHaveBeenCalledTimes(1);
     expect(hosted).toEqual({ pid: 100, port: 4000, token: "tok", daemon: true, buildMatches: true });
+  });
+
+  it("hands the daemon no handles and a log path instead", async () => {
+    const dir = dataDir();
+    const spawnProcess = vi.fn((_bin: string, _args: string[], _opts: SpawnOptions) => ({ unref: () => undefined }));
+    await hostKernel(target(dir), baseDeps({ spawnProcess }));
+    const options = spawnProcess.mock.calls[0]?.[2];
+    // An inherited stdout keeps the supervisor's pipe open; whoever watches it never sees the end.
+    expect(options?.stdio).toBe("ignore");
+    expect(options?.detached).toBe(true);
+    expect(options?.env?.NOIR_KERNEL_LOG).toBe(join(dir, "logs", "kernel.log"));
   });
 
   it("attaches without spawning when the build matches", async () => {
@@ -151,23 +162,21 @@ describe("hostKernel", () => {
   });
 });
 
-describe("openLog", () => {
-  it("rotates a log past two megabytes before opening it", () => {
+describe("logPath", () => {
+  it("rotates a log past two megabytes", () => {
     const dir = dataDir();
     mkdirSync(join(dir, "logs"), { recursive: true });
-    const log = join(dir, "logs", "kernel.log");
-    writeFileSync(log, "x".repeat(2_000_001));
-    const fd = openLog(dir);
-    expect(statSync(log).size).toBe(0);
+    writeFileSync(join(dir, "logs", "kernel.log"), "x".repeat(2_000_001));
+    expect(logPath(dir)).toBe(join(dir, "logs", "kernel.log"));
+    expect(existsSync(join(dir, "logs", "kernel.log"))).toBe(false);
     expect(readFileSync(join(dir, "logs", "kernel.1.log"), "utf8")).toHaveLength(2_000_001);
-    expect(fd).toBeGreaterThan(0);
   });
 
-  it("appends to an existing small log", () => {
+  it("leaves an existing small log in place", () => {
     const dir = dataDir();
     mkdirSync(join(dir, "logs"), { recursive: true });
     writeFileSync(join(dir, "logs", "kernel.log"), "earlier\n");
-    openLog(dir);
+    logPath(dir);
     expect(readFileSync(join(dir, "logs", "kernel.log"), "utf8")).toBe("earlier\n");
   });
 });

@@ -92,8 +92,12 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
-/** Append descriptor for `<dataDir>/logs/kernel.log`; a 2 MB file is rotated first. */
-export function openLog(dataDir: string): number {
+/**
+ * Path of `<dataDir>/logs/kernel.log`, rotated to `kernel.1.log` once it passes 2 MB. The daemon
+ * appends to it itself: a handle handed to the child would be inherited by it, and an inherited
+ * handle keeps the parent's pipes open after the parent is gone.
+ */
+export function logPath(dataDir: string): string {
   const dir = join(dataDir, "logs");
   mkdirSync(dir, { recursive: true });
   const file = join(dir, "kernel.log");
@@ -109,7 +113,7 @@ export function openLog(dataDir: string): number {
   } catch {
     // First run: nothing to rotate.
   }
-  return openSync(file, "a");
+  return file;
 }
 
 async function probeHealth(port: number, timeoutMs: number): Promise<HealthInfo | null> {
@@ -210,19 +214,21 @@ export async function hostKernel(target: HostTarget, overrides: HostDeps = {}): 
 
 async function spawnDetached(target: HostTarget, deps: ResolvedDeps): Promise<HostedKernel> {
   const file = runtimeFilePath(target.dataDir);
-  const env = { ...process.env, ELECTRON_RUN_AS_NODE: "1", NOIR_DATA_DIR: target.dataDir };
+  const env = {
+    ...process.env,
+    ELECTRON_RUN_AS_NODE: "1",
+    NOIR_DATA_DIR: target.dataDir,
+    NOIR_KERNEL_LOG: logPath(target.dataDir),
+  };
+  // Every handle is closed: a detached child that inherits one holds this app's pipes open, and
+  // whoever is watching those pipes never learns that this app ended. The daemon logs to a file.
   const spawnOnce = (detached: boolean): void => {
-    const fd = openLog(target.dataDir);
-    try {
-      deps.spawnProcess(target.nodeBin, [target.kernelEntry], {
-        detached,
-        windowsHide: true,
-        stdio: ["ignore", fd, fd],
-        env,
-      }).unref();
-    } finally {
-      closeSync(fd);
-    }
+    deps.spawnProcess(target.nodeBin, [target.kernelEntry], {
+      detached,
+      windowsHide: true,
+      stdio: "ignore",
+      env,
+    }).unref();
   };
   let daemon = true;
   try {
