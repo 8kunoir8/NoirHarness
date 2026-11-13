@@ -5,8 +5,15 @@ import type { DeviceView, RemoteStatusResult } from "@noir/protocol";
 import type { RequestFn } from "../src/renderer/api.js";
 import { Devices } from "../src/renderer/Devices.js";
 
-const OFF: RemoteStatusResult = { enabled: false, port: null, url: null, canServe: true };
-const ON: RemoteStatusResult = { enabled: true, port: 51000, url: "http://192.168.1.20:51000/", canServe: true };
+const FINGERPRINT = "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99";
+const OFF: RemoteStatusResult = { enabled: false, port: null, url: null, canServe: true, fingerprint: null };
+const ON: RemoteStatusResult = {
+  enabled: true,
+  port: 51000,
+  url: "https://192.168.1.20:51000/",
+  canServe: true,
+  fingerprint: FINGERPRINT,
+};
 
 const DEVICE: DeviceView = {
   id: "d1",
@@ -39,7 +46,7 @@ describe("devices pane", () => {
   it("says what the toggle costs before it is used", () => {
     const { request } = harness();
     render(<Devices request={request} />);
-    expect(screen.getByText(/no encryption on the local network/i)).toBeTruthy();
+    expect(screen.getByText(/the browser warns once/i)).toBeTruthy();
     return waitFor(() => expect((screen.getByRole("checkbox") as HTMLInputElement).checked).toBe(false));
   });
 
@@ -47,7 +54,11 @@ describe("devices pane", () => {
     const user = userEvent.setup();
     const { request, calls } = harness({
       "remote.enable": async () => ON,
-      "remote.pair": async () => ({ url: "http://192.168.1.20:51000/pair#abc", code: "abc", expiresAt: Date.now() + 600_000 }),
+      "remote.pair": async () => ({
+        url: "https://192.168.1.20:51000/pair#abc",
+        code: "abc",
+        expiresAt: Date.now() + 600_000,
+      }),
     });
     render(<Devices request={request} />);
     await waitFor(() => expect(screen.getByRole("checkbox")).toBeTruthy());
@@ -78,6 +89,12 @@ describe("devices pane", () => {
     await waitFor(() => expect(calls.filter((call) => call.method === "remote.revoke")).toHaveLength(1));
     expect(calls[0]?.params).toBeUndefined();
     expect((await screen.findByText(/Phone · revoked/)).textContent).toContain("revoked");
+  });
+
+  it("prints the fingerprint the browser warning is about", async () => {
+    const { request } = harness({ "remote.status": async () => ON });
+    render(<Devices request={request} />);
+    expect((await screen.findByText(FINGERPRINT)).textContent).toBe(FINGERPRINT);
   });
 
   it("warns when the kernel has no page to serve", async () => {

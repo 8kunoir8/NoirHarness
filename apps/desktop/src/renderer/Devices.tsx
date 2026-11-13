@@ -102,8 +102,9 @@ export function Devices({ request }: DevicesProps) {
     <section className="devices" aria-label="Devices">
       <h2>Devices</h2>
       <p className="hint">
-        Pair a browser on this network and it runs this same harness. There is no encryption on the
-        local network — only turn this on where you trust every device on it.
+        Pair a browser on this network and it runs this same harness over TLS. The certificate is
+        made by this kernel, not by an authority, so the browser warns once — compare the
+        fingerprint before you accept it.
       </p>
       {error === undefined ? null : <p role="alert">{error}</p>}
 
@@ -120,6 +121,11 @@ export function Devices({ request }: DevicesProps) {
             </p>
           )}
           {status.url === null ? <p className="hint">No network address to advertise yet.</p> : null}
+          {status.fingerprint === null ? null : (
+            <p className="hint">
+              SHA-256 <code className="devices-fingerprint">{status.fingerprint}</code>
+            </p>
+          )}
           <button type="button" onClick={pair} disabled={busy || status.url === null}>
             Create a pairing link
           </button>
