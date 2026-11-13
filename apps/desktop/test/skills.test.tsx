@@ -176,7 +176,7 @@ describe("Skills", () => {
           skills: installed
             ? [{
                 scope: "project", name: "new", description: "d", hash: "n".repeat(64), enabled: true,
-                source: { kind: "local", url: "/seed/new", ref: null, commit: null, hash: "n".repeat(64), updateAvailable: false },
+                source: { kind: "local", url: "/seed/new", ref: null, commit: null, hash: "n".repeat(64) },
               }]
             : [],
           shadowed: [],
@@ -244,11 +244,11 @@ describe("Skills", () => {
           skills: [
             {
               scope: "global", name: "dup", description: "g", hash: "g".repeat(64), enabled: true,
-              source: { kind: "git", url: "https://host/dup.git", ref: "main", commit: "a".repeat(40), hash: "g".repeat(64), updateAvailable: true },
+              source: { kind: "git", url: "https://host/dup.git", ref: "main", commit: "a".repeat(40), hash: "g".repeat(64) },
             },
             {
               scope: "project", name: "dup", description: "p", hash: "p".repeat(64), enabled: true,
-              source: { kind: "local", url: "/p/dup", ref: null, commit: null, hash: "p".repeat(64), updateAvailable: true },
+              source: { kind: "local", url: "/p/dup", ref: null, commit: null, hash: "p".repeat(64) },
             },
             { scope: "project", name: "loose", description: "", hash: "l".repeat(64), enabled: true, source: null },
           ],
@@ -329,7 +329,7 @@ describe("Skills", () => {
         return {
           skills: [{
             scope: "project", name: "stale", description: "d", hash: "s".repeat(64), enabled: true,
-            source: { kind: "local", url: "/seed/stale", ref: null, commit: null, hash: "s".repeat(64), updateAvailable: false },
+            source: { kind: "local", url: "/seed/stale", ref: null, commit: null, hash: "s".repeat(64) },
           }],
           shadowed: [],
           warnings: [],
@@ -366,7 +366,7 @@ describe("Skills", () => {
         return {
           skills: [{
             scope: "project", name: "moved", description: "d", hash: "s".repeat(64), enabled: true,
-            source: { kind: "local", url: "/seed/moved", ref: null, commit: null, hash: "s".repeat(64), updateAvailable: false },
+            source: { kind: "local", url: "/seed/moved", ref: null, commit: null, hash: "s".repeat(64) },
           }],
           shadowed: [],
           warnings: [],
@@ -395,5 +395,81 @@ describe("Skills", () => {
     expect(calls.filter((call) => call.method === "skill.read")).toHaveLength(1);
     expect(bodyPane.textContent).toContain("OLD_BODY");
     expect(calls.filter((call) => call.method === "skill.update")).toHaveLength(1);
+  });
+
+  it("removes a row from the listing the kernel returned, without asking it again", async () => {
+    const calls: Array<{ method: string; params: unknown }> = [];
+    const request = vi.fn(async (method: string, params: unknown): Promise<unknown> => {
+      calls.push({ method, params });
+      if (method === "skill.list") {
+        return {
+          skills: [{
+            scope: "project", name: "doomed", description: "d", hash: "d".repeat(64), enabled: true,
+            source: { kind: "local", url: "/seed/doomed", ref: null, commit: null, hash: "d".repeat(64) },
+          }],
+          shadowed: ["doomed"],
+          warnings: [],
+        };
+      }
+      if (method === "skill.remove") {
+        // The kernel answers with the listing after the delete: the global copy is no longer shadowed.
+        return { ok: true, skills: [], shadowed: [], warnings: [] };
+      }
+      if (method === "skill.read") return { content: "DOOMED_BODY", hash: "d".repeat(64), truncated: false };
+      throw new Error(method);
+    }) as unknown as RequestFn;
+
+    render(<Skills workspaceId="ws-1" request={request} />);
+    const project = screen.getByRole("region", { name: "Project skills" });
+    await userEvent.click(await within(project).findByRole("button", { name: "View doomed" }));
+    const bodyPane = screen.getByRole("region", { name: "Skill body" });
+    await waitFor(() => expect(bodyPane.textContent).toContain("DOOMED_BODY"));
+
+    // Opening the prompt writes nothing.
+    await userEvent.click(within(project).getByRole("button", { name: "Remove doomed" }));
+    expect(calls.some((call) => call.method === "skill.remove")).toBe(false);
+    await userEvent.click(within(project).getByRole("button", { name: "Confirm remove doomed" }));
+
+    await waitFor(() => expect(within(project).queryByRole("button", { name: "View doomed" })).toBeNull());
+    expect(calls).toContainEqual({
+      method: "skill.remove",
+      params: { workspaceId: "ws-1", scope: "project", name: "doomed" },
+    });
+    // The returned listing is rendered as-is: a second `skill.list` would be a redundant round trip,
+    // and until it resolved the removed row would still be on screen.
+    expect(calls.filter((call) => call.method === "skill.list")).toHaveLength(1);
+    expect(within(project).getByText("No project skills")).toBeDefined();
+    // The shadowed entry came from the same answer, so the global section must drop it too.
+    expect(screen.getByRole("region", { name: "Global skills" }).textContent).not.toContain("shadowed");
+    // The pane described a skill that no longer exists, so it returns to the empty state.
+    expect(bodyPane.textContent).toContain("Select a skill");
+  });
+
+  it("cancels a removal without sending it", async () => {
+    const calls: Array<{ method: string; params: unknown }> = [];
+    const request = vi.fn(async (method: string, params: unknown): Promise<unknown> => {
+      calls.push({ method, params });
+      if (method === "skill.list") {
+        return {
+          skills: [{
+            scope: "global", name: "kept", description: "d", hash: "k".repeat(64), enabled: true,
+            source: null,
+          }],
+          shadowed: [],
+          warnings: [],
+        };
+      }
+      throw new Error(method);
+    }) as unknown as RequestFn;
+
+    render(<Skills workspaceId="ws-1" request={request} />);
+    const global = screen.getByRole("region", { name: "Global skills" });
+    await userEvent.click(await within(global).findByRole("button", { name: "Remove kept" }));
+    await userEvent.click(within(global).getByRole("button", { name: "Cancel remove kept" }));
+
+    expect(calls.some((call) => call.method === "skill.remove")).toBe(false);
+    // Cancel restores the idle row rather than leaving the prompt, so the control is usable again.
+    expect(within(global).getByRole("button", { name: "Remove kept" })).toBeDefined();
+    expect(within(global).queryByRole("button", { name: "Confirm remove kept" })).toBeNull();
   });
 });

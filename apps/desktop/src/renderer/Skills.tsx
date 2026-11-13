@@ -24,39 +24,15 @@ function sameSkill(left: SkillRef | undefined, right: SkillRef): boolean {
   return left !== undefined && left.scope === right.scope && left.name === right.name;
 }
 
-/** The badge is a verdict from the source, never a fact of the listing, so a fresh list clears it. */
-function withoutUpdateBadges(result: SkillListResult): SkillListResult {
-  return {
-    ...result,
-    skills: result.skills.map((skill) => {
-      const source = skill.source ?? null;
-      return source === null ? skill : { ...skill, source: { ...source, updateAvailable: false } };
-    }),
-  };
-}
-
-/** Only the row a check answered for carries its verdict, and the check is the only writer. */
-function withUpdateBadge(
-  list: SkillListResult,
-  skill: SkillRef,
-  updateAvailable: boolean,
-): SkillListResult {
-  return {
-    ...list,
-    skills: list.skills.map((row) => {
-      const source = row.source ?? null;
-      if (source === null || row.scope !== skill.scope || row.name !== skill.name) return row;
-      return { ...row, source: { ...source, updateAvailable } };
-    }),
-  };
-}
-
 /** The row label: the short commit for a git source, the word itself for a directory. */
 function sourceLabel(source: SkillSourceView): string {
   if (source.kind === "local") return "local";
   // A commit-less git row cannot be pinned, so it names no revision rather than claiming to be local.
   return source.commit === null ? "git" : `git ${source.commit.slice(0, 7)}`;
 }
+
+/** One row's pending confirmation. A row can only ever be doing one destructive thing at a time. */
+type Confirming = { key: string; kind: "update" | "remove" };
 
 function SkillRow({
   skill,
@@ -70,25 +46,31 @@ function SkillRow({
   onRequestUpdate,
   onConfirmUpdate,
   onCancelUpdate,
+  onRequestRemove,
+  onConfirmRemove,
+  onCancelRemove,
 }: {
   skill: SkillView;
   busy: boolean;
   selected: boolean;
   /** The hash `checkUpdate` fetched, or undefined when this row has no live pin. */
   pinned: string | undefined;
-  /** This row is the one whose confirmation is open. */
-  confirming: boolean;
+  /** Which confirmation, if any, is open on this row. */
+  confirming: "update" | "remove" | undefined;
   onView: (skill: SkillRef) => void;
   onToggle: (skill: SkillView) => void;
   onCheckUpdate: (skill: SkillView) => void;
   onRequestUpdate: (skill: SkillView) => void;
   onConfirmUpdate: (skill: SkillView) => void;
   onCancelUpdate: (skill: SkillView) => void;
+  onRequestRemove: (skill: SkillView) => void;
+  onConfirmRemove: (skill: SkillView) => void;
+  onCancelRemove: (skill: SkillView) => void;
 }) {
   const source = skill.source ?? null;
   // A confirmation without a pinned hash would print an arrow to nothing, so it needs both.
-  const pinnedHash = pinned ?? "";
-  const confirmingUpdate = confirming && pinnedHash !== "";
+  const pin = pinned ?? "";
+  const confirmingUpdate = confirming === "update" && pin !== "";
   return (
     <li className={`skills-row${selected ? " skills-row-selected" : ""}`}>
       <div className="skills-row-head">
@@ -114,7 +96,7 @@ function SkillRow({
         {source === null ? null : confirmingUpdate ? (
           <>
             <span className="skills-confirm">
-              {`${skill.name}: ${skill.hash.slice(0, 7)} → ${pinnedHash.slice(0, 7)}`}
+              {`${skill.name}: ${skill.hash.slice(0, 7)} → ${pin.slice(0, 7)}`}
             </span>
             <button type="button" disabled={busy} onClick={() => onConfirmUpdate(skill)}>
               {`Confirm update ${skill.name}`}
@@ -128,12 +110,26 @@ function SkillRow({
             <button type="button" disabled={busy} onClick={() => onCheckUpdate(skill)}>
               {`Check for updates ${skill.name}`}
             </button>
-            {source.updateAvailable && pinnedHash !== "" ? (
+            {pin === "" ? null : (
               <button type="button" disabled={busy} onClick={() => onRequestUpdate(skill)}>
                 {`Update ${skill.name}`}
               </button>
-            ) : null}
+            )}
           </>
+        )}
+        {confirming === "remove" ? (
+          <>
+            <button type="button" disabled={busy} onClick={() => onConfirmRemove(skill)}>
+              {`Confirm remove ${skill.name}`}
+            </button>
+            <button type="button" disabled={busy} onClick={() => onCancelRemove(skill)}>
+              {`Cancel remove ${skill.name}`}
+            </button>
+          </>
+        ) : (
+          <button type="button" disabled={busy} onClick={() => onRequestRemove(skill)}>
+            {`Remove ${skill.name}`}
+          </button>
         )}
       </div>
       {skill.description === "" ? null : <p className="skills-description">{skill.description}</p>}
@@ -155,8 +151,8 @@ export function Skills({ workspaceId, request }: SkillsProps) {
   const [installScope, setInstallScope] = useState<"global" | "project">("project");
   // Keyed `scope|name`, because one name can live in both scopes under different pins.
   const [updateHashes, setUpdateHashes] = useState<Record<string, string>>({});
-  // The row whose old → new hash is on screen; one confirmation at a time, keyed the same way.
-  const [confirming, setConfirming] = useState<string | undefined>(undefined);
+  // One confirmation at a time: the old → new hash, or the removal prompt. Keyed `scope|name`.
+  const [confirming, setConfirming] = useState<Confirming | undefined>(undefined);
 
   // Any workspace switch bumps this, so a list or body that resolves late is dropped instead of
   // being shown for the wrong workspace.
@@ -164,14 +160,12 @@ export function Skills({ workspaceId, request }: SkillsProps) {
   const selectionTicket = useRef(0);
   const selection = useRef<SkillRef | undefined>(undefined);
 
-  // `skill.remove` answers with the listing too, but this panel has no remove control, so every
-  // refresh goes through here — and a refreshed list never carries a badge of its own.
+  // Every refresh goes through here. The listing carries no update verdict of its own, so a fresh
+  // list never raises a badge; only `skill.checkUpdate` does, and the pin map holds that answer.
   const load = useCallback(
     async (ticket: number, workspace: string): Promise<SkillListResult | undefined> => {
       try {
-        const result = withoutUpdateBadges(
-          SkillListResult.parse(await request<unknown>("skill.list", { workspaceId: workspace })),
-        );
+        const result = SkillListResult.parse(await request<unknown>("skill.list", { workspaceId: workspace }));
         if (generation.current !== ticket) return undefined;
         setList(result);
         setError(undefined);
@@ -265,10 +259,6 @@ export function Skills({ workspaceId, request }: SkillsProps) {
       if (generation.current !== ticket) return;
       // The pin the user will confirm. An unchanged source stores an empty pin, so nothing updates it.
       setUpdateHashes((current) => ({ ...current, [key]: result.changed ? result.hash : "" }));
-      // A changed hash is only a badge until the user updates, so the list keeps the old pin.
-      setList((current) =>
-        current === undefined ? current : withUpdateBadge(current, skill, result.changed),
-      );
       setError(undefined);
     } catch (checkError) {
       if (generation.current !== ticket) return;
@@ -282,13 +272,12 @@ export function Skills({ workspaceId, request }: SkillsProps) {
    * A pin is worth exactly one confirmation: after the kernel acted on it, or refused it, the row
    * must not offer the same `expectHash` again without a fresh check.
    */
-  function forgetUpdate(key: string, skill: SkillView): void {
+  function forgetUpdate(key: string): void {
     setUpdateHashes((current) => {
       const next = { ...current };
       delete next[key];
       return next;
     });
-    setList((current) => (current === undefined ? current : withUpdateBadge(current, skill, false)));
   }
 
   async function update(skill: SkillView): Promise<void> {
@@ -308,7 +297,7 @@ export function Skills({ workspaceId, request }: SkillsProps) {
       });
       if (generation.current !== ticket) return;
       // The kernel replaced that hash, so the pin is spent: forget it before the row can offer again.
-      forgetUpdate(key, skill);
+      forgetUpdate(key);
       const next = await load(ticket, workspace);
       // A failed reload already reported the stale list; re-reading would clear that error.
       if (next === undefined || generation.current !== ticket) return;
@@ -316,12 +305,12 @@ export function Skills({ workspaceId, request }: SkillsProps) {
       if (sameSkill(selection.current, skill)) void readBody(skill, ticket, workspace);
     } catch (updateError) {
       if (generation.current !== ticket) return;
-      // A refused pin cannot become valid by retrying it, so the row loses both the pin and its badge.
-      forgetUpdate(key, skill);
+      // A refused pin cannot become valid by retrying it, so the row loses its pin.
+      forgetUpdate(key);
       setError(errorMessage(updateError));
     } finally {
       // Both outcomes close this row's confirmation, so a failed update leaves no dead prompt behind.
-      setConfirming((current) => (current === key ? undefined : current));
+      setConfirming((current) => (current?.key === key && current.kind === "update" ? undefined : current));
       setBusy(false);
     }
   }
@@ -330,11 +319,52 @@ export function Skills({ workspaceId, request }: SkillsProps) {
     const key = `${skill.scope}|${skill.name}`;
     // Nothing fetched means nothing to confirm; the button only renders when a pin exists anyway.
     if ((updateHashes[key] ?? "") === "") return;
-    setConfirming(key);
+    setConfirming({ key, kind: "update" });
   }
 
-  function cancelUpdate(): void {
+  // One confirmation can be open at a time, so cancelling either kind is the same write.
+  function cancelConfirmation(): void {
     setConfirming(undefined);
+  }
+
+  function requestRemove(skill: SkillView): void {
+    setConfirming({ key: `${skill.scope}|${skill.name}`, kind: "remove" });
+  }
+
+  /**
+   * The answer is the listing after the delete, so it is rendered directly: a follow-up `skill.list`
+   * would be a second round trip for state the kernel already computed, and a window in which the
+   * removed row would still show.
+   */
+  async function remove(skill: SkillView): Promise<void> {
+    const key = `${skill.scope}|${skill.name}`;
+    const ticket = generation.current;
+    const workspace = workspaceId;
+    setBusy(true);
+    try {
+      const result = SkillListResult.parse(
+        await request<unknown>("skill.remove", {
+          workspaceId: workspace,
+          scope: skill.scope,
+          name: skill.name,
+        }),
+      );
+      if (generation.current !== ticket) return;
+      setList(result);
+      setError(undefined);
+      // The row is gone, so a pane still showing its body would describe something that no longer exists.
+      if (sameSkill(selection.current, skill)) {
+        selection.current = undefined;
+        setSelected(undefined);
+        setBody(undefined);
+      }
+    } catch (removeError) {
+      if (generation.current !== ticket) return;
+      setError(errorMessage(removeError));
+    } finally {
+      setConfirming((current) => (current?.key === key && current.kind === "remove" ? undefined : current));
+      setBusy(false);
+    }
   }
 
   async function install(): Promise<void> {
@@ -427,13 +457,16 @@ export function Skills({ workspaceId, request }: SkillsProps) {
                   busy={busy}
                   selected={sameSkill(selected, skill)}
                   pinned={updateHashes[key]}
-                  confirming={confirming === key}
+                  confirming={confirming?.key === key ? confirming.kind : undefined}
                   onView={view}
                   onToggle={(candidate) => void toggle(candidate)}
                   onCheckUpdate={(candidate) => void checkUpdate(candidate)}
                   onRequestUpdate={requestUpdate}
                   onConfirmUpdate={(candidate) => void update(candidate)}
-                  onCancelUpdate={cancelUpdate}
+                  onCancelUpdate={cancelConfirmation}
+                  onRequestRemove={requestRemove}
+                  onConfirmRemove={(candidate) => void remove(candidate)}
+                  onCancelRemove={cancelConfirmation}
                 />
               );
             })}
@@ -454,13 +487,16 @@ export function Skills({ workspaceId, request }: SkillsProps) {
                   busy={busy}
                   selected={sameSkill(selected, skill)}
                   pinned={updateHashes[key]}
-                  confirming={confirming === key}
+                  confirming={confirming?.key === key ? confirming.kind : undefined}
                   onView={view}
                   onToggle={(candidate) => void toggle(candidate)}
                   onCheckUpdate={(candidate) => void checkUpdate(candidate)}
                   onRequestUpdate={requestUpdate}
                   onConfirmUpdate={(candidate) => void update(candidate)}
-                  onCancelUpdate={cancelUpdate}
+                  onCancelUpdate={cancelConfirmation}
+                  onRequestRemove={requestRemove}
+                  onConfirmRemove={(candidate) => void remove(candidate)}
+                  onCancelRemove={cancelConfirmation}
                 />
               );
             })}
