@@ -14,6 +14,8 @@ function makeRequest(overrides: Record<string, (params?: unknown) => unknown> = 
     if (method === "model.list") return { models: [] };
     if (method === "system.health") return { status: "ok", pid: 1, engineDir: "C:/data/engine" };
     if (method === "mcp.list") return { servers: [] };
+    // The devices pane lives in Setup; off is the state every other case runs in.
+    if (method === "remote.status") return { enabled: false, port: null, url: null, canServe: false };
     throw new Error(`unexpected ${method}`);
   });
   return request as unknown as RequestMock;

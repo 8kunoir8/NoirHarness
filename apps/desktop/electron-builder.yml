@@ -18,6 +18,10 @@ extraResources:
   - from: ../../build/runtime
     to: runtime
     filter: ["**/*"]
+  # Served by the kernel to a paired browser; outside the asar so a plain node process can read it.
+  - from: dist/renderer
+    to: renderer
+    filter: ["**/*"]
 asar: true
 # The bundled kernel runs under the shipped Node runtime, whose ABI its native
 # modules were built for; rebuilding them for Electron would break that pairing.

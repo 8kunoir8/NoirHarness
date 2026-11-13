@@ -1,4 +1,5 @@
 import type { AgentEvent } from "@noir/protocol";
+import { resolveTransport } from "./transport.js";
 
 export interface KernelInfo {
   port: number;
@@ -9,7 +10,8 @@ export interface KernelInfo {
 
 declare global {
   interface Window {
-    noir: {
+    /** Absent in a browser: the shell there is served by the kernel and has no preload. */
+    noir?: {
       kernelInfo(): Promise<KernelInfo>;
       openExternal(url: string): Promise<void>;
       automationsArmed(count: number): void;
@@ -52,12 +54,20 @@ const pending = new Map<number, PendingCall>();
 const listeners = new Set<KernelEventListener>();
 
 export function kernelInfo(): Promise<KernelInfo> {
-  return window.noir.kernelInfo();
+  const bridge = window.noir;
+  if (bridge !== undefined) return bridge.kernelInfo();
+  // A browser is talking to the same kernel that served it; there is no second build to compare.
+  return Promise.resolve({
+    port: location.port === "" ? 80 : Number(location.port),
+    token: "",
+    buildMatches: true,
+    daemon: true,
+  });
 }
 
 /** Tells the tray how many schedules are armed; the shell keeps no state of its own. */
 export function reportArmed(count: number): void {
-  window.noir.automationsArmed(count);
+  window.noir?.automationsArmed(count);
 }
 
 /**
@@ -117,8 +127,8 @@ function releaseSocket(ws: WebSocket, error: Error): void {
 }
 
 async function openSocket(): Promise<void> {
-  const info = await kernelInfo();
-  const ws = new WebSocket(`ws://127.0.0.1:${info.port}/?token=${info.token}`);
+  const transport = await resolveTransport();
+  const ws = new WebSocket(transport.url);
   const opened = Promise.withResolvers<void>();
   const onOpen = (): void => opened.resolve();
   const onOpenError = (): void => opened.reject(new Error("kernel connection failed"));

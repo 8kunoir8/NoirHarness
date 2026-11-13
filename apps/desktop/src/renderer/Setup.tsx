@@ -20,6 +20,7 @@ import {
   type ProviderView,
 } from "@noir/protocol";
 import type { RequestFn } from "./api.js";
+import { Devices } from "./Devices.js";
 import { errorMessage } from "./events.js";
 
 const API_KIND_LABEL: Record<ApiKind, string> = {
@@ -551,6 +552,8 @@ export function Setup({ request, onOpenChat }: SetupProps) {
           )}
         </form>
       </section>
+
+      <Devices request={request} />
 
       <button type="button" className="primary" onClick={onOpenChat} disabled={models.length === 0}>
         Open chat

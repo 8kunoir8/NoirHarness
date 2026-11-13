@@ -8,6 +8,8 @@ export interface HostTarget {
   dataDir: string;
   kernelEntry: string;
   nodeBin: string;
+  /** The built renderer a paired browser loads; absent when there is none to serve. */
+  webRoot?: string;
 }
 
 export interface HostedKernel {
@@ -219,6 +221,7 @@ async function spawnDetached(target: HostTarget, deps: ResolvedDeps): Promise<Ho
     ELECTRON_RUN_AS_NODE: "1",
     NOIR_DATA_DIR: target.dataDir,
     NOIR_KERNEL_LOG: logPath(target.dataDir),
+    ...(target.webRoot === undefined ? {} : { NOIR_WEB_ROOT: target.webRoot }),
   };
   // Every handle is closed: a detached child that inherits one holds this app's pipes open, and
   // whoever is watching those pipes never learns that this app ended. The daemon logs to a file.

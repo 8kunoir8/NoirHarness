@@ -69,9 +69,14 @@ function linkTarget(href: string | undefined): LinkTarget {
   return EXTERNAL_PROTOCOLS[url.protocol] === true ? { kind: "external", href } : { kind: "blocked" };
 }
 
-/** External links leave through the typed preload bridge; a missing bridge (unit tests) is a no-op. */
+/**
+ * External links leave through the typed preload bridge. A browser has no bridge — it is the same
+ * page the kernel served — so the link opens a tab instead of being swallowed.
+ */
 function openExternally(href: string): void {
-  void window.noir?.openExternal?.(href);
+  const bridge = window.noir;
+  if (bridge !== undefined) void bridge.openExternal(href);
+  else window.open(href, "_blank", "noopener,noreferrer");
 }
 
 export interface MarkdownArtifactProps {

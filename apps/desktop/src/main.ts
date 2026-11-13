@@ -1,13 +1,14 @@
 import { join } from "node:path";
 import { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, shell } from "electron";
 import { hostKernel, type HostedKernel } from "./kernelHost.js";
-import { packagedKernelEntry, packagedNodeBinary } from "./packagedPaths.js";
+import { packagedKernelEntry, packagedNodeBinary, packagedRendererRoot } from "./packagedPaths.js";
 import { armedLabel, trayMenu, type TrayActions } from "./tray.js";
 
 const dataDir = process.env.NOIR_DATA_DIR ?? app.getPath("userData");
 const packaged = app.isPackaged;
 const kernelEntry = process.env.NOIR_KERNEL_ENTRY
   ?? (packaged ? packagedKernelEntry(process.resourcesPath) : join(app.getAppPath(), "..", "kernel", "dist", "index.cjs"));
+const rendererRoot = packaged ? packagedRendererRoot(process.resourcesPath) : join(app.getAppPath(), "dist", "renderer");
 const nodeBin = process.env.NOIR_NODE_BIN
   ?? (packaged ? packagedNodeBinary(process.resourcesPath) : process.env.npm_node_execpath ?? "node");
 
@@ -114,7 +115,7 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(async () => {
     hosted = await hostKernel(
-      { dataDir, kernelEntry, nodeBin },
+      { dataDir, kernelEntry, nodeBin, webRoot: rendererRoot },
       {
         promptBusy: async (live) => {
           // The only question the daemon ever asks: replacing an idle build is silent.

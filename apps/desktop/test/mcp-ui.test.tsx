@@ -49,6 +49,8 @@ function setupRequest(overrides: Partial<Record<string, (params?: unknown) => un
         return { status: "ok", pid: 1, engineDir: "C:/data/engine" };
       case "mcp.list":
         return { servers: [] };
+      case "remote.status":
+        return { enabled: false, port: null, url: null, canServe: false };
       default:
         throw new Error(`unexpected ${method}`);
     }
