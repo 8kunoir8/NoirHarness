@@ -392,6 +392,18 @@ enabled, so the next occurrence is tried rather than the schedule silently dying
 schedule that has been paused past its next run re-aligns that instant first, so resuming does not
 emit a wall of `missed` rows.
 
+The kernel is a daemon, so none of that needs the window: it is spawned detached from the app, writes
+its port, token and pid to `<dataDir>/runtime/kernel.json`, and the next app start reattaches to it
+rather than replacing it. Closing the window leaves the daemon and any turn it is running alone —
+the turn's transcript is already in the kernel, so reopening the app shows it mid-flight. The tray
+keeps the app reachable once its window is gone: `Show` reopens it, `Quit` leaves the daemon running,
+and `Quit and stop daemon` ends both. A build change is the one thing that forces a restart, and the
+app asks before it stops a daemon that is running turns. Stopping the daemon is not closing a chat:
+a live turn is interrupted and the session reopens as `error` at the next launch, ready to resume.
+The daemon is spawned with no inherited handles — an inherited stdout would keep the launching
+process's pipe open for as long as the daemon runs — so it logs to `<dataDir>/logs/kernel.log`,
+rotated to `kernel.1.log` once it passes 2 MB.
+
 ## Configuration
 
 | variable | default | meaning |
@@ -400,6 +412,8 @@ emit a wall of `missed` rows.
 | `NOIR_OMP_ARGS_JSON` | `[]` | JSON array of strings inserted before the generated `--session-dir … acp` flags |
 | `NOIR_TURN_TIMEOUT_MS` | `120000` | per-turn watchdog; on expiry the kernel sends `session/cancel` and reports the turn as failed |
 | `NOIR_GIT_COMMAND` | `git` | binary used for `git.status` and `git.diff`; set it when `git` is not on `PATH` |
+| `NOIR_KERNEL_LOG` | `<dataDir>/logs/kernel.log` | where the spawned daemon writes its own log; set by the app, read by `apps/kernel` |
+| `NOIR_NO_TRAY` | unset | `1` skips the tray, so closing the window quits the app; the end-to-end specs use it |
 
 The desktop shell also honours `NOIR_DATA_DIR`, `NOIR_KERNEL_ENTRY`, and `NOIR_NODE_BIN`.
 
@@ -412,8 +426,8 @@ pnpm --filter @noir/desktop test
 pnpm --filter @noir/desktop test:e2e
 ```
 
-`test:e2e` builds the app and drives Electron with Playwright against a local mock provider. Eleven
-specs, fourteen tests: `smoke` (2) — boot, process spawn, health, and a provider surviving an app
+`test:e2e` builds the app and drives Electron with Playwright against a local mock provider. Thirteen
+specs, sixteen tests: `smoke` (2) — boot, process spawn, health, and a provider surviving an app
 restart; `chat` (2) — a streamed reply and a permission-approved tool call; `shell` (1) — a tool turn
 that survives the restart, a prompt queued behind a slow turn, an interrupt, the queued turn draining
 after it, and a restart that replays the transcript; `editor` (2) — open a file, edit it, save
@@ -428,9 +442,13 @@ bubble that clears, desks that survive a cold start, and `Enter` opening a chat 
 `mcp` (1) — an MCP server configured in Setup and probed, an agent bound to it, and a brokered
 `mcp__calc__add` call approved through the card; `automations` (1) — a schedule created in the panel,
 retimed to a minute, fired by the kernel's own timer into a real agent, and the run appearing in the
-open pane without a remount.
+open pane without a remount; `daemon` (1) — the kernel still answering `/health` after the app's
+window closes, and a relaunch reattaching to the same pid; `daemon-fire` (1) — a schedule firing with
+no window open at all, observed over the kernel socket and only then seen in the reopened panel.
 Each spec gets its own temporary data directory and its own Electron profile
-(`--user-data-dir` inside that directory), so engine state and restored tabs stay inside it.
+(`--user-data-dir` inside that directory), so engine state and restored tabs stay inside it. Since
+the daemon outlives the app, each spec's teardown asks it to stop through `/shutdown` before the
+directory is removed.
 
 The packaged app is checked separately: `_electron.launch({ executablePath })` against
 `release/win-unpacked/NoirHarness.exe` asserts a rendered PDF page and the office's `data-office-*`
