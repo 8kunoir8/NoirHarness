@@ -701,4 +701,21 @@ describe("App agents rail", () => {
     expect(document.activeElement).toBe(name);
     expect(name.value).toBe("Scoutc");
   });
+
+  it("mounts one office canvas at a time as the view moves to Agents and back", async () => {
+    stubAppRequests([ROSTER]);
+    render(<App />);
+
+    const nav = screen.getByRole("navigation", { name: "Main" });
+    // The sidebar owns the canvas while the chat layout is on screen…
+    expect(await screen.findAllByTestId("agent-office")).toHaveLength(1);
+
+    // …and hands it to the Agents page, which would otherwise run a second Phaser render loop.
+    await userEvent.click(within(nav).getByRole("button", { name: "Agents" }));
+    await screen.findByRole("region", { name: "Agents" });
+    expect(screen.getAllByTestId("agent-office")).toHaveLength(1);
+
+    await userEvent.click(within(nav).getByRole("button", { name: "Chats" }));
+    await waitFor(() => expect(screen.getAllByTestId("agent-office")).toHaveLength(1));
+  });
 });
