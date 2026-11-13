@@ -1,5 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
-import { createServer } from "node:http";
+import { createServer, type ServerResponse } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import { ZodError } from "zod";
 import { ErrorCodes, JsonRpcRequest, RpcFault, toRpcFailure, type AgentEvent } from "@noir/protocol";
@@ -27,7 +27,7 @@ export interface RpcServer {
   broadcast(event: AgentEvent): void;
 }
 
-export async function startRpcServer(opts: { token: string; handlers: Record<string, Handler> }): Promise<RpcServer> {
+export async function startRpcServer(opts: { token: string; handlers: Record<string, Handler>; buildId?: string | null }): Promise<RpcServer> {
   const http = createServer();
   const wss = new WebSocketServer({ noServer: true });
   const clients = new Set<WebSocket>();
@@ -63,7 +63,14 @@ export async function startRpcServer(opts: { token: string; handlers: Record<str
       }
     });
   });
-
+  http.on("request", (req, res) => {
+    const url = new URL(req.url ?? "/", "http://127.0.0.1");
+    if (req.method === "GET" && url.pathname === "/health") {
+      sendHttp(res, 200, { status: "ok", pid: process.pid, buildId: opts.buildId ?? null });
+      return;
+    }
+    sendHttp(res, 404, { error: "not found" });
+  });
   await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve));
   const address = http.address();
   if (!address || typeof address === "string") throw new Error("no port");
@@ -77,8 +84,28 @@ export async function startRpcServer(opts: { token: string; handlers: Record<str
     },
     async close() {
       for (const client of clients) client.close();
-      await new Promise<void>((resolve) => wss.close(() => resolve()));
-      await new Promise<void>((resolve) => http.close(() => resolve()));
+      const wssClosed = Promise.withResolvers<void>();
+      wss.close(() => wssClosed.resolve());
+      await wssClosed.promise;
+      const httpClosed = Promise.withResolvers<void>();
+      http.close(() => httpClosed.resolve());
+      // An idle keep-alive socket a client left open would otherwise hold the close callback.
+      http.closeAllConnections();
+      await httpClosed.promise;
     },
   };
+}
+
+/**
+ * `connection: close` is not decoration: keep-alives make `http.close()` wait for the client, and a
+ * health check that hangs shutdown is worse than no health check.
+ */
+function sendHttp(res: ServerResponse, status: number, body: unknown): void {
+  const payload = JSON.stringify(body);
+  res.writeHead(status, {
+    "content-type": "application/json",
+    "content-length": Buffer.byteLength(payload),
+    connection: "close",
+  });
+  res.end(payload);
 }

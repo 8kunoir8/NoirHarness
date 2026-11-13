@@ -90,3 +90,34 @@ describe("rpc server", () => {
     second.close();
   });
 });
+async function httpGet(port: number, path: string): Promise<{ status: number; body: unknown }> {
+  const res = await fetch(`http://127.0.0.1:${port}${path}`, { headers: { connection: "close" } });
+  return { status: res.status, body: await res.json() };
+}
+
+describe("http control plane", () => {
+  it("answers /health with the pid and build id", async () => {
+    server = await startRpcServer({ token: "good", handlers: {}, buildId: "abc123" });
+    const res = await httpGet(server.port, "/health");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ status: "ok", pid: process.pid, buildId: "abc123" });
+  });
+
+  it("never leaks the token on /health", async () => {
+    server = await startRpcServer({ token: "super-secret-token", handlers: {}, buildId: "abc123" });
+    const res = await httpGet(server.port, "/health");
+    expect(JSON.stringify(res.body)).not.toContain("super-secret-token");
+  });
+
+  it("is 404 for any other request, even with a good token", async () => {
+    server = await startRpcServer({ token: "good", handlers: {}, buildId: "abc123" });
+    expect((await httpGet(server.port, "/?token=good")).status).toBe(404);
+    expect((await httpGet(server.port, "/nope")).status).toBe(404);
+  });
+
+  it("reports a null build id when the caller has none", async () => {
+    server = await startRpcServer({ token: "good", handlers: {} });
+    const res = await httpGet(server.port, "/health");
+    expect(res.body).toEqual({ status: "ok", pid: process.pid, buildId: null });
+  });
+});

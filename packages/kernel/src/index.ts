@@ -61,6 +61,7 @@ import {
 import { dataDir as defaultDataDir } from "./appdata.js";
 import { AgentService } from "./agents.js";
 import { addAnnotation, deleteAnnotation, listAnnotations } from "./annotations.js";
+import { buildIdOf } from "./buildId.js";
 import { openDb } from "./db.js";
 import { EngineManager } from "./engineManager.js";
 import { EventStore } from "./eventStore.js";
@@ -210,6 +211,9 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets } 
   mkdirSync(join(dir, "skills"), { recursive: true });
 
   const token = randomBytes(32).toString("hex");
+
+  // The file the desktop app hashes before it spawns this build: identity is bytes, not a version.
+  const buildId = buildIdOf(process.argv[1] ?? "");
   const claim: LockInfo = { pid: process.pid, token, startedAt: Date.now() };
   await acquireOwnership(lockFile, file, claim);
 
@@ -502,7 +506,7 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets } 
         },
       };
 
-      const started = await startRpcServer({ token, handlers });
+      const started = await startRpcServer({ token, handlers, buildId });
       server = started;
       broadcast = (event) => started.broadcast(event);
       engineManager.reconcileAll();
