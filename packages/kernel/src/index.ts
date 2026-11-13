@@ -67,6 +67,7 @@ import { EngineManager } from "./engineManager.js";
 import { EventStore } from "./eventStore.js";
 import { findFiles, listDirectory, readArtifact, readFileText, writeFileText } from "./fsService.js";
 import { gitDiff, gitStatus } from "./gitService.js";
+import { liveCount } from "./liveness.js";
 import { McpClient } from "./mcp/client.js";
 import { McpService } from "./mcp/service.js";
 import { ModelService } from "./models.js";
@@ -203,7 +204,7 @@ async function acquireOwnership(lockFile: string, runtimeFile: string, claim: Lo
  * `secrets` lets a test own the key store. Production callers omit it and get the OS keyring, the
  * only place a provider key may live.
  */
-export async function startKernel(opts: { dataDir?: string; secrets?: Secrets } = {}): Promise<Kernel> {
+export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; onShutdown?: () => void } = {}): Promise<Kernel> {
   const dir = opts.dataDir ?? defaultDataDir();
   const file = runtimeFilePath(dir);
   const lockFile = lockFilePath(dir);
@@ -228,6 +229,8 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets } 
     let server: RpcServer | undefined;
     let engines: EngineManager | undefined;
     let scheduler: Scheduler | undefined;
+    // Assigned once the kernel exists; a stop cannot arrive before the server is listening.
+    let stop: (() => Promise<void>) | undefined;
     try {
       const database = openDb(join(dir, "noir.db"));
       db = database;
@@ -506,7 +509,18 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets } 
         },
       };
 
-      const started = await startRpcServer({ token, handlers, buildId });
+      const started = await startRpcServer({
+        token,
+        handlers,
+        buildId,
+        requestShutdown: (force) => {
+          const live = liveCount(sessions.list());
+          return { stop: force || live === 0, live };
+        },
+        onStopped: () => {
+          void stop?.().finally(() => opts.onShutdown?.());
+        },
+      });
       server = started;
       broadcast = (event) => started.broadcast(event);
       engineManager.reconcileAll();
@@ -542,7 +556,7 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets } 
     const runningEngines = engines;
 
     let closed = false;
-    return {
+    const kernel: Kernel = {
       port: runningServer.port,
       token,
       async close() {
@@ -565,6 +579,8 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets } 
         }
       },
     };
+    stop = () => kernel.close();
+    return kernel;
   } catch (error) {
     removeLockIfOwned(lockFile, claim);
     throw error;

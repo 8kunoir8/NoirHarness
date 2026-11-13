@@ -20,7 +20,8 @@ process.on("SIGTERM", () => shutdown("SIGTERM"));
 
 void (async () => {
   try {
-    kernel = await startKernel();
+    // The kernel has already closed itself by the time this runs; exiting is the daemon's last act.
+    kernel = await startKernel({ onShutdown: () => process.exit(0) });
     console.log(JSON.stringify({ event: "kernel.ready", port: kernel.port }));
   } catch (error) {
     console.log(JSON.stringify({ event: "kernel.failed", reason: error instanceof Error ? error.message : String(error) }));

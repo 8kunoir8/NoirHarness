@@ -121,3 +121,66 @@ describe("http control plane", () => {
     expect(res.body).toEqual({ status: "ok", pid: process.pid, buildId: null });
   });
 });
+async function shutdown(port: number, token: string | undefined, body: unknown): Promise<{ status: number; body: unknown }> {
+  const headers: Record<string, string> = { "content-type": "application/json", connection: "close" };
+  if (token !== undefined) headers.authorization = `Bearer ${token}`;
+  const res = await fetch(`http://127.0.0.1:${port}/shutdown`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+  return { status: res.status, body: await res.json().catch(() => ({})) };
+}
+
+describe("POST /shutdown", () => {
+  it("rejects a missing or wrong token", async () => {
+    server = await startRpcServer({ token: "good", handlers: {}, requestShutdown: () => ({ stop: true, live: 0 }) });
+    expect((await shutdown(server.port, undefined, { force: false })).status).toBe(401);
+    expect((await shutdown(server.port, "bad", { force: false })).status).toBe(401);
+  });
+
+  it("refuses while a session is live and says how many", async () => {
+    let called = 0;
+    server = await startRpcServer({
+      token: "good",
+      handlers: {},
+      requestShutdown: (force) => {
+        called += 1;
+        expect(force).toBe(false);
+        return { stop: false, live: 2 };
+      },
+      onStopped: () => { throw new Error("must not stop"); },
+    });
+    const res = await shutdown(server.port, "good", { force: false });
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({ stopped: false, live: 2 });
+    expect(called).toBe(1);
+  });
+
+  it("stops when forced and fires onStopped after the reply", async () => {
+    const order: string[] = [];
+    server = await startRpcServer({
+      token: "good",
+      handlers: {},
+      requestShutdown: (force) => {
+        order.push(`request:${String(force)}`);
+        return { stop: true, live: 2 };
+      },
+      onStopped: () => order.push("stopped"),
+    });
+    const res = await shutdown(server.port, "good", { force: true });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ stopped: true });
+    expect(order).toEqual(["request:true", "stopped"]);
+  });
+
+  it("rejects a body that is not JSON", async () => {
+    server = await startRpcServer({ token: "good", handlers: {}, requestShutdown: () => ({ stop: true, live: 0 }) });
+    const res = await fetch(`http://127.0.0.1:${server.port}/shutdown`, {
+      method: "POST",
+      headers: { authorization: "Bearer good", "content-type": "application/json", connection: "close" },
+      body: "nonsense",
+    });
+    expect(res.status).toBe(400);
+  });
+});

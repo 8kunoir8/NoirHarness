@@ -1,5 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
-import { createServer, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import { ZodError } from "zod";
 import { ErrorCodes, JsonRpcRequest, RpcFault, toRpcFailure, type AgentEvent } from "@noir/protocol";
@@ -27,7 +27,22 @@ export interface RpcServer {
   broadcast(event: AgentEvent): void;
 }
 
-export async function startRpcServer(opts: { token: string; handlers: Record<string, Handler>; buildId?: string | null }): Promise<RpcServer> {
+/** What the control plane needs to know about a stop request; the kernel owns the policy. */
+export interface ShutdownDecision {
+  stop: boolean;
+  live: number;
+}
+
+export interface RpcOptions {
+  token: string;
+  handlers: Record<string, Handler>;
+  buildId?: string | null;
+  requestShutdown?: (force: boolean) => ShutdownDecision;
+  /** Called once the `200` has flushed, so the caller learns the stop was accepted. */
+  onStopped?: () => void;
+}
+
+export async function startRpcServer(opts: RpcOptions): Promise<RpcServer> {
   const http = createServer();
   const wss = new WebSocketServer({ noServer: true });
   const clients = new Set<WebSocket>();
@@ -64,12 +79,7 @@ export async function startRpcServer(opts: { token: string; handlers: Record<str
     });
   });
   http.on("request", (req, res) => {
-    const url = new URL(req.url ?? "/", "http://127.0.0.1");
-    if (req.method === "GET" && url.pathname === "/health") {
-      sendHttp(res, 200, { status: "ok", pid: process.pid, buildId: opts.buildId ?? null });
-      return;
-    }
-    sendHttp(res, 404, { error: "not found" });
+    void handleHttp(req, res, opts);
   });
   await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve));
   const address = http.address();
@@ -94,6 +104,56 @@ export async function startRpcServer(opts: { token: string; handlers: Record<str
       await httpClosed.promise;
     },
   };
+}
+
+/** The control plane: two routes, one of which can end this process. */
+async function handleHttp(req: IncomingMessage, res: ServerResponse, opts: RpcOptions): Promise<void> {
+  const url = new URL(req.url ?? "/", "http://127.0.0.1");
+  if (req.method === "GET" && url.pathname === "/health") {
+    sendHttp(res, 200, { status: "ok", pid: process.pid, buildId: opts.buildId ?? null });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/shutdown") {
+    const header = req.headers.authorization ?? "";
+    const provided = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : "";
+    if (!tokenMatches(provided, opts.token)) {
+      sendHttp(res, 401, { stopped: false });
+      return;
+    }
+    let body: unknown;
+    try {
+      body = await readJsonBody(req);
+    } catch {
+      sendHttp(res, 400, { stopped: false });
+      return;
+    }
+    const force = typeof body === "object" && body !== null && "force" in body && body.force === true;
+    const decision = opts.requestShutdown?.(force) ?? { stop: false, live: 0 };
+    if (!decision.stop) {
+      sendHttp(res, 409, { stopped: false, live: decision.live });
+      return;
+    }
+    // Attach before the reply flushes: `finish` can fire on the next tick.
+    res.once("finish", () => opts.onStopped?.());
+    sendHttp(res, 200, { stopped: true });
+    return;
+  }
+  sendHttp(res, 404, { error: "not found" });
+}
+
+/** Bodies here are `{force}`; anything larger is not this route's client. */
+async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.from(chunk as Buffer);
+    size += buffer.length;
+    if (size > 4_096) throw new Error("body too large");
+    chunks.push(buffer);
+  }
+  const text = Buffer.concat(chunks).toString("utf8");
+  if (text === "") return {};
+  return JSON.parse(text);
 }
 
 /**
