@@ -42,14 +42,17 @@ test("fires a schedule after the window closes", async () => {
     await closeWindow(app);
 
     // No window from here on: the kernel socket is the only observer.
+    // The run row is written before the turn reaches the provider, so both have to be true: a
+    // loaded machine can take a while between the fire and the first byte afield.
     const deadline = Date.now() + 150_000;
     let fired = false;
-    while (!fired && Date.now() < deadline) {
+    while (Date.now() < deadline) {
       fired = await withKernel(harness.dataDir, async (request) => {
         const runs = (await request("schedule.runs", { id: scheduleId })) as { runs: { status: string }[] };
         return runs.runs.some((run) => run.status === "fired");
       });
-      if (!fired) await new Promise((resolve) => setTimeout(resolve, 5_000));
+      if (fired && mock.prompts().includes("headless tick")) break;
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
     }
     expect(fired).toBe(true);
     expect(mock.prompts()).toContain("headless tick");

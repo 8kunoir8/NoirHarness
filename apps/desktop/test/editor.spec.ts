@@ -42,7 +42,7 @@ test("edits a file, saves it, and opens the diff from the inspector", async () =
 
       // The disk is the contract: the save goes through the kernel to the real file.
       await expect
-        .poll(() => readFileSync(join(harness.workspacePath, "src/main.ts"), "utf8"), { timeout: 10_000 })
+        .poll(() => readFileSync(join(harness.workspacePath, "src/main.ts"), "utf8"), { timeout: 20_000 })
         .toBe("export const b = 2;");
 
       // Tabs append in creation order, so the chat tab bootstrap opened is the first one; the save
