@@ -123,6 +123,9 @@ function createTray(): void {
     show: showWindow,
     quit: quitNow,
     quitAndStop: () => {
+      // Stop watching before stopping the daemon, or the supervisor reads its absence as a crash.
+      supervisor?.stop();
+      witness?.stop();
       void stopHosted().finally(quitNow);
     },
     openAtLogin: () => settings.openAtLogin,
@@ -196,6 +199,15 @@ if (!app.requestSingleInstanceLock()) {
       respawn: async () => {
         hosted = await startKernel();
         startWitness(hosted);
+        // The window holds the old port and token; without a reload it would stay disconnected.
+        mainWindow?.webContents.reload();
+      },
+      onState: (state) => {
+        if (state.alive) {
+          tray?.setToolTip(armedLabel(armed));
+          return;
+        }
+        tray?.setToolTip(state.error === undefined ? "Kernel not answering" : `Kernel not running: ${state.error}`);
       },
     });
     supervisor.start();
