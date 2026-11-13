@@ -404,6 +404,16 @@ The daemon is spawned with no inherited handles — an inherited stdout would ke
 process's pipe open for as long as the daemon runs — so it logs to `<dataDir>/logs/kernel.log`,
 rotated to `kernel.1.log` once it passes 2 MB.
 
+Because the runs happen without the window, the app reports them and looks after the daemon itself.
+A scheduled run that finishes or fails raises a desktop notification from the app process — the
+renderer is not the witness, and a closed window does not silence it. `/health` is polled every
+fifteen seconds; two consecutive misses restart the daemon through the same attach-or-spawn path a
+launch uses, at most once a minute, and a daemon that answers under a different pid is adopted rather
+than fought. `Start when I sign in` in the tray stores `openAtLogin` in `<dataDir>/desktop.json` and
+applies it at launch, so a 06:00 schedule has a kernel to fire on without anyone having opened the
+app first. The limit is honest: notifications need the app process alive, so they arrive while it
+runs and not after `Quit and stop daemon`.
+
 The same daemon can be reached from another device on the local network. Setup → *Devices* →
 *Allow devices on this network* starts a second listener (the loopback one is untouched and still
 uses the runtime token); *Create a pairing link* shows a URL whose `#` fragment carries a one-time
@@ -430,6 +440,7 @@ cannot mint or remove devices.
 | `NOIR_GIT_COMMAND` | `git` | binary used for `git.status` and `git.diff`; set it when `git` is not on `PATH` |
 | `NOIR_KERNEL_LOG` | `<dataDir>/logs/kernel.log` | where the spawned daemon writes its own log; set by the app, read by `apps/kernel` |
 | `NOIR_NO_TRAY` | unset | `1` skips the tray, so closing the window quits the app; the end-to-end specs use it |
+| `NOIR_NOTIFY_LOG` | unset | path where the app appends one JSON line per notification it shows; the end-to-end spec uses it instead of a notification daemon |
 | `NOIR_WEB_ROOT` | unset | directory of the built renderer served to a paired browser; the app passes its own `dist/renderer`, unset means a paired device has no page to load |
 
 The desktop shell also honours `NOIR_DATA_DIR`, `NOIR_KERNEL_ENTRY`, and `NOIR_NODE_BIN`.

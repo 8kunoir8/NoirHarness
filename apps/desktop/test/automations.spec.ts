@@ -1,8 +1,30 @@
-import { basename } from "node:path";
+import { readFileSync } from "node:fs";
+import { basename, join } from "node:path";
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import { closeWindow, createDirs, launchApp, setupWorkspace } from "./app-harness.js";
 import { deleteProviderThroughKernel, removeDir, stopKernel, withKernel } from "./helpers.js";
 import { startMockProvider } from "./mock-provider.js";
+
+/** The titles main says it showed, in order. A half-written line is simply not read yet. */
+function notificationTitles(path: string): string[] {
+  let raw = "";
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    return [];
+  }
+  return raw
+    .split("\n")
+    .flatMap((line) => {
+      try {
+        const parsed: unknown = JSON.parse(line);
+        const title = typeof parsed === "object" && parsed !== null ? Reflect.get(parsed, "title") : undefined;
+        return typeof title === "string" ? [title] : [];
+      } catch {
+        return [];
+      }
+    });
+}
 
 function rail(page: Page) {
   return page.getByRole("navigation", { name: "Main" });
@@ -33,10 +55,12 @@ async function createAgent(page: Page, name: string, workspacePath: string): Pro
 test("fires a schedule into a real agent and shows the run without a remount", async () => {
   test.setTimeout(240_000);
   const harness = createDirs("noir automations ");
+  const notifyLog = join(harness.dataDir, "notify.log");
   const mock = await startMockProvider();
   let app: ElectronApplication | undefined;
   try {
-    app = await launchApp(harness);
+    // Main reports a finished run through its own socket; the log is how a spec sees it.
+    app = await launchApp(harness, { NOIR_NOTIFY_LOG: notifyLog });
     const page = await app.firstWindow();
     await setupWorkspace(page, mock, harness.workspacePath);
     await rail(page).getByRole("button", { name: "Agents" }).click();
@@ -86,6 +110,11 @@ test("fires a schedule into a real agent and shows the run without a remount", a
 
     // The session the schedule opened is an ordinary chat, tagged so the list explains it.
     await expect(page.getByRole("region", { name: "Sessions" })).toContainText("scheduled");
+
+    // The app noticed the run end even though the renderer only ever displayed it.
+    await expect
+      .poll(() => notificationTitles(notifyLog), { timeout: 30_000 })
+      .toContain("Scheduled run finished");
   } finally {
     if (app !== undefined) {
       await deleteProviderThroughKernel(harness.dataDir, "Mock").catch(() => undefined);

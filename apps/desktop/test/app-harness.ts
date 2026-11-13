@@ -22,14 +22,14 @@ export function createDirs(prefix = "noir "): Harness {
   return { dataDir, workspacePath };
 }
 
-export function launchApp(harness: Harness): Promise<ElectronApplication> {
+export function launchApp(harness: Harness, extraEnv: Record<string, string> = {}): Promise<ElectronApplication> {
   // Chromium keeps localStorage (restored tabs, read state) in the profile, not under NOIR_DATA_DIR:
   // without its own `--user-data-dir` every spec would inherit the tabs left by the previous one.
   return electron.launch({
     args: [".", `--user-data-dir=${join(harness.dataDir, "electron")}`],
     // NOIR_NO_TRAY keeps the window's close meaning quit: with a tray it means hide, and
     // Playwright's own window close would then never complete. The tray is unit-tested instead.
-    env: { ...process.env, NOIR_DATA_DIR: harness.dataDir, NOIR_NO_TRAY: "1" },
+    env: { ...process.env, NOIR_DATA_DIR: harness.dataDir, NOIR_NO_TRAY: "1", ...extraEnv },
   });
 }
 
