@@ -318,6 +318,16 @@ be an absolute path that is itself a real directory, and it may not contain a sy
 in its tree — scanning skips links, but an install refuses them rather than copying bytes its hash
 would not cover.
 
+The listing itself never claims an update exists — `skill.list` must not touch the network — so the
+verdict is only the hash `skill.checkUpdate` returned, held by the panel until it is either
+confirmed or discarded.
+
+**Removing a skill** deletes its directory, its source record, and its enabled flag; the kernel
+answers with the listing that follows, because removing the project copy of a name unshadows the
+global one. A remove is a confirmation, not a single click. The panel resolves a name to its
+directory through the scan rather than assuming the folder is named after the skill, and refuses to
+report a workspace it cannot read as having no such skill.
+
 ## Agents and the office
 
 The **Agents** view is three regions: the `Agents` roster, the `Office` main pane, and the
