@@ -6,6 +6,7 @@ import { appendUserMessage, emptyChatState, reduceChat, useSessionEvents } from 
 
 const api = vi.hoisted(() => ({
   connect: vi.fn(async (_listener?: unknown) => undefined),
+  reportArmed: vi.fn(),
   offEvent: vi.fn((_listener?: unknown) => undefined),
   request: vi.fn(async () => {
     throw new Error("not connected");

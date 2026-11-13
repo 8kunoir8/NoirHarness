@@ -5,6 +5,9 @@ import { CommandPalette } from "../src/renderer/CommandPalette.js";
 
 const appApi = vi.hoisted(() => ({
   connect: vi.fn(async (_listener?: unknown) => undefined),
+  // The banner asks the window which build it is talking to; nothing here renders it.
+  kernelInfo: vi.fn(async () => ({ port: 1, token: "t", buildMatches: true, daemon: true })),
+  reportArmed: vi.fn(),
   offEvent: vi.fn((_listener?: unknown) => undefined),
   request: vi.fn<(method: string, params?: unknown) => Promise<unknown>>(async () => {
     throw new Error("unmocked request");

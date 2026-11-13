@@ -55,6 +55,11 @@ export function kernelInfo(): Promise<KernelInfo> {
   return window.noir.kernelInfo();
 }
 
+/** Tells the tray how many schedules are armed; the shell keeps no state of its own. */
+export function reportArmed(count: number): void {
+  window.noir.automationsArmed(count);
+}
+
 /**
  * Notification frames carry the event at `params.event`. Older kernels wrapped it one
  * level deeper (`params.params.event`) or put it on the frame itself; accept all three.

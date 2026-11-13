@@ -3,6 +3,7 @@
 vi.mock("../src/renderer/api.js", () => ({
   connect: vi.fn(async () => undefined),
   offEvent: vi.fn(),
+  reportArmed: vi.fn(),
   request: vi.fn(),
 }));
 

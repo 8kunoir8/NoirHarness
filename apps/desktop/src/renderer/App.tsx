@@ -8,7 +8,7 @@ import {
   type FsReadResult,
   type GitStatusResult,
 } from "@noir/protocol";
-import { connect, offEvent, request, type KernelInfo } from "./api.js";
+import { connect, kernelInfo, offEvent, reportArmed, request, type KernelInfo } from "./api.js";
 import { Agents } from "./Agents.js";
 import { Automations } from "./Automations.js";
 import { Chat } from "./Chat.js";
@@ -229,7 +229,7 @@ export function App() {
   // The window owns two facts the tray cannot see: which build its daemon is, and how many
   // automations are armed. Neither affects rendering except through the banner.
   useEffect(() => {
-    void window.noir.kernelInfo().then(setKernel).catch(() => undefined);
+    void kernelInfo().then(setKernel).catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -242,7 +242,7 @@ export function App() {
       if (cancelled || listed === undefined) return;
       const parsed = ScheduleListResult.safeParse(listed);
       if (!parsed.success) return;
-      window.noir.automationsArmed(parsed.data.schedules.filter((entry) => entry.enabled).length);
+      reportArmed(parsed.data.schedules.filter((entry) => entry.enabled).length);
     };
     void report();
     const timer = setInterval(() => void report(), 15_000);
