@@ -20,7 +20,12 @@ export function assertTransition(from: SessionStatus, to: SessionStatus): void {
 
 export interface SessionRow { id: string; workspaceId: string; agentId: string; engine: EngineKind; title: string; status: SessionStatus; modelId: string | null; createdAt: number; }
 
-export interface SessionCreateOptions { modelId?: string | undefined; agentId?: string | undefined }
+export interface SessionCreateOptions {
+  modelId?: string | undefined;
+  agentId?: string | undefined;
+  /** The schedule that fired this session; never set for a session a person started. */
+  scheduleId?: string | undefined;
+}
 
 /** What a session froze from its agent profile at creation; later profile edits never reach it. */
 export interface SessionSnapshot {
@@ -43,6 +48,7 @@ function toView(r: Record<string, unknown>, meta: SessionMeta): SessionView {
     title: r.title as string,
     status: r.status as SessionStatus,
     modelId: (r.model_id as string | null) ?? null,
+    scheduleId: (r.schedule_id as string | null) ?? null,
     createdAt: r.created_at as number,
     lastEventSeq: meta.lastSeq,
     lastEventAt: meta.lastTs,
@@ -50,7 +56,7 @@ function toView(r: Record<string, unknown>, meta: SessionMeta): SessionView {
   };
 }
 
-const VIEW_COLUMNS = "id, workspace_id, agent_id, engine, title, status, model_id, created_at";
+const VIEW_COLUMNS = "id, workspace_id, agent_id, engine, title, status, model_id, schedule_id, created_at";
 
 /** Newest event per session, in one grouped pass; empty sessions fall back to the row's creation time. */
 const EVENTS_BY_SESSION = "SELECT session_id, MAX(seq) AS last_seq, MAX(ts) AS last_ts FROM events GROUP BY session_id";
@@ -120,8 +126,8 @@ export class SessionService {
 
     const snapshot = JSON.stringify({ agentId, engine, modelId: modelId ?? null, permissionPolicy });
     const row: SessionRow = { id: uuidv7(), workspaceId, agentId, engine, title: "", status: "starting", modelId: modelId ?? null, createdAt: Date.now() };
-    this.db.prepare("INSERT INTO sessions (id, workspace_id, agent_id, engine, status, created_at, model_id, config_snapshot_json) VALUES (?,?,?,?,?,?,?,?)").run(
-      row.id, row.workspaceId, row.agentId, row.engine, row.status, row.createdAt, row.modelId, snapshot,
+    this.db.prepare("INSERT INTO sessions (id, workspace_id, agent_id, engine, status, created_at, model_id, schedule_id, config_snapshot_json) VALUES (?,?,?,?,?,?,?,?,?)").run(
+      row.id, row.workspaceId, row.agentId, row.engine, row.status, row.createdAt, row.modelId, opts.scheduleId ?? null, snapshot,
     );
     this.events.append({ sessionId: row.id, agentId, type: "session.created", payload: { title: "" }, provenance: { engine: row.engine, engineName: "none", adapterVersion: "0" } });
     this.events.append({ sessionId: row.id, agentId, type: "session.status", payload: { status: "starting" }, provenance: { engine: row.engine, engineName: "none", adapterVersion: "0" } });

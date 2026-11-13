@@ -152,6 +152,36 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
       );
     `,
   },
+  {
+    id: 9,
+    sql: `
+      CREATE TABLE schedules (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        interval_minutes INTEGER NOT NULL,
+        anchor_minutes INTEGER NOT NULL DEFAULT 0,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        next_run_at INTEGER NOT NULL,
+        last_run_at INTEGER,
+        created_at INTEGER NOT NULL,
+        UNIQUE (workspace_id, name)
+      );
+      CREATE TABLE schedule_runs (
+        id TEXT PRIMARY KEY,
+        schedule_id TEXT NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
+        status TEXT NOT NULL,
+        due_at INTEGER NOT NULL,
+        started_at INTEGER NOT NULL,
+        session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+        reason TEXT
+      );
+      CREATE INDEX schedule_runs_lookup ON schedule_runs (schedule_id, due_at DESC);
+      ALTER TABLE sessions ADD COLUMN schedule_id TEXT REFERENCES schedules(id) ON DELETE SET NULL;
+    `,
+  },
 ];
 
 export function migrate(db: Database.Database): void {
