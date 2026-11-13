@@ -9,6 +9,7 @@ import {
 } from "@noir/protocol";
 import { connect, offEvent, request } from "./api.js";
 import { Agents } from "./Agents.js";
+import { Automations } from "./Automations.js";
 import { Chat } from "./Chat.js";
 import type { DiffStats } from "./ChatHeader.js";
 import { CommandPalette } from "./CommandPalette.js";
@@ -47,7 +48,7 @@ import { useShortcuts } from "./useShortcuts.js";
 import { WorkspacePanel, type ProjectView, type WorkspaceView } from "./WorkspacePanel.js";
 import "./styles.css";
 
-type View = "setup" | "chats" | "skills" | "agents";
+type View = "setup" | "chats" | "skills" | "agents" | "automations";
 
 type ListMode = "chats" | "files";
 
@@ -565,6 +566,14 @@ export function App() {
       <button type="button" aria-pressed={view === "skills"} onClick={() => setView("skills")} title="Skills">
         Skills
       </button>
+      <button
+        type="button"
+        aria-pressed={view === "automations"}
+        onClick={() => setView("automations")}
+        title="Automations"
+      >
+        Automations
+      </button>
       <button type="button" aria-pressed={view === "setup"} onClick={() => setView("setup")} title="Setup">
         Setup
       </button>
@@ -731,6 +740,13 @@ export function App() {
       run: () => setView("skills"),
     },
     {
+      id: "automations",
+      label: "Open automations",
+      keywords: "schedules cron recurring nightly automation",
+      enabled: workspaceId !== "",
+      run: () => setView("automations"),
+    },
+    {
       id: "switch-theme",
       label: "Switch theme",
       keywords: "paper ink dark light",
@@ -812,7 +828,10 @@ export function App() {
 
   // Agents may exist with `modelRef: null`, and the profile is configurable before any model is
   // added, so only chats depend on a configured model.
-  if (view === "setup" || (models.length === 0 && view !== "skills" && view !== "agents")) {
+  if (
+    view === "setup" ||
+    (models.length === 0 && view !== "skills" && view !== "agents" && view !== "automations")
+  ) {
     return (
       <>
         <Shell
@@ -917,6 +936,21 @@ export function App() {
             <>
               {error === undefined ? null : <p role="alert">{error}</p>}
               <Skills key={workspaceId} workspaceId={workspaceId} request={request} />
+            </>
+          ) : view === "automations" ? (
+            <>
+              {error === undefined ? null : <p role="alert">{error}</p>}
+              <Automations
+                key={workspaceId}
+                workspaceId={workspaceId}
+                request={request}
+                onOpenSession={(sessionId) => {
+                  openSession({ id: sessionId });
+                  // The chat lives in the chats view, and its row must be known before the tab loads.
+                  setView("chats");
+                  void loadSessions().catch(() => undefined);
+                }}
+              />
             </>
           ) : view === "agents" ? (
             <>

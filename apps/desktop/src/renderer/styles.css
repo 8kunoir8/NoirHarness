@@ -269,6 +269,16 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; colo
 }
 .session-row-main { display: flex; flex-direction: column; overflow: hidden; }
 .session-row-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-tag {
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  font-size: 0.64rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
 .session-row-meta { color: var(--muted); font-size: 0.72rem; }
 .session-row time { color: var(--muted); font-size: 0.7rem; }
 
@@ -700,6 +710,55 @@ button.diff-gutter:hover, button.diff-gutter:focus-visible { color: var(--accent
   margin: 0;
 }
 .hint code { font-size: 0.8rem; color: var(--text); }
+
+/* --- automations --- */
+
+.automations { display: flex; flex-direction: column; gap: 12px; min-height: 0; max-width: 1200px; }
+.automations-error { margin: 0; color: var(--danger); font-size: 0.8rem; }
+.automations-panes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+.automations-panes section { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.automations-panes h3 {
+  margin: 0;
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.automations-list ul,
+.automations-runs ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.automations-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  background: var(--surface-raised);
+}
+.automations-row[aria-current="true"] { border-color: var(--accent); }
+.automations-open {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+  background: none;
+  border: 0;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+}
+.automations-meta { font-size: 0.78rem; color: var(--muted); }
+.automations-state { font-size: 0.72rem; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; }
+.automations-runs li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 0.84rem; }
+.automations-run-status { font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.automations-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
 /* --- file tree --- */
 

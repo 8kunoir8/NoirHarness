@@ -44,6 +44,7 @@ const session: SessionView = {
   lastEventSeq: 0,
   lastEventAt: 1,
   pendingApproval: false,
+  scheduleId: null,
 };
 
 describe("reduceChat", () => {

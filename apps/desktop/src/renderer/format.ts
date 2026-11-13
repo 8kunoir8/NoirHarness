@@ -12,3 +12,18 @@ export function formatDuration(ms: number): string {
   const minutes = Math.floor(seconds / 60);
   return `${minutes}m ${String(Math.floor(seconds % 60)).padStart(2, "0")}s`;
 }
+
+/** Minutes past midnight -> "09:00". */
+export function formatClock(minutes: number): string {
+  return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+}
+
+/** The cadence as a person says it: "every 15 min", "daily at 09:00", "weekly at 09:00". */
+export function formatCadence(intervalMinutes: number, anchorMinutes: number): string {
+  if (intervalMinutes % 1_440 !== 0) return `every ${intervalMinutes} min`;
+  const days = intervalMinutes / 1_440;
+  const clock = formatClock(anchorMinutes);
+  if (days === 1) return `daily at ${clock}`;
+  if (days === 7) return `weekly at ${clock}`;
+  return `every ${days} days at ${clock}`;
+}

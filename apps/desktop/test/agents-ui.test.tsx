@@ -114,6 +114,7 @@ const SESSION: SessionView = {
   lastEventSeq: 0,
   lastEventAt: 2,
   pendingApproval: false,
+  scheduleId: null,
 };
 
 const SKILL: SkillView = {
@@ -640,6 +641,8 @@ describe("App agents rail", () => {
           return { skills: [], shadowed: [], warnings: [] };
         case "mcp.list":
           return { servers: [] };
+        case "schedule.list":
+          return { schedules: [] };
         default:
           throw new Error(`unexpected ${method}`);
       }
@@ -661,6 +664,21 @@ describe("App agents rail", () => {
     // model must still be configurable, so the rail button must land on the roster.
     expect(await screen.findByRole("region", { name: "Agents" })).toBeTruthy();
     expect(screen.getByRole("region", { name: "Office" })).toBeTruthy();
+  });
+
+  it("reaches automations from the rail without a model", async () => {
+    stubAppRequests();
+
+    render(<App />);
+    const nav = screen.getByRole("navigation", { name: "Main" });
+    const names = within(nav)
+      .getAllByRole("button")
+      .map((button) => button.textContent);
+    expect(names.slice(0, 4)).toEqual(["Chats", "Agents", "Skills", "Automations"]);
+
+    await userEvent.click(within(nav).getByRole("button", { name: "Automations" }));
+    // Scheduling needs an agent but no model, so the setup redirect must not swallow this view.
+    expect(await screen.findByRole("region", { name: "Schedules" })).toBeTruthy();
   });
 
   it("focuses the agent inspector with C, but never while typing in the form", async () => {

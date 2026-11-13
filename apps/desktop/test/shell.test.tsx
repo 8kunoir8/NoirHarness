@@ -25,6 +25,7 @@ function session(id: string, patch: Partial<SessionView> = {}): SessionView {
     lastEventSeq: 1,
     lastEventAt: NOW - 600_000,
     pendingApproval: false,
+    scheduleId: null,
     ...patch,
   };
 }
@@ -140,5 +141,14 @@ describe("SessionList", () => {
   it("labels a missing title as Untitled chat", () => {
     renderList([session("a", { title: "" })]);
     expect(screen.getByRole("button", { name: /Untitled chat/ })).toBeTruthy();
+  });
+
+  it("tags a scheduled run and leaves an ordinary chat untagged", () => {
+    renderList([
+      session("a", { title: "Nightly", scheduleId: "s-1" }),
+      session("b", { title: "Manual", scheduleId: null }),
+    ]);
+    expect(screen.getByRole("button", { name: /Nightly/ }).textContent).toContain("scheduled");
+    expect(screen.getByRole("button", { name: /Manual/ }).textContent).not.toContain("scheduled");
   });
 });

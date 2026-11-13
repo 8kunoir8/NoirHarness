@@ -61,6 +61,7 @@ const session: SessionView = {
   lastEventSeq: 0,
   lastEventAt: 1,
   pendingApproval: false,
+  scheduleId: null,
 };
 
 function ChatHarness({ request }: { request: RequestFn }) {
