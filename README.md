@@ -361,6 +361,30 @@ bundle never contains them, and the office art is a CC0 Kenney pack committed un
 `apps/desktop/src/renderer/office/assets/` with its licence and a frame manifest beside it — nothing
 is fetched at runtime.
 
+## Automations
+
+A schedule is a workspace, an agent, a prompt, and a cadence: every `N` minutes, or every `N` days
+at a wall-clock time. The **Automations** view lists them with their next run, edits one at a time,
+and shows the run history; `Run now` records a manual run and opens its chat. The kernel's scheduler
+holds one timer, armed for the earliest enabled `next_run_at`, and re-arms after every tick.
+
+Each due schedule gets exactly one row in `schedule_runs` before anything else happens: the run is
+recorded and `next_run_at` advanced in a single transaction, so a crash in between cannot fire the
+same instant twice. Then, if the schedule is not still working on its previous run, the kernel
+creates an ordinary session tagged with the schedule id, sends the prompt, and lets the turn run
+detached — the timer is never blocked by a slow turn. `scheduleId` rides along on `session.list`, so
+Chats marks the row `scheduled`, approvals land in Needs you like any other session, and deleting a
+schedule leaves its transcripts in place while the run history cascades away.
+
+Overlaps are skipped, not queued: a schedule whose previous run is still live records `skipped`.
+Occurrences that came due while the app was closed are recorded as a single `missed` run carrying the
+count, never replayed — a week away from a nightly schedule does not start seven sessions at boot. A
+tick that lands up to 60 s late still fires, because a timer that wakes 20 ms after the instant is not
+an absence. A failed fire (no agent, a refused session) marks the run `failed` and leaves the schedule
+enabled, so the next occurrence is tried rather than the schedule silently dying. Re-enabling a
+schedule that has been paused past its next run re-aligns that instant first, so resuming does not
+emit a wall of `missed` rows.
+
 ## Configuration
 
 | variable | default | meaning |
