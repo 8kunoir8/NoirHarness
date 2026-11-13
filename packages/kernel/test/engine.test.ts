@@ -1239,6 +1239,36 @@ describe("EngineManager over the fake ACP server", () => {
   });
 
   it(
+    "leaves a session resumable when the kernel shuts down",
+    async () => {
+      const { db, events, sessions, agents, models, providers, skills, manager, session, dataDir } = setup();
+      const first = await manager.prompt({
+        sessionId: session.id,
+        requestId: "stop-1",
+        content: [{ type: "text", text: "stream" }],
+      });
+      await waitForEvent(events, session.id, (event) => event.type === "turn.completed");
+
+      // Stopping the daemon is not the user closing the chat: the session must survive it.
+      await manager.shutdown();
+      const row = db.prepare("SELECT status FROM sessions WHERE id = ?").get(session.id) as { status: string };
+      expect(row.status).not.toBe("closed");
+      expect(events.list(session.id).some((event) => event.type === "session.closed")).toBe(false);
+
+      // The next kernel takes the session back: a fresh prompt runs rather than being refused.
+      const next = restartedManager({ db, events, sessions, agents, models, providers, skills, dataDir });
+      const second = await next.prompt({
+        sessionId: session.id,
+        requestId: "stop-2",
+        content: [{ type: "text", text: "stream" }],
+      });
+      expect(second.turnId).not.toBe(first.turnId);
+      await waitForEvent(events, session.id, (event) => event.type === "turn.completed" && event.turnId === second.turnId);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
     "fails the turn but leaves a resumable error session untouched when its model is gone",
     async () => {
       const { db, events, sessions, manager, session } = setup();

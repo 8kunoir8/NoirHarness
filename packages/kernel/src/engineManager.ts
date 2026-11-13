@@ -444,7 +444,12 @@ export class EngineManager {
     this.settleApproval(pending, decision);
   }
 
-  async closeSession(sessionId: string): Promise<void> {
+  /**
+   * Ends a session. `markClosed` is false for a shutdown: stopping the daemon must leave every
+   * session where it was, so the next kernel reconciles it to `error` and the user resumes it —
+   * only an explicit `session.close` makes a chat permanently closed.
+   */
+  async closeSession(sessionId: string, markClosed = true): Promise<void> {
     const exists = this.deps.db.prepare("SELECT id FROM sessions WHERE id = ?").get(sessionId);
     if (exists === undefined) throw new RpcFault(ErrorCodes.notFound, "Session not found");
 
@@ -481,7 +486,9 @@ export class EngineManager {
       const current = this.deps.db.prepare("SELECT status FROM sessions WHERE id = ?").get(sessionId) as
         | { status: SessionStatus }
         | undefined;
-      if (current !== undefined && current.status !== "closed") this.deps.sessions.setStatus(sessionId, "closed");
+      if (markClosed && current !== undefined && current.status !== "closed") {
+        this.deps.sessions.setStatus(sessionId, "closed");
+      }
     } finally {
       this.closing.delete(sessionId);
     }
@@ -493,7 +500,7 @@ export class EngineManager {
     const sessionIds = [...this.states.keys()];
     for (const sessionId of sessionIds) {
       try {
-        await this.closeSession(sessionId);
+        await this.closeSession(sessionId, false);
       } catch {
         // Shutdown is best effort; every child is still disposed below.
       }
