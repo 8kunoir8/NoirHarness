@@ -106,22 +106,10 @@ export class DeviceService {
     return rows.map(toDevice);
   }
 
-  rename(id: string, label: string): Device | undefined {
-    this.db.prepare("UPDATE devices SET label = ? WHERE id = ?").run(label, id);
-    return this.byId(id);
-  }
-
   revoke(id: string, now = Date.now()): boolean {
     const result = this.db
       .prepare("UPDATE devices SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL")
       .run(now, id);
     return result.changes > 0;
-  }
-
-  private byId(id: string): Device | undefined {
-    const row = this.db
-      .prepare("SELECT id, label, token_hash, created_at, last_seen_at, revoked_at FROM devices WHERE id = ?")
-      .get(id) as DeviceRow | undefined;
-    return row === undefined ? undefined : toDevice(row);
   }
 }

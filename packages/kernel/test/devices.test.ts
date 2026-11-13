@@ -66,13 +66,11 @@ describe("device service", () => {
     expect(device.id).toBe(devices.list()[0]?.id);
   });
 
-  it("lists newest first and renames in place", () => {
+  it("lists newest first", () => {
     const { devices } = withDb();
     const first = devices.create("Phone", 1_000).device;
     const second = devices.create("Tablet", 2_000).device;
     expect(devices.list().map((d) => d.id)).toEqual([second.id, first.id]);
-    expect(devices.rename(first.id, "Old phone")?.label).toBe("Old phone");
-    expect(devices.rename("missing", "x")).toBeUndefined();
   });
 });
 

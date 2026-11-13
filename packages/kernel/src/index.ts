@@ -32,7 +32,6 @@ import {
   ProjectAddParams,
   ProviderCreateParams,
   ProviderDeleteParams,
-  RemoteRenameParams,
   RemoteRevokeParams,
   RpcFault,
   ScheduleCreateParams,
@@ -524,12 +523,6 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; o
             connected: [...hub.clients.values()].some((client) => client.deviceId === device.id),
           })),
         })),
-        [Methods.remoteRename]: localOnly(async (params) => {
-          const { id, label } = RemoteRenameParams.parse(params);
-          const device = devices.rename(id, label);
-          if (device === undefined) throw new RpcFault(ErrorCodes.notFound, "No such device");
-          return { device };
-        }),
         [Methods.remoteRevoke]: localOnly(async (params) => {
           const { id } = RemoteRevokeParams.parse(params);
           const revoked = devices.revoke(id);

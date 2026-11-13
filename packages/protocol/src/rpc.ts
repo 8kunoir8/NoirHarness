@@ -68,7 +68,6 @@ export const Methods = {
   remoteDisable: "remote.disable",
   remotePair: "remote.pair",
   remoteDevices: "remote.devices",
-  remoteRename: "remote.rename",
   remoteRevoke: "remote.revoke",
 } as const;
 
@@ -519,8 +518,6 @@ export type DeviceView = z.infer<typeof DeviceView>;
 export const RemoteDevicesResult = z.object({ devices: z.array(DeviceView) });
 export type RemoteDevicesResult = z.infer<typeof RemoteDevicesResult>;
 
-export const RemoteRenameParams = z.object({ id: z.string().min(1), label: z.string().trim().min(1).max(60) });
-export type RemoteRenameParams = z.infer<typeof RemoteRenameParams>;
 export const RemoteRevokeParams = z.object({ id: z.string().min(1) });
 export type RemoteRevokeParams = z.infer<typeof RemoteRevokeParams>;
 

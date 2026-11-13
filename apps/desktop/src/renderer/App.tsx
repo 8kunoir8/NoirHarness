@@ -9,6 +9,7 @@ import {
   type GitStatusResult,
 } from "@noir/protocol";
 import { connect, kernelInfo, offEvent, reportArmed, request, type KernelInfo } from "./api.js";
+import { isBrowser } from "./transport.js";
 import { Agents } from "./Agents.js";
 import { Automations } from "./Automations.js";
 import { Chat } from "./Chat.js";
@@ -51,6 +52,10 @@ import { WorkspacePanel, type ProjectView, type WorkspaceView } from "./Workspac
 import "./styles.css";
 
 type View = "setup" | "chats" | "skills" | "agents" | "automations";
+
+/** The two messages `api.ts` raises when there is no socket at all. */
+const CONNECTION_FAILURE = /kernel connection (failed|closed)|kernel not connected/;
+const NOT_PAIRED = "This device is not paired with the kernel. Ask the desktop app for a pairing link.";
 
 type ListMode = "chats" | "files";
 
@@ -284,7 +289,9 @@ export function App() {
       setError(undefined);
     } catch (loadError) {
       setStatus("kernel error");
-      setError(loadError instanceof Error ? loadError.message : "Kernel unavailable");
+      const message = loadError instanceof Error ? loadError.message : "Kernel unavailable";
+      // In a browser the socket is refused for exactly one reason: this device is not paired.
+      setError(isBrowser() && CONNECTION_FAILURE.test(message) ? NOT_PAIRED : message);
     }
   }, []);
 

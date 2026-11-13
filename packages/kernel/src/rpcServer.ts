@@ -117,9 +117,14 @@ export async function createRpcListener(opts: ListenerOptions): Promise<RpcListe
     wss.handleUpgrade(req, socket, head, (ws) => open(ws, ctx));
   });
   http.on("request", (req, res) => {
-    void opts.handleHttp(req, res, isLoopback(req.socket.remoteAddress)).then((handled) => {
-      if (!handled) sendHttp(res, 404, { error: "not found" });
-    });
+    void opts.handleHttp(req, res, isLoopback(req.socket.remoteAddress))
+      .then((handled) => {
+        if (!handled) sendHttp(res, 404, { error: "not found" });
+      })
+      .catch(() => {
+        // A route that threw still owes the client an answer, unless it already gave one.
+        if (!res.headersSent) sendHttp(res, 500, { error: "internal" });
+      });
   });
   await new Promise<void>((resolve, reject) => {
     http.once("error", reject);
