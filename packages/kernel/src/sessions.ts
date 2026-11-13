@@ -129,7 +129,14 @@ export class SessionService {
     this.db.prepare("INSERT INTO sessions (id, workspace_id, agent_id, engine, status, created_at, model_id, schedule_id, config_snapshot_json) VALUES (?,?,?,?,?,?,?,?,?)").run(
       row.id, row.workspaceId, row.agentId, row.engine, row.status, row.createdAt, row.modelId, opts.scheduleId ?? null, snapshot,
     );
-    this.events.append({ sessionId: row.id, agentId, type: "session.created", payload: { title: "" }, provenance: { engine: row.engine, engineName: "none", adapterVersion: "0" } });
+    this.events.append({
+      sessionId: row.id,
+      agentId,
+      type: "session.created",
+      // The witness that reports a finished run needs to know which sessions were fires.
+      payload: { title: "", ...(opts.scheduleId === undefined ? {} : { scheduleId: opts.scheduleId }) },
+      provenance: { engine: row.engine, engineName: "none", adapterVersion: "0" },
+    });
     this.events.append({ sessionId: row.id, agentId, type: "session.status", payload: { status: "starting" }, provenance: { engine: row.engine, engineName: "none", adapterVersion: "0" } });
     return row;
   }

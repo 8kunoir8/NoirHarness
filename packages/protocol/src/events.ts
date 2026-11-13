@@ -53,7 +53,8 @@ export const EventType = z.enum([
 export type EventType = z.infer<typeof EventType>;
 
 export const PayloadSchemas = {
-  "session.created": z.object({ title: z.string() }),
+  /** `scheduleId` is present exactly when a schedule fired this session. */
+  "session.created": z.object({ title: z.string(), scheduleId: z.string().optional() }),
   "session.updated": z.object({ title: z.string() }),
   "session.status": z.object({ status: SessionStatus, reason: z.string().min(1).optional() }),
   "session.closed": z.object({ reason: z.string().optional() }),

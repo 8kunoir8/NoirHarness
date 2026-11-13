@@ -116,6 +116,22 @@ describe("SessionService", () => {
     expect(state!.status).toBe("starting");
   });
 
+  it("names the schedule that fired a session, and only when one did", () => {
+    const { db, projects, workspaces, sessions, events } = setup();
+    const project = projects.add(tempDir());
+    const workspaceId = workspaces.createLocal(project.id).id;
+    db.prepare("INSERT INTO agents (id, name, role, engine_id) VALUES ('a-sched', 'Night shift', 'dev', 'acp')").run();
+    const agentId = db.prepare("SELECT id FROM agents LIMIT 1").pluck().get() as string;
+    db.prepare(
+      "INSERT INTO schedules (id, workspace_id, agent_id, name, prompt, interval_minutes, next_run_at, created_at) VALUES (?,?,?,?,?,?,?,?)",
+    ).run("sched-1", workspaceId, agentId, "Nightly", "tidy", 1_440, 1, 1);
+    const fired = sessions.create(workspaceId, { scheduleId: "sched-1" });
+    const manual = sessions.create(workspaceId);
+    const created = (id: string) => events.list(id).find((event) => event.type === "session.created");
+    expect(created(fired.id)?.payload).toEqual({ title: "", scheduleId: "sched-1" });
+    expect(created(manual.id)?.payload).toEqual({ title: "" });
+  });
+
   it("closes through session.closed and records closed_at", () => {
     const { db, projects, workspaces, sessions, events } = setup();
     const project = projects.add(tempDir());
