@@ -1,6 +1,6 @@
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
-import { bootstrap, createDirs, launchApp } from "./app-harness.js";
-import { deleteProviderThroughKernel, removeDir, waitForKernelExit } from "./helpers.js";
+import { bootstrap, closeWindow, createDirs, launchApp } from "./app-harness.js";
+import { deleteProviderThroughKernel, removeDir, stopKernel } from "./helpers.js";
 import { startMockProvider } from "./mock-provider.js";
 
 async function send(page: Page, text: string): Promise<void> {
@@ -45,9 +45,9 @@ test("queues a second prompt, interrupts the first, and replays after restart", 
       await expect(page.getByRole("button", { name: /Queued — runs after this turn/ })).toHaveCount(0);
       expect(mock.prompts().some((prompt) => prompt.includes("queued follow-up"))).toBe(true);
 
-      await app.close();
+      await closeWindow(app);
       app = undefined;
-      await waitForKernelExit(harness.dataDir);
+      await stopKernel(harness.dataDir);
 
       // Restart: the restored tab replays the whole transcript from the kernel.
       app = await launchApp(harness);
@@ -62,11 +62,11 @@ test("queues a second prompt, interrupts the first, and replays after restart", 
       await expect(restarted.getByTestId("tool-card").locator("pre")).toContainText("hi");
     } finally {
       if (app !== undefined) await deleteProviderThroughKernel(harness.dataDir, "Mock").catch(() => undefined);
-      await app?.close().catch(() => undefined);
+      await closeWindow(app);
       await mock.close().catch(() => undefined);
     }
   } finally {
-    await waitForKernelExit(harness.dataDir).catch(() => undefined);
+    await stopKernel(harness.dataDir).catch(() => undefined);
     await removeDir(harness.dataDir);
     await removeDir(harness.workspacePath);
   }

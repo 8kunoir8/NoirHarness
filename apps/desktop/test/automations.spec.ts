@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
-import { createDirs, launchApp, setupWorkspace } from "./app-harness.js";
-import { deleteProviderThroughKernel, removeDir, waitForKernelExit, withKernel } from "./helpers.js";
+import { closeWindow, createDirs, launchApp, setupWorkspace } from "./app-harness.js";
+import { deleteProviderThroughKernel, removeDir, stopKernel, withKernel } from "./helpers.js";
 import { startMockProvider } from "./mock-provider.js";
 
 function rail(page: Page) {
@@ -90,9 +90,9 @@ test("fires a schedule into a real agent and shows the run without a remount", a
     if (app !== undefined) {
       await deleteProviderThroughKernel(harness.dataDir, "Mock").catch(() => undefined);
     }
-    await app?.close().catch(() => undefined);
+    await closeWindow(app);
     await mock.close().catch(() => undefined);
-    await waitForKernelExit(harness.dataDir).catch(() => undefined);
+    await stopKernel(harness.dataDir).catch(() => undefined);
     await removeDir(harness.dataDir);
     await removeDir(harness.workspacePath);
   }

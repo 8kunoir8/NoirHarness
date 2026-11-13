@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
-import { bootstrap, createDirs, launchApp } from "./app-harness.js";
-import { deleteProviderThroughKernel, removeDir, waitForKernelExit } from "./helpers.js";
+import { bootstrap, closeWindow, createDirs, launchApp } from "./app-harness.js";
+import { deleteProviderThroughKernel, removeDir, stopKernel } from "./helpers.js";
 import { startMockProvider } from "./mock-provider.js";
 
 interface SkillManifest {
@@ -85,11 +85,11 @@ test("lists a project skill, toggles it, and shows its body", async () => {
       if (app !== undefined) {
         await deleteProviderThroughKernel(harness.dataDir, "Mock").catch(() => undefined);
       }
-      await app?.close().catch(() => undefined);
+      await closeWindow(app);
       await mock.close().catch(() => undefined);
     }
   } finally {
-    await waitForKernelExit(harness.dataDir).catch(() => undefined);
+    await stopKernel(harness.dataDir).catch(() => undefined);
     await removeDir(harness.dataDir);
     await removeDir(harness.workspacePath);
   }

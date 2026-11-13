@@ -2,8 +2,8 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, type ElectronApplication } from "@playwright/test";
-import { bootstrap, createDirs, launchApp } from "./app-harness.js";
-import { deleteProviderThroughKernel, removeDir, waitForKernelExit } from "./helpers.js";
+import { closeWindow, bootstrap, createDirs, launchApp } from "./app-harness.js";
+import { deleteProviderThroughKernel, removeDir, stopKernel } from "./helpers.js";
 import { startMockProvider } from "./mock-provider.js";
 
 test("edits a file, saves it, and opens the diff from the inspector", async () => {
@@ -65,11 +65,11 @@ test("edits a file, saves it, and opens the diff from the inspector", async () =
       if (app !== undefined) {
         await deleteProviderThroughKernel(harness.dataDir, "Mock").catch(() => undefined);
       }
-      await app?.close().catch(() => undefined);
+      await closeWindow(app);
       await mock.close().catch(() => undefined);
     }
   } finally {
-    await waitForKernelExit(harness.dataDir).catch(() => undefined);
+    await stopKernel(harness.dataDir).catch(() => undefined);
     await removeDir(harness.dataDir);
     await removeDir(harness.workspacePath);
   }
@@ -105,11 +105,11 @@ test("refuses to open a file larger than the read cap", async () => {
       if (app !== undefined) {
         await deleteProviderThroughKernel(harness.dataDir, "Mock").catch(() => undefined);
       }
-      await app?.close().catch(() => undefined);
+      await closeWindow(app);
       await mock.close().catch(() => undefined);
     }
   } finally {
-    await waitForKernelExit(harness.dataDir).catch(() => undefined);
+    await stopKernel(harness.dataDir).catch(() => undefined);
     await removeDir(harness.dataDir);
     await removeDir(harness.workspacePath);
   }

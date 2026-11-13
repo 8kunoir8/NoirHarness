@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
-import { createDirs, launchApp, setupWorkspace } from "./app-harness.js";
-import { deleteProviderThroughKernel, removeDir, waitForKernelExit } from "./helpers.js";
+import { closeWindow, createDirs, launchApp, setupWorkspace } from "./app-harness.js";
+import { deleteProviderThroughKernel, removeDir, stopKernel } from "./helpers.js";
 import { startMockProvider } from "./mock-provider.js";
 
 async function sendPrompt(page: Page, text: string): Promise<void> {
@@ -116,9 +116,9 @@ test("paints two agents, surfaces an approval, restores desks, and opens chat fr
     expect(desksBefore).not.toBeNull();
     expect(Object.keys(JSON.parse(desksBefore ?? "{}"))).toHaveLength(2);
 
-    await app.close();
+    await closeWindow(app);
     app = undefined;
-    await waitForKernelExit(harness.dataDir);
+    await stopKernel(harness.dataDir);
 
     app = await launchApp(harness);
     page = await app.firstWindow();
@@ -149,9 +149,9 @@ test("paints two agents, surfaces an approval, restores desks, and opens chat fr
     ).toBeVisible({ timeout: 20_000 });
   } finally {
     if (app !== undefined) await deleteProviderThroughKernel(harness.dataDir, "Mock").catch(() => undefined);
-    await app?.close().catch(() => undefined);
+    await closeWindow(app);
     await mock.close().catch(() => undefined);
-    await waitForKernelExit(harness.dataDir).catch(() => undefined);
+    await stopKernel(harness.dataDir).catch(() => undefined);
     await removeDir(harness.dataDir);
     await removeDir(harness.workspacePath);
   }

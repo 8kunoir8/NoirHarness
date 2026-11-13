@@ -1,9 +1,16 @@
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import type { ElectronApplication } from "@playwright/test";
+import { closeWindow } from "./app-harness.js";
 
-/** Retries because Windows keeps handles on SQLite files and omp session files briefly after exit. */
+/**
+ * Removes a temporary data dir, stopping its daemon first so the kernel's SQLite handles are
+ * closed rather than merely killed. Order matters: `rmSync` under a live kernel fails on Windows
+ * and leaves the process running after the suite.
+ */
 export async function removeDir(dir: string): Promise<void> {
+  await stopKernel(dir).catch(() => undefined);
   for (let attempt = 0; ; attempt += 1) {
     try {
       rmSync(dir, { recursive: true, force: true });
@@ -25,15 +32,23 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
-function readRuntimePid(file: string): number | undefined {
+function readRuntime(file: string): { pid?: number; port?: number; token?: string } | undefined {
   try {
     const runtime: unknown = JSON.parse(readFileSync(file, "utf8"));
-    return typeof runtime === "object" && runtime !== null && "pid" in runtime && typeof runtime.pid === "number"
-      ? runtime.pid
-      : undefined;
+    if (typeof runtime !== "object" || runtime === null) return undefined;
+    return {
+      ...("pid" in runtime && typeof runtime.pid === "number" ? { pid: runtime.pid } : {}),
+      ...("port" in runtime && typeof runtime.port === "number" ? { port: runtime.port } : {}),
+      ...("token" in runtime && typeof runtime.token === "string" ? { token: runtime.token } : {}),
+    };
   } catch {
     return undefined;
   }
+}
+
+/** The pid recorded in `<dataDir>/runtime/kernel.json`, or `undefined` when there is no claim. */
+export function runtimePid(dataDir: string): number | undefined {
+  return readRuntime(join(dataDir, "runtime", "kernel.json"))?.pid;
 }
 
 /**
@@ -47,7 +62,7 @@ export async function waitForKernelExit(dataDir: string, timeoutMs = 20_000): Pr
   const deadline = Date.now() + timeoutMs;
   let lastPid: number | undefined;
   while (Date.now() < deadline) {
-    if (existsSync(runtimeFile)) lastPid = readRuntimePid(runtimeFile) ?? lastPid;
+    if (existsSync(runtimeFile)) lastPid = readRuntime(runtimeFile)?.pid ?? lastPid;
     if (lastPid === undefined) return; // kernel never recorded a pid: nothing to wait for
     if (!isProcessAlive(lastPid)) return;
     await delay(100);
@@ -55,12 +70,45 @@ export async function waitForKernelExit(dataDir: string, timeoutMs = 20_000): Pr
   throw new Error(`kernel process ${lastPid} recorded in ${runtimeFile} did not exit before relaunch`);
 }
 
+/**
+ * Asks the daemon to stop through its control plane and waits for the process to go. The daemon
+ * outlives the window, so closing the Electron app is not enough to release the data dir.
+ * A dir with no runtime file (the kernel never started) is already stopped.
+ */
+export async function stopKernel(dataDir: string): Promise<void> {
+  const runtime = readRuntime(join(dataDir, "runtime", "kernel.json"));
+  if (runtime === undefined || runtime.port === undefined || runtime.token === undefined) {
+    await waitForKernelExit(dataDir);
+    return;
+  }
+  await fetch(`http://127.0.0.1:${runtime.port}/shutdown`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${runtime.token}`, "content-type": "application/json" },
+    body: JSON.stringify({ force: true }),
+  }).catch(() => undefined);
+  await waitForKernelExit(dataDir);
+}
+
 /** SIGKILLs the kernel recorded in `<dataDir>/runtime/kernel.json` and waits for it to be gone. */
 export async function killKernel(dataDir: string): Promise<void> {
-  const pid = readRuntimePid(join(dataDir, "runtime", "kernel.json"));
+  const pid = runtimePid(dataDir);
   if (pid === undefined) throw new Error("no kernel pid recorded");
   process.kill(pid, "SIGKILL");
   await waitForKernelExit(dataDir);
+}
+
+/**
+ * Ends an app for good: window first, then the daemon, then the driver connection.
+ *
+ * The order is forced by Windows handle inheritance — a detached child is handed a copy of its
+ * parent's handles, so the daemon holds the app's stdio open and `close()` waits on it until the
+ * daemon is gone. Use `closeWindow` instead when the daemon has to outlive the app under test.
+ */
+export async function closeApp(app: ElectronApplication | undefined, dataDir: string): Promise<void> {
+  if (app === undefined) return;
+  await closeWindow(app);
+  await stopKernel(dataDir).catch(() => undefined);
+  await app.close().catch(() => undefined);
 }
 
 interface KernelRuntime {
@@ -149,4 +197,3 @@ export async function deleteProviderThroughKernel(dataDir: string, name: string)
     await request("provider.delete", { id: targetId });
   });
 }
-

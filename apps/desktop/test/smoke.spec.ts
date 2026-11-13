@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
-import { createDirs, launchApp } from "./app-harness.js";
-import { deleteProviderThroughKernel, removeDir, waitForKernelExit } from "./helpers.js";
+import { closeWindow, createDirs, launchApp } from "./app-harness.js";
+import { deleteProviderThroughKernel, removeDir, stopKernel } from "./helpers.js";
 
 test("boots, spawns the kernel, and reaches health", async () => {
   const harness = createDirs("noir e2e ");
@@ -10,10 +10,10 @@ test("boots, spawns the kernel, and reaches health", async () => {
       const page = await app.firstWindow();
       await expect(page.getByTestId("kernel-status")).toHaveText("kernel ok", { timeout: 20_000 });
     } finally {
-      await app.close().catch(() => undefined);
+      await closeWindow(app);
     }
   } finally {
-    await waitForKernelExit(harness.dataDir).catch(() => undefined);
+    await stopKernel(harness.dataDir).catch(() => undefined);
     await removeDir(harness.dataDir);
     await removeDir(harness.workspacePath);
   }
@@ -34,10 +34,10 @@ test("a provider survives an app restart", async () => {
       await providersRegion.getByRole("button", { name: "Add provider" }).click();
       await expect(providersRegion.getByText("Persisted")).toBeVisible();
     } finally {
-      await first.close().catch(() => undefined);
+      await closeWindow(first);
     }
 
-    await waitForKernelExit(harness.dataDir);
+    await stopKernel(harness.dataDir);
 
     const second = await launchApp(harness);
     try {
@@ -47,10 +47,10 @@ test("a provider survives an app restart", async () => {
     } finally {
       // Through the kernel socket, so the host keyring entry does not outlive the spec.
       await deleteProviderThroughKernel(harness.dataDir, "Persisted").catch(() => undefined);
-      await second.close().catch(() => undefined);
+      await closeWindow(second);
     }
   } finally {
-    await waitForKernelExit(harness.dataDir).catch(() => undefined);
+    await stopKernel(harness.dataDir).catch(() => undefined);
     await removeDir(harness.dataDir);
     await removeDir(harness.workspacePath);
   }

@@ -1,6 +1,6 @@
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
-import { bootstrap, createDirs, launchApp, type Harness } from "./app-harness.js";
-import { deleteProviderThroughKernel, removeDir, waitForKernelExit } from "./helpers.js";
+import { bootstrap, closeWindow, createDirs, launchApp, type Harness } from "./app-harness.js";
+import { deleteProviderThroughKernel, removeDir, stopKernel } from "./helpers.js";
 import { startMockProvider, type MockProvider } from "./mock-provider.js";
 
 async function sendPrompt(page: Page, text: string): Promise<void> {
@@ -25,11 +25,11 @@ async function runChat(
         // Through the kernel socket, so both the SQLite row and the host keyring entry go away.
         await deleteProviderThroughKernel(harness.dataDir, "Mock").catch(() => undefined);
       }
-      await app?.close().catch(() => undefined);
+      await closeWindow(app);
       await mock.close().catch(() => undefined);
     }
   } finally {
-    await waitForKernelExit(harness.dataDir).catch(() => undefined);
+    await stopKernel(harness.dataDir).catch(() => undefined);
     await removeDir(harness.dataDir);
     await removeDir(harness.workspacePath);
   }

@@ -1,9 +1,9 @@
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
-import { bootstrap, createDirs, launchApp } from "./app-harness.js";
+import { bootstrap, closeWindow, createDirs, launchApp } from "./app-harness.js";
 import { writeArtifactFixtures } from "./fixtures/artifacts/build.mjs";
-import { deleteProviderThroughKernel, removeDir, waitForKernelExit } from "./helpers.js";
+import { deleteProviderThroughKernel, removeDir, stopKernel } from "./helpers.js";
 import { startMockProvider, type MockProvider } from "./mock-provider.js";
 
 async function showFiles(page: Page): Promise<void> {
@@ -85,9 +85,9 @@ test("previews markdown, CSV, and PDF artifacts, then restores and reports a del
 
     expect(dialogs).toEqual([]);
 
-    await app.close();
+    await closeWindow(app);
     app = undefined;
-    await waitForKernelExit(harness.dataDir);
+    await stopKernel(harness.dataDir);
 
     // Cold start: the v3 tab set restores, the workspace re-selects, and each preview re-reads.
     app = await launchApp(harness);
@@ -108,9 +108,9 @@ test("previews markdown, CSV, and PDF artifacts, then restores and reports a del
     await expect(restored.getByRole("alert")).toHaveText("File not found: notes.md");
   } finally {
     if (app !== undefined) await deleteProviderThroughKernel(harness.dataDir, "Mock").catch(() => undefined);
-    await app?.close().catch(() => undefined);
+    await closeWindow(app);
     await mock?.close().catch(() => undefined);
-    await waitForKernelExit(harness.dataDir).catch(() => undefined);
+    await stopKernel(harness.dataDir).catch(() => undefined);
     await removeDir(harness.dataDir);
     await removeDir(harness.workspacePath);
   }

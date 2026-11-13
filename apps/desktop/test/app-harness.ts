@@ -1,6 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { _electron as electron, expect, type ElectronApplication, type Page } from "@playwright/test";
 import type { MockProvider } from "./mock-provider.js";
 
@@ -26,8 +27,36 @@ export function launchApp(harness: Harness): Promise<ElectronApplication> {
   // without its own `--user-data-dir` every spec would inherit the tabs left by the previous one.
   return electron.launch({
     args: [".", `--user-data-dir=${join(harness.dataDir, "electron")}`],
-    env: { ...process.env, NOIR_DATA_DIR: harness.dataDir },
+    // NOIR_NO_TRAY keeps the window's close meaning quit: with a tray it means hide, and
+    // Playwright's own window close would then never complete. The tray is unit-tested instead.
+    env: { ...process.env, NOIR_DATA_DIR: harness.dataDir, NOIR_NO_TRAY: "1" },
   });
+}
+
+/**
+ * Ends the app the way the tray's `Quit` does — asks it to quit and waits for the process to leave.
+ *
+ * `ElectronApplication.close()` cannot be used: it quits the app and then waits for its stdio to end,
+ * and Windows hands a detached child a copy of its parent's handles, so the daemon holds that pipe
+ * open for as long as it runs. The wait would never finish. This quits through the app's own path and
+ * watches the process instead. Callers that also want the driver connection gone stop the daemon
+ * first — `closeApp` in `helpers.ts`.
+ */
+export async function closeWindow(app: ElectronApplication | undefined): Promise<void> {
+  if (app === undefined) return;
+  // A connection already closed by a previous close throws here; nothing is left to quit.
+  const child = await Promise.resolve()
+    .then(() => app.process())
+    .catch(() => undefined);
+  if (child === undefined || child.exitCode !== null || child.signalCode !== null) return;
+  const exited = new Promise<void>((resolve) => {
+    child.once("exit", () => {
+      resolve();
+    });
+  });
+  await app.evaluate(({ app: electronApp }) => electronApp.quit()).catch(() => undefined);
+  if ((await Promise.race([exited.then(() => true), delay(20_000).then(() => false)])) === false) child.kill();
+  await Promise.race([exited, delay(5_000)]);
 }
 
 /**

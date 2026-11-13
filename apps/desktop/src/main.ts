@@ -69,7 +69,14 @@ function quitNow(): void {
   app.quit();
 }
 
+/**
+ * With a tray a closed window is hidden, so only the tray can end the app — and an automated run
+ * has no tray row to click. `NOIR_NO_TRAY=1` takes the no-tray path, where close means quit.
+ */
+const trayDisabled = process.env.NOIR_NO_TRAY === "1";
+
 function createTray(): void {
+  if (trayDisabled) return;
   // Embedded so packaging cannot miss it and a missing asset cannot break startup.
   const icon = nativeImage.createFromDataURL(
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAIklEQVR4nGNgGDTgxb1j/0nBNDVgFQE8asDIMGCAUuKAAQB49+kANVznbgAAAABJRU5ErkJggg==",

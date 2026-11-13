@@ -1,6 +1,6 @@
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
-import { bootstrap, createDirs, launchApp } from "./app-harness.js";
-import { deleteProviderThroughKernel, removeDir, waitForKernelExit } from "./helpers.js";
+import { bootstrap, closeWindow, createDirs, launchApp } from "./app-harness.js";
+import { deleteProviderThroughKernel, removeDir, stopKernel } from "./helpers.js";
 import { startMockProvider } from "./mock-provider.js";
 
 async function sendPrompt(page: Page, text: string): Promise<void> {
@@ -51,9 +51,9 @@ test("drives the native tool loop and reconstructs history after a restart", asy
     await expect(meter).toBeVisible({ timeout: 20_000 });
     await expect(meter).toContainText(/^\d+% of 200k\b/);
 
-    await app.close();
+    await closeWindow(app);
     app = undefined;
-    await waitForKernelExit(harness.dataDir);
+    await stopKernel(harness.dataDir);
 
     app = await launchApp(harness);
     page = await app.firstWindow();
@@ -91,16 +91,16 @@ test("drives the native tool loop and reconstructs history after a restart", asy
     // Clear the keyring entry while the kernel is still up; a spec must not leave a credential.
     await deleteProviderThroughKernel(harness.dataDir, "Mock").catch(() => undefined);
     try {
-      await app.close();
+      await closeWindow(app);
       app = undefined;
     } catch {
       // Leave `app` set so the finally block retries the close.
     }
   } finally {
     if (app !== undefined) await deleteProviderThroughKernel(harness.dataDir, "Mock").catch(() => undefined);
-    await app?.close().catch(() => undefined);
+    await closeWindow(app);
     await mock.close().catch(() => undefined);
-    await waitForKernelExit(harness.dataDir).catch(() => undefined);
+    await stopKernel(harness.dataDir).catch(() => undefined);
     await removeDir(harness.dataDir);
     await removeDir(harness.workspacePath);
   }

@@ -1,8 +1,8 @@
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import { fileURLToPath } from "node:url";
 import { basename } from "node:path";
-import { createDirs, launchApp, setupWorkspace } from "./app-harness.js";
-import { deleteProviderThroughKernel, removeDir, waitForKernelExit } from "./helpers.js";
+import { closeWindow, createDirs, launchApp, setupWorkspace } from "./app-harness.js";
+import { deleteProviderThroughKernel, removeDir, stopKernel } from "./helpers.js";
 import { startMockProvider } from "./mock-provider.js";
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/mcp/mock-server.mjs", import.meta.url)).replace(/\\/g, "/");
@@ -71,9 +71,9 @@ test("brokers an MCP tool call from a bound agent through the approval card", as
     await deleteProviderThroughKernel(harness.dataDir, "Mock").catch(() => undefined);
   } finally {
     if (app !== undefined) await deleteProviderThroughKernel(harness.dataDir, "Mock").catch(() => undefined);
-    await app?.close().catch(() => undefined);
+    await closeWindow(app);
     await mock.close().catch(() => undefined);
-    await waitForKernelExit(harness.dataDir).catch(() => undefined);
+    await stopKernel(harness.dataDir).catch(() => undefined);
     await removeDir(harness.dataDir);
     await removeDir(harness.workspacePath);
   }
