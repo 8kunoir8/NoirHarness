@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentEvent, ModelView } from "@noir/protocol";
 import { ChatHeader } from "../src/renderer/ChatHeader.js";
-import { appendUserMessage, emptyChatState, reduceChat, type ChatState } from "../src/renderer/events.js";
+import { appendUserMessage, emptyChatState, reduceChat, transcriptRows, type ChatState } from "../src/renderer/events.js";
 import { formatDuration, formatTokens } from "../src/renderer/format.js";
 import { ToolCard } from "../src/renderer/ToolCard.js";
 
@@ -121,6 +121,25 @@ describe("reduceChat projections", () => {
     expect(state.messages).toHaveLength(1);
     expect(state.messages[0]?.seq).toBe(4);
     expect(state.messages[0]?.turnId).toBe("t-4");
+  });
+
+  it("keeps a marker above the messages sent after it", () => {
+    const state = [
+      event(1, 1_000, "message.delta", { messageId: "u-1", role: "user", block: { type: "text", text: "first" } }, "t-1"),
+      event(2, 1_001, "session.rewound", { cutSeq: 1, checkpointId: "c-1", promptSeq: 1, restored: 1, deleted: 0, removed: 0, failed: 0, notCaptured: 0, engine: "native", engineNotRewound: false }),
+      event(3, 1_002, "message.delta", { messageId: "u-2", role: "user", block: { type: "text", text: "second" } }, "t-2"),
+    ].reduce(reduceChat, emptyChatState("s1"));
+
+    const rows = transcriptRows(state);
+    expect(rows.map((row) => row.seq)).toEqual([1, 2, 3]);
+    expect(rows[1]?.rewind?.cutSeq).toBe(1);
+    expect(rows[2]?.message?.blocks).toEqual([{ kind: "text", text: "second" }]);
+  });
+
+  it("sorts a message with no seq last instead of first", () => {
+    const state = { ...emptyChatState("s-1"), messages: [{ id: "m-1", role: "user" as const, blocks: [], status: "done" as const }] };
+    const rows = transcriptRows({ ...state, rewinds: [{ seq: 5, cutSeq: 1, promptSeq: null, restored: 0, deleted: 0, removed: 0, failed: 0, notCaptured: 0, engineNotRewound: false }] });
+    expect(rows.map((row) => row.seq)).toEqual([5, Number.MAX_SAFE_INTEGER]);
   });
 });
 

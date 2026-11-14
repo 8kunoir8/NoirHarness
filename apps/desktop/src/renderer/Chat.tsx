@@ -1,12 +1,23 @@
 import { useEffect, useRef, useState } from "react";
-import type { ModelView, PermissionOption, SessionPromptResult, SessionView } from "@noir/protocol";
+import {
+  PayloadSchemas,
+  type AgentEvent,
+  type CheckpointPlanResult,
+  type ModelView,
+  type PermissionOption,
+  type SessionPromptResult,
+  type SessionView,
+} from "@noir/protocol";
 import type { RequestFn } from "./api.js";
 import { ChatHeader, type DiffStats } from "./ChatHeader.js";
 import { Composer, type ComposerStatus } from "./Composer.js";
-import { errorMessage, type SessionEvents } from "./events.js";
+import { errorMessage, transcriptRows, type SessionEvents } from "./events.js";
 import { MarkdownContent } from "./MarkdownContent.js";
 import { previewKind } from "./preview/kind.js";
+import { RewindDialog } from "./RewindDialog.js";
+import { RewindMarker } from "./RewindMarker.js";
 import { ToolCard } from "./ToolCard.js";
+import { useCheckpoints } from "./useCheckpoints.js";
 
 function newId(): string {
   const source = globalThis.crypto;
@@ -38,6 +49,15 @@ export function Chat({
   const [queuedTurnId, setQueuedTurnId] = useState<string | undefined>(undefined);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
   const queuedAtTurn = useRef<string | undefined>(undefined);
+  const checkpoints = useCheckpoints(
+    session.id,
+    request,
+    `${state.activeTurnId ?? "idle"}:${String(state.rewinds.length)}`,
+  );
+  const [rewind, setRewind] = useState<{ checkpointId: string; notCaptured: number } | undefined>(undefined);
+  const [rewindPhase, setRewindPhase] = useState<"planning" | "ready" | "applying" | "failed">("planning");
+  const [rewindPlan, setRewindPlan] = useState<CheckpointPlanResult | undefined>(undefined);
+  const [rewindError, setRewindError] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     if (queuedTurnId === undefined) return;
@@ -115,6 +135,53 @@ export function Chat({
       onSessionChange?.();
     } catch (modelError) {
       setActionError(errorMessage(modelError));
+    }
+  }
+
+  async function beginRewind(turnId: string): Promise<void> {
+    const entry = checkpoints.byTurn.get(turnId);
+    if (entry === undefined) return;
+    setRewind({ checkpointId: entry.id, notCaptured: entry.notCaptured });
+    setRewindPhase("planning");
+    setRewindPlan(undefined);
+    setRewindError(undefined);
+    try {
+      setRewindPlan(await checkpoints.plan(entry.id));
+      setRewindPhase("ready");
+    } catch (failure) {
+      setRewindError(errorMessage(failure));
+      setRewindPhase("failed");
+    }
+  }
+
+  function closeRewind(): void {
+    setRewind(undefined);
+    setRewindPhase("planning");
+    setRewindPlan(undefined);
+    setRewindError(undefined);
+  }
+
+  async function confirmRewind(): Promise<void> {
+    if (rewind === undefined) return;
+    setRewindPhase("applying");
+    try {
+      await checkpoints.restore(rewind.checkpointId);
+      closeRewind();
+    } catch (failure) {
+      // `conflict` lands here when a turn started in this workspace meanwhile.
+      setRewindError(errorMessage(failure));
+      setRewindPhase("failed");
+    }
+  }
+
+  /** The one read across a cut: the prompt the rewind removed, put back in the composer. */
+  async function loadPrompt(seq: number): Promise<void> {
+    try {
+      const { event } = await request<{ event: AgentEvent }>("session.event", { sessionId: session.id, seq });
+      const parsed = PayloadSchemas["message.delta"].safeParse(event.payload);
+      if (parsed.success && parsed.data.block.type === "text") setDraft(parsed.data.block.text);
+    } catch (failure) {
+      setActionError(errorMessage(failure));
     }
   }
 
@@ -205,43 +272,80 @@ export function Chat({
       ) : null}
 
       <ol className="messages">
-        {state.messages.map((message) => (
-          <li key={message.id} className={`message message-${message.role}`} data-testid={message.role === "assistant" ? "message-assistant" : undefined}>
-            <strong>{message.role === "user" ? "You" : "Assistant"}</strong>
-            {message.blocks.map((block, index) =>
-              block.kind === "reasoning" ? (
-                <details key={`${message.id}-${index}`} className="reasoning">
-                  <summary>Reasoning</summary>
-                  <p>{block.text}</p>
-                </details>
-              ) : block.kind === "file" ? (
-                <div key={`${message.id}-${index}`} className="file-ref">
-                  <code>{block.path}</code>
-                  {onPreview !== undefined && previewKind(block.path) !== undefined ? (
-                    <button
-                      type="button"
-                      className="link"
-                      aria-label={`Preview ${block.path}`}
-                      onClick={() => onPreview(block.path)}
-                    >
-                      Preview
-                    </button>
-                  ) : null}
-                </div>
-              ) : (
-                <div key={`${message.id}-${index}`} className="text">
-                  <MarkdownContent
-                    content={block.text}
-                    variant="chat"
-                    images={{ workspaceId: session.workspaceId, request }}
-                    {...(onPreview === undefined ? {} : { onOpenPath: onPreview })}
-                  />
-                </div>
-              ),
-            )}
-          </li>
-        ))}
+        {transcriptRows(state).map((row) => {
+          if (row.rewind !== undefined) {
+            return (
+              <RewindMarker
+                key={`rewind-${String(row.rewind.seq)}`}
+                rewind={row.rewind}
+                onLoadPrompt={(seq) => void loadPrompt(seq)}
+              />
+            );
+          }
+          const message = row.message;
+          if (message === undefined) return null;
+          const turnId = row.turnId;
+          const canRewind = turnId !== undefined && checkpoints.byTurn.has(turnId);
+          return (
+            <li
+              key={message.id}
+              className={`message message-${message.role}`}
+              data-testid={message.role === "assistant" ? "message-assistant" : "message-user"}
+            >
+              <strong>{message.role === "user" ? "You" : "Assistant"}</strong>
+              {canRewind ? (
+                <button type="button" className="link rewind-action" onClick={() => void beginRewind(turnId)}>
+                  Rewind to before this prompt
+                </button>
+              ) : null}
+              {message.blocks.map((block, index) =>
+                block.kind === "reasoning" ? (
+                  <details key={`${message.id}-${index}`} className="reasoning">
+                    <summary>Reasoning</summary>
+                    <p>{block.text}</p>
+                  </details>
+                ) : block.kind === "file" ? (
+                  <div key={`${message.id}-${index}`} className="file-ref">
+                    <code>{block.path}</code>
+                    {onPreview !== undefined && previewKind(block.path) !== undefined ? (
+                      <button
+                        type="button"
+                        className="link"
+                        aria-label={`Preview ${block.path}`}
+                        onClick={() => onPreview(block.path)}
+                      >
+                        Preview
+                      </button>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div key={`${message.id}-${index}`} className="text">
+                    <MarkdownContent
+                      content={block.text}
+                      variant="chat"
+                      images={{ workspaceId: session.workspaceId, request }}
+                      {...(onPreview === undefined ? {} : { onOpenPath: onPreview })}
+                    />
+                  </div>
+                ),
+              )}
+            </li>
+          );
+        })}
       </ol>
+
+      {rewind === undefined ? null : (
+        <div className="rewind-backdrop">
+          <RewindDialog
+            phase={rewindPhase}
+            plan={rewindPlan}
+            notCaptured={rewind.notCaptured}
+            error={rewindError}
+            onConfirm={() => void confirmRewind()}
+            onCancel={closeRewind}
+          />
+        </div>
+      )}
 
       {state.tools.length === 0 ? null : (
         <section aria-label="Tools">

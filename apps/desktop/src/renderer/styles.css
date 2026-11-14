@@ -545,6 +545,78 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; colo
   font-size: 0.8rem;
 }
 
+.rewind-action {
+  align-self: flex-start;
+  font-size: 0.8rem;
+  opacity: 0.65;
+}
+
+.message:hover .rewind-action,
+.rewind-action:focus-visible {
+  opacity: 1;
+}
+
+.rewind-backdrop {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--bg, #111) 70%, transparent);
+  z-index: 20;
+}
+
+.rewind-dialog {
+  width: min(32rem, calc(100vw - 3rem));
+  padding: 1.25rem;
+  border: 1px solid var(--border, #333);
+  border-radius: 0.75rem;
+  background: var(--panel, #1b1b1b);
+  display: grid;
+  gap: 0.6rem;
+}
+
+.rewind-dialog h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.rewind-dialog .rewind-hint,
+.rewind-dialog .rewind-counts {
+  margin: 0;
+  color: var(--muted, #9a9a9a);
+}
+
+.rewind-dialog .rewind-failed {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.85rem;
+}
+
+.rewind-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.rewind-marker {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.5rem 0.75rem;
+  border-block: 1px dashed var(--border, #333);
+  color: var(--muted, #9a9a9a);
+  font-size: 0.85rem;
+}
+
+.rewind-marker p {
+  margin: 0.15rem 0 0;
+}
+
+.rewind-marker .rewind-note {
+  font-style: italic;
+}
+
 .messages { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; flex: 1; }
 .message {
   border: 1px solid var(--border);

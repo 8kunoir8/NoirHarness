@@ -419,6 +419,25 @@ export function runningToolTitle(state: ChatState): string | undefined {
   return undefined;
 }
 
+/** One line of the transcript. A rewind and a message share one ordering, by seq. */
+export interface TranscriptRow {
+  seq: number;
+  message?: ChatMessage;
+  rewind?: ChatRewind;
+  turnId?: string;
+}
+
+export function transcriptRows(state: ChatState): TranscriptRow[] {
+  return [
+    ...state.messages.map((message) => ({
+      seq: message.seq ?? Number.MAX_SAFE_INTEGER,
+      message,
+      ...(message.turnId === undefined ? {} : { turnId: message.turnId }),
+    })),
+    ...state.rewinds.map((rewind) => ({ seq: rewind.seq, rewind })),
+  ].sort((left, right) => left.seq - right.seq);
+}
+
 export function appendUserMessage(state: ChatState, text: string, id: string): ChatState {
   if (text.trim().length === 0) return state;
   // The event log may have rendered this prompt first (it reaches the reducer before the RPC

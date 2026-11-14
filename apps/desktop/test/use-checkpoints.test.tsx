@@ -36,8 +36,9 @@ describe("useCheckpoints", () => {
   it("keeps the kernel's reason when checkpoints are unavailable", async () => {
     const request = answering(() => ({ available: false, reason: "LFS worktrees are not supported", checkpoints: [] }));
     const { result } = renderHook(() => useCheckpoints("s-1", request, "0"));
-    await waitFor(() => expect(result.current.available).toBe(false));
-    expect(result.current.reason).toBe("LFS worktrees are not supported");
+    // `available` is false before the list lands too, so wait on the kernel's answer itself.
+    await waitFor(() => expect(result.current.reason).toBe("LFS worktrees are not supported"));
+    expect(result.current.available).toBe(false);
   });
 
   it("asks for a plan and applies a restore", async () => {
