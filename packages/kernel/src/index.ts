@@ -65,6 +65,7 @@ import { dataDir as defaultDataDir } from "./appdata.js";
 import { AgentService } from "./agents.js";
 import { addAnnotation, deleteAnnotation, listAnnotations } from "./annotations.js";
 import { buildIdOf } from "./buildId.js";
+import { CheckpointService } from "./checkpoints.js";
 import { openDb } from "./db.js";
 import { EngineManager } from "./engineManager.js";
 import { EventStore } from "./eventStore.js";
@@ -222,6 +223,7 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; o
         patterns: parseRedactionPatterns(process.env.NOIR_REDACT_PATTERNS),
       });
       const events = new EventStore(db, (event) => broadcast(event), redactor);
+      const checkpoints = new CheckpointService(db, events, { dataDir: dir });
       const projects = new ProjectService(db);
       const workspaces = new WorkspaceService(db, projects);
       const workspaceRoot = (workspaceId: string): string => {

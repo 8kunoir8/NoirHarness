@@ -2,13 +2,8 @@ import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type Database from "better-sqlite3";
 import { v7 as uuidv7 } from "uuid";
-import {
-  ADAPTER_VERSION,
-  createAcpEngine,
-  createRpcEngine,
-  type CreateAcpClientOptions,
-} from "@noir/engine-acp";
-import { ADAPTER_VERSION as NATIVE_ADAPTER_VERSION, createNativeEngine, reconstructHistory } from "@noir/engine-native";
+import { createAcpEngine, createRpcEngine, type CreateAcpClientOptions } from "@noir/engine-acp";
+import { createNativeEngine, reconstructHistory } from "@noir/engine-native";
 import type {
   Engine,
   EngineHistoryMessage,
@@ -39,25 +34,11 @@ import { SessionMcpManager } from "./mcp/sessionMcp.js";
 import type { ModelService } from "./models.js";
 import { profileAgentDir, syncProfile } from "./profile.js";
 import type { ProviderService } from "./providers.js";
+import { provenanceFor } from "./provenance.js";
 import type { SessionService } from "./sessions.js";
 import type { SkillScope, SkillService } from "./skills.js";
 
 const DEFAULT_TURN_TIMEOUT_MS = 120_000;
-
-const ENGINE_PROVENANCE: Record<EngineKind, { engineName: string; adapterVersion: string }> = {
-  acp: { engineName: "omp", adapterVersion: ADAPTER_VERSION },
-  native: { engineName: "native", adapterVersion: NATIVE_ADAPTER_VERSION },
-};
-
-/** What the session's engine stamps on the events the kernel appends for it. */
-function provenanceFor(engine: EngineKind): { engine: EngineKind; engineName: string; adapterVersion: string } {
-  switch (engine) {
-    case "native":
-      return { engine, ...ENGINE_PROVENANCE.native };
-    default:
-      return { engine: "acp", ...ENGINE_PROVENANCE.acp };
-  }
-}
 
 /**
  * `NOIR_OMP_TRANSPORT=rpc` moves the OMP engine from ACP to `--mode rpc` without changing the

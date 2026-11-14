@@ -196,6 +196,20 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
       CREATE INDEX idx_devices_revoked ON devices (revoked_at);
     `,
   },
+  {
+    id: 11,
+    sql: `
+      CREATE TABLE checkpoints (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        turn_id TEXT, seq INTEGER NOT NULL, tree_sha TEXT, commit_sha TEXT,
+        label TEXT NOT NULL, created_at INTEGER NOT NULL,
+        not_captured INTEGER NOT NULL DEFAULT 0, error TEXT
+      );
+      CREATE INDEX idx_checkpoints_session ON checkpoints (session_id, seq);
+    `,
+  },
 ];
 
 export function migrate(db: Database.Database): void {
