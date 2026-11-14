@@ -622,6 +622,36 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; colo
 .session-delete[data-armed="true"] { border-color: var(--danger); color: var(--danger); }
 .session-delete:hover { color: var(--text); }
 
+/* Rename sits left of delete so the two hover controls never overlap. */
+.session-item .session-rename-open {
+  position: absolute;
+  top: 50%;
+  /* Delete is 4px from the edge and ~23px wide; 31px leaves a 4px gutter, not a 1px overlap. */
+  right: 31px;
+  transform: translateY(-50%);
+  padding: 2px 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.7rem;
+  line-height: 1.4;
+  opacity: 0;
+}
+.session-item:hover .session-rename-open,
+.session-item:focus-within .session-rename-open { opacity: 1; }
+.session-rename-open:hover { color: var(--text); }
+/* The same box as the row it replaces, so opening the field does not shift the list. */
+.session-rename { display: flex; }
+.session-rename input {
+  width: 100%;
+  min-height: var(--row);
+  padding: 5px 8px;
+  border: 1px solid var(--accent);
+  background: var(--surface-sunken);
+  color: var(--text);
+}
+
 .session-row {
   width: 100%;
   display: grid;
@@ -917,7 +947,31 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; colo
 .approval-options { display: flex; gap: 8px; flex-wrap: wrap; }
 
 .chat-title { display: flex; align-items: baseline; gap: 8px; flex: 1; min-width: 12ch; }
-.chat-title h2 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-title h2 { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The heading stays the heading: only its text becomes the click target. */
+.chat-title-button {
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: text;
+}
+.chat-title-button:hover { color: var(--accent); }
+.chat-title-form { display: flex; min-width: 12ch; }
+.chat-title-form input {
+  width: 100%;
+  padding: 2px 6px;
+  border: 1px solid var(--accent);
+  background: var(--surface-sunken);
+  color: var(--text);
+  font: inherit;
+}
 .chat-status {
   font-size: 0.68rem;
   text-transform: uppercase;

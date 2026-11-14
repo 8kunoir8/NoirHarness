@@ -94,7 +94,12 @@ describe("groupSessions", () => {
   });
 });
 
-function renderList(sessions: SessionView[], read: ReadState = {}, query = "") {
+function renderList(
+  sessions: SessionView[],
+  read: ReadState = {},
+  query = "",
+  onRename?: ((s: SessionView, title: string) => void) | undefined,
+) {
   const onSelect = vi.fn();
   const onNewChat = vi.fn();
   render(
@@ -107,6 +112,7 @@ function renderList(sessions: SessionView[], read: ReadState = {}, query = "") {
       onQueryChange={() => undefined}
       onSelect={onSelect}
       onNewChat={onNewChat}
+      {...(onRename === undefined ? {} : { onRename })}
       canCreate
       now={NOW}
     />,
@@ -149,6 +155,26 @@ describe("SessionList", () => {
     ]);
     expect(screen.getByRole("button", { name: /Nightly/ }).textContent).toContain("scheduled");
     expect(screen.getByRole("button", { name: /Manual/ }).textContent).not.toContain("scheduled");
+  });
+
+  it("renames a chat from the row and ignores a cancelled edit", async () => {
+    const user = userEvent.setup();
+    const onRename = vi.fn();
+    renderList([session("a", { title: "Refactor kernel" })], {}, "", onRename);
+
+    await user.click(screen.getByRole("button", { name: "Rename Refactor kernel" }));
+    const field = screen.getByLabelText("Rename Refactor kernel");
+    await user.clear(field);
+    await user.type(field, "  Kernel audit  {Enter}");
+    expect(onRename).toHaveBeenCalledTimes(1);
+    expect(onRename).toHaveBeenCalledWith(expect.objectContaining({ id: "a" }), "Kernel audit");
+
+    await user.click(screen.getByRole("button", { name: "Rename Refactor kernel" }));
+    await user.keyboard("{Escape}");
+    expect(onRename).toHaveBeenCalledTimes(1);
+    // Escape closes the field: the pencil is back and the title is unchanged.
+    expect(screen.getByRole("button", { name: "Rename Refactor kernel" })).toBeTruthy();
+    expect(screen.queryByRole("textbox", { name: "Rename Refactor kernel" })).toBeNull();
   });
 });
 

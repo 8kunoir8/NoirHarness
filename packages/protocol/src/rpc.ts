@@ -36,6 +36,7 @@ export const Methods = {
   checkpointPlan: "checkpoint.plan",
   checkpointRestore: "checkpoint.restore",
   sessionEvent: "session.event",
+  sessionRename: "session.rename",
   sessionSetModel: "session.setModel",
   approvalRespond: "approval.respond",
   providerCreate: "provider.create",
@@ -245,6 +246,10 @@ export const SessionEventResult = z.object({ event: AgentEvent });
 
 export const SessionSetModelParams = z.object({ sessionId: z.string().min(1), modelId: z.string().min(1) });
 export type SessionSetModelParams = z.infer<typeof SessionSetModelParams>;
+
+export const SessionRenameParams = z.object({ sessionId: z.string().min(1), title: z.string().max(200) });
+export type SessionRenameParams = z.infer<typeof SessionRenameParams>;
+
 export const ApprovalRespondParams = z.object({ approvalId: z.string().min(1), decision: PermissionDecision });
 export type ApprovalRespondParams = z.infer<typeof ApprovalRespondParams>;
 

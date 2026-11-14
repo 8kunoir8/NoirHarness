@@ -52,6 +52,7 @@ import {
   SessionCancelQueuedParams,
   SessionInterruptParams,
   SessionPromptParams,
+  SessionRenameParams,
   SessionSetModelParams,
   SessionSubscribeParams,
   SkillCheckUpdateParams,
@@ -463,6 +464,10 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; o
         [Methods.sessionFork]: async (params) => {
           const { sessionId, upToSeq } = SessionForkParams.parse(params);
           return sessions.fork(sessionId, upToSeq);
+        },
+        [Methods.sessionRename]: async (params) => {
+          const { sessionId, title } = SessionRenameParams.parse(params);
+          return sessions.rename(sessionId, title);
         },
         [Methods.sessionSetModel]: async (params) => {
           const { sessionId, modelId } = SessionSetModelParams.parse(params);

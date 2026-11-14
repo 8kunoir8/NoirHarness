@@ -22,6 +22,8 @@ export interface ChatHeaderProps {
   canInterrupt: boolean;
   onInterrupt: () => void;
   onModelChange: (modelId: string) => void;
+  /** Omitted where the chat cannot be renamed; the title then renders as plain text. */
+  onRename?: ((title: string) => void) | undefined;
 }
 
 /** Live elapsed time for the running turn; freezes when `turnStartedAt` disappears. */
@@ -48,16 +50,67 @@ export function ChatHeader({
   canInterrupt,
   onInterrupt,
   onModelChange,
+  onRename,
 }: ChatHeaderProps) {
   const elapsed = useElapsed(turnStartedAt);
+  const [draft, setDraft] = useState<string | undefined>(undefined);
   const modelOptions = models.map((model) => ({ id: model.id, label: model.displayName }));
   if (modelId !== null && !models.some((model) => model.id === modelId)) {
     modelOptions.push({ id: modelId, label: `${modelId} (missing)` });
   }
+  // What the title reads as, and what an edit starts from: a session with no title yet starts its
+  // draft empty, so the first keystroke does not begin with "Untitled session".
+  const label = title === "" ? "Untitled session" : title;
+
+  /** Enter is the only commit; a blank or unchanged draft just closes the field, as in the list. */
+  function commitRename(): void {
+    if (draft === undefined) return;
+    setDraft(undefined);
+    const next = draft.trim();
+    if (next === "" || next === title) return;
+    onRename?.(next);
+  }
+
   return (
     <header className="chat-header">
       <div className="chat-title">
-        <h2>{title === "" ? "Untitled session" : title}</h2>
+        {onRename === undefined ? (
+          <h2>{label}</h2>
+        ) : draft === undefined ? (
+          // The title is the rename control: one click puts it in edit, so there is no separate
+          // "rename" mode to discover.
+          <h2>
+            <button
+              type="button"
+              className="chat-title-button"
+              aria-label="Rename chat"
+              title="Rename chat"
+              onClick={() => setDraft(title)}
+            >
+              {label}
+            </button>
+          </h2>
+        ) : (
+          <form
+            className="chat-title-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              commitRename();
+            }}
+          >
+            <input
+              aria-label="Chat title"
+              value={draft}
+              // `session.rename` rejects more than 200 characters; stop the typist, do not fail them.
+              maxLength={200}
+              autoFocus
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") setDraft(undefined);
+              }}
+            />
+          </form>
+        )}
         <span className="chat-status" data-testid="session-status" data-status={status}>
           {status}
         </span>

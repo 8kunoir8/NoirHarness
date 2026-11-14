@@ -742,6 +742,20 @@ export function App() {
     }
   }
 
+  /**
+   * The kernel answers with the session it just wrote, and the row takes that answer: the open
+   * chat's header updates from its own `session.updated` event, so this only touches the list.
+   */
+  async function renameSession(session: SessionView, title: string): Promise<void> {
+    setError(undefined);
+    try {
+      const updated = await request<SessionView>("session.rename", { sessionId: session.id, title });
+      setSessions((current) => current.map((candidate) => (candidate.id === updated.id ? updated : candidate)));
+    } catch (renameError) {
+      setError(renameError instanceof Error ? renameError.message : "Could not rename the chat");
+    }
+  }
+
   async function newChat(): Promise<void> {
     if (workspaceId === "") {
       setError("Add a workspace before creating a chat");
@@ -1248,6 +1262,7 @@ export function App() {
                   onQueryChange={setQuery}
                   onSelect={openSession}
                   onDelete={(session) => void deleteSession(session)}
+                  onRename={(session, title) => void renameSession(session, title)}
                   onNewChat={() => void newChat()}
                   canCreate={workspaceId !== "" && models.length > 0}
                   hasMore={hasMore}

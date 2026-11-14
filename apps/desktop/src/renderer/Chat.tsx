@@ -155,6 +155,17 @@ export function Chat({
     }
   }
 
+  /** The kernel answers with a `session.updated` event, so the header title updates on its own. */
+  async function rename(title: string): Promise<void> {
+    try {
+      await request("session.rename", { sessionId: session.id, title });
+      setActionError(undefined);
+      onSessionChange?.();
+    } catch (renameError) {
+      setActionError(errorMessage(renameError));
+    }
+  }
+
   /**
    * Opens the confirmation for one checkpoint. A rewind and its undo are the same state machine —
    * same plan, same guard, same restore — and differ only in the words the dialog shows.
@@ -277,6 +288,7 @@ export function Chat({
         canInterrupt={canInterrupt}
         onInterrupt={() => void interrupt()}
         onModelChange={(modelId) => void changeModel(modelId)}
+        onRename={(next) => void rename(next)}
       />
 
       {state.skillsLoaded.length === 0 ? null : (

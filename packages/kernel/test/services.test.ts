@@ -328,6 +328,22 @@ describe("SessionService", () => {
     sessions.setStatus(session.id, "closed");
     expect(events.list(session.id).every((event) => event.provenance.engine === "native")).toBe(true);
   });
+
+  it("renames a session through one event and rejects a missing one", () => {
+    const { projects, workspaces, sessions, events } = setup();
+    const session = sessions.create(workspaces.createLocal(projects.add(tempDir()).id).id, {});
+    const before = events.list(session.id).length;
+
+    const view = sessions.rename(session.id, "  Kernel audit  ");
+    expect(view.title).toBe("Kernel audit");
+    expect(sessions.view(session.id).title).toBe("Kernel audit");
+
+    const appended = events.list(session.id).slice(before);
+    expect(appended).toHaveLength(1);
+    expect(appended[0]).toMatchObject({ type: "session.updated", payload: { title: "Kernel audit" } });
+
+    expect(() => sessions.rename("missing", "x")).toThrow(expect.objectContaining({ code: ErrorCodes.notFound }));
+  });
 });
 
 describe("SessionService agent start", () => {

@@ -183,6 +183,26 @@ export class SessionService {
   }
 
   /**
+   * Sets the title the user typed. It travels as a `session.updated` event rather than a bare
+   * `UPDATE`, so every window subscribed to the session sees the new name through the same reducer
+   * that applies an engine's own title, and the projection updates the row.
+   */
+  rename(sessionId: string, title: string): SessionView {
+    const row = this.db.prepare("SELECT agent_id, engine FROM sessions WHERE id = ?").get(sessionId) as
+      | { agent_id: string; engine: EngineKind }
+      | undefined;
+    if (row === undefined) throw new RpcFault(ErrorCodes.notFound, "Session not found");
+    this.events.append({
+      sessionId,
+      agentId: row.agent_id,
+      type: "session.updated",
+      payload: { title: title.trim() },
+      provenance: { engine: row.engine, engineName: "none", adapterVersion: "0" },
+    });
+    return this.view(sessionId);
+  }
+
+  /**
    * Copies a session's conversation into a new one. Lifecycle events stay behind: the fork was never
    * starting, never running and never closed, and replaying the parent's statuses would make it look
    * as though it were. Everything else — messages, tool calls, usage, changed files — comes along in

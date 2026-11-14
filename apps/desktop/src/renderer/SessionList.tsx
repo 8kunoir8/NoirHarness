@@ -153,6 +153,8 @@ export interface SessionListProps {
   onSelect: (session: SessionView) => void;
   /** Deleting is irreversible, so the row arms it on the first click and only fires on the second. */
   onDelete?: (session: SessionView) => void;
+  /** Commits a user-typed title. Omitted where the list is read-only. */
+  onRename?: (session: SessionView, title: string) => void;
   onNewChat: () => void;
   canCreate: boolean;
   /** True while the kernel has another page behind this one. */
@@ -173,6 +175,7 @@ export function SessionList({
   onQueryChange,
   onSelect,
   onDelete,
+  onRename,
   onNewChat,
   canCreate,
   hasMore = false,
@@ -182,12 +185,24 @@ export function SessionList({
 }: SessionListProps) {
   // One row at a time can be armed: a second click anywhere else re-arms that row instead.
   const [armed, setArmed] = useState<string | undefined>(undefined);
+  // One row at a time can be renamed, and the draft lives with the id so a stale input cannot
+  // commit another row's text.
+  const [editing, setEditing] = useState<{ id: string; draft: string } | undefined>(undefined);
   const needle = query.trim().toLowerCase();
   const visible = sortSessions(sessions).filter(
     (session) =>
       matchesFilter(session, filter, read) &&
       (needle === "" || (session.title === "" ? "untitled chat" : session.title.toLowerCase()).includes(needle)),
   );
+
+  /** Enter is the only commit. An unchanged or blank draft just closes the field. */
+  function commitRename(session: SessionView): void {
+    if (editing === undefined) return;
+    const title = editing.draft.trim();
+    setEditing(undefined);
+    if (title === "" || title === session.title) return;
+    onRename?.(session, title);
+  }
 
   return (
     <div className="session-list">
@@ -218,25 +233,60 @@ export function SessionList({
                 const isArmed = armed === session.id;
                 return (
                   <li key={session.id} className="session-item">
-                    <button
-                      type="button"
-                      className="session-row"
-                      aria-current={session.id === activeId}
-                      onClick={() => onSelect(session)}
-                    >
-                      <span className={`dot dot-${sessionStatusTone(session)}`} aria-hidden="true" />
-                      <span className="session-row-main">
-                        <span className="session-row-title">{label}</span>
-                        <span className="session-row-meta">
-                          {sessionStatusLabel(session)}
-                          {meta === undefined ? "" : ` · ${meta}`}
-                          {session.scheduleId === null ? null : <span className="session-tag">scheduled</span>}
+                    {editing?.id === session.id ? (
+                      // A button cannot hold an input, so the editing row replaces the row button
+                      // rather than nesting inside it. Enter commits; Esc abandons.
+                      <form
+                        className="session-rename"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          commitRename(session);
+                        }}
+                      >
+                        <input
+                          aria-label={`Rename ${label}`}
+                          value={editing.draft}
+                          // `session.rename` rejects more than 200 characters; stop the typist, do not fail them.
+                          maxLength={200}
+                          autoFocus
+                          onChange={(event) => setEditing({ id: session.id, draft: event.target.value })}
+                          onKeyDown={(event) => {
+                            if (event.key === "Escape") setEditing(undefined);
+                          }}
+                        />
+                      </form>
+                    ) : (
+                      <button
+                        type="button"
+                        className="session-row"
+                        aria-current={session.id === activeId}
+                        onClick={() => onSelect(session)}
+                      >
+                        <span className={`dot dot-${sessionStatusTone(session)}`} aria-hidden="true" />
+                        <span className="session-row-main">
+                          <span className="session-row-title">{label}</span>
+                          <span className="session-row-meta">
+                            {sessionStatusLabel(session)}
+                            {meta === undefined ? "" : ` · ${meta}`}
+                            {session.scheduleId === null ? null : <span className="session-tag">scheduled</span>}
+                          </span>
                         </span>
-                      </span>
-                      <time dateTime={new Date(session.lastEventAt).toISOString()}>{timeLabel(session.lastEventAt)}</time>
-                    </button>
-                    {onDelete === undefined ? null : (
-                      // A sibling, not a child: the row above is itself a button.
+                        <time dateTime={new Date(session.lastEventAt).toISOString()}>{timeLabel(session.lastEventAt)}</time>
+                      </button>
+                    )}
+                    {onRename === undefined || editing?.id === session.id ? null : (
+                      // Siblings of the row, never children: the row above is itself a button.
+                      <button
+                        type="button"
+                        className="session-rename-open"
+                        aria-label={`Rename ${label}`}
+                        title="Rename chat"
+                        onClick={() => setEditing({ id: session.id, draft: session.title })}
+                      >
+                        ✎
+                      </button>
+                    )}
+                    {onDelete === undefined || editing?.id === session.id ? null : (
                       <button
                         type="button"
                         className="session-delete"
