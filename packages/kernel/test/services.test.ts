@@ -266,6 +266,33 @@ describe("SessionService", () => {
     expect(sessions.view(s.id)).toMatchObject({ lastEventSeq: marker.seq, pendingApproval: false });
   });
 
+  it("filters the list by the same pending rule the view reports", () => {
+    const { db, projects, workspaces, sessions, events } = setup();
+    const ws = workspaces.createLocal(projects.add(tempDir()).id);
+    const rewound = sessions.create(ws.id);
+    const live = sessions.create(ws.id);
+    const provenance = { engine: "acp", engineName: "fake", adapterVersion: "0" } as const;
+    const approval = (session: { id: string; agentId: string }) =>
+      events.append({ sessionId: session.id, agentId: session.agentId, type: "permission.requested", payload: { approvalId: "a1", category: "shell", title: "Run ls", options: [{ optionId: "once", name: "Allow once", kind: "allow_once" }] }, provenance });
+    const abandoned = approval(rewound);
+    approval(live);
+    events.append({
+      sessionId: rewound.id, agentId: rewound.agentId, type: "session.rewound",
+      payload: { cutSeq: abandoned.seq, checkpointId: "c-1", promptSeq: abandoned.seq, restored: 0, deleted: 0, removed: 0, failed: 0, notCaptured: 0, engine: "acp", engineNotRewound: true },
+      provenance,
+    });
+    db.prepare("UPDATE sessions SET status = 'waiting' WHERE id IN (?, ?)").run(rewound.id, live.id);
+
+    // The rewound session's approval is abandoned, so it is working again; the other one still waits
+    // on a human. `total` counts the same rows the window will see.
+    const working = sessions.list({ filter: "working" });
+    expect(working.sessions.map((row) => row.id)).toEqual([rewound.id]);
+    expect(working.total).toBe(1);
+    const needsYou = sessions.list({ filter: "needs_you" });
+    expect(needsYou.sessions.map((row) => row.id)).toEqual([live.id]);
+    expect(needsYou.total).toBe(1);
+  });
+
   it("switches the model and rejects unknown or disabled models", () => {
     const { db, projects, workspaces, sessions, providers, models } = setup();
     const provider = providers.create({ name: "P", baseUrl: "http://localhost:1/v1", apiKind: "openai-completions", apiKey: "k", enabled: true });

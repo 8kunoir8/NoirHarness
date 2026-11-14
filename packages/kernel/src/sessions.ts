@@ -78,17 +78,6 @@ const MAX_PAGE = 200;
 /** Newest event per session, in one grouped pass; empty sessions fall back to the row's creation time. */
 const EVENTS_BY_SESSION = "SELECT session_id, MAX(seq) AS last_seq, MAX(ts) AS last_ts FROM events GROUP BY session_id";
 
-/** Sessions whose newest permission event is still a request. */
-const PENDING_APPROVALS = `
-  SELECT e.session_id AS session_id
-  FROM events e
-  JOIN (
-    SELECT session_id, MAX(seq) AS seq FROM events
-    WHERE type IN ('permission.requested', 'permission.resolved')
-    GROUP BY session_id
-  ) latest ON latest.session_id = e.session_id AND latest.seq = e.seq
-  WHERE e.type = 'permission.requested'`;
-
 function metaFor(
   createdAt: number,
   stats: ReadonlyMap<string, { last_seq: number; last_ts: number }>,
@@ -261,16 +250,26 @@ export class SessionService {
       where.push("workspace_id = ?");
       args.push(opts.workspaceId);
     }
+    const pendingIds = [...this.pendingSessions()];
+    const placeholders = pendingIds.map(() => "?").join(", ");
     switch (opts.filter) {
       case "done":
         where.push("status = 'closed'");
         break;
       case "working":
         where.push("status IN ('starting','running','waiting')");
-        where.push(`id NOT IN (${PENDING_APPROVALS})`);
+        if (pendingIds.length > 0) {
+          where.push(`id NOT IN (${placeholders})`);
+          args.push(...pendingIds);
+        }
         break;
       case "needs_you":
-        where.push(`(status = 'error' OR id IN (${PENDING_APPROVALS}))`);
+        if (pendingIds.length > 0) {
+          where.push(`(status = 'error' OR id IN (${placeholders}))`);
+          args.push(...pendingIds);
+        } else {
+          where.push("status = 'error'");
+        }
         break;
       default:
         break;
@@ -313,13 +312,31 @@ export class SessionService {
     return rows.length === 0 ? [] : this.views(rows);
   }
 
+  /**
+   * Sessions whose newest visible permission event is still a request.
+   *
+   * The SQL narrows to candidates that have a permission event at all — or a rewind, which can
+   * change the answer — and `visibleMeta` owns the actual verdict, so this filter and the view it
+   * filters can never disagree.
+   */
+  private pendingSessions(): Set<string> {
+    const candidates = this.db
+      .prepare(
+        `SELECT DISTINCT session_id FROM events
+          WHERE type IN ('permission.requested', 'permission.resolved', 'session.rewound')`,
+      )
+      .pluck()
+      .all() as string[];
+    return new Set(candidates.filter((id) => this.events.visibleMeta(id).pendingApproval));
+  }
+
   /** Fills in the per-session metadata a view carries, for rows already narrowed by `list`. */
   private views(rows: readonly Record<string, unknown>[]): SessionView[] {
     const stats = new Map<string, { last_seq: number; last_ts: number }>();
     for (const row of this.db.prepare(EVENTS_BY_SESSION).all() as Array<{ session_id: string; last_seq: number; last_ts: number }>) {
       stats.set(row.session_id, row);
     }
-    const pending = new Set((this.db.prepare(PENDING_APPROVALS).all() as Array<{ session_id: string }>).map((row) => row.session_id));
+    const pending = this.pendingSessions();
     // A rewound session's newest events may be abandoned ones, so its meta is computed from the
     // visible log; the grouped query above is still right for every other session.
     const rewound = new Set(
