@@ -28,6 +28,25 @@ let witness: KernelEvents | undefined;
 
 const notifyLogPath = process.env.NOIR_NOTIFY_LOG;
 
+const quitLogPath = process.env.NOIR_QUIT_LOG;
+
+/**
+ * One line per step of the app's own shutdown, appended to `NOIR_QUIT_LOG` when that is set.
+ *
+ * Electron's exit is not observable from the outside on every platform, so "did this app really
+ * quit, or did it merely hide its window" has no evidence without this. The e2e asserts these
+ * lines; the window's close handler and `app.quit()` are the two things under test, and both are
+ * inside the process.
+ */
+const quitLog = (step: string): void => {
+  if (quitLogPath === undefined || quitLogPath === "") return;
+  try {
+    appendFileSync(quitLogPath, `${step}\n`);
+  } catch {
+    // A log that cannot be written must not change what it is logging.
+  }
+};
+
 /**
  * A run that finished with no window open has to say so somewhere. When a log path is set the line
  * goes there as well, so an e2e can prove the notification without a notification daemon.
@@ -73,11 +92,14 @@ async function createWindow(): Promise<void> {
   win.on("enter-full-screen", announceState);
   win.on("leave-full-screen", announceState);
   win.on("closed", () => {
+    quitLog("window:closed");
     if (mainWindow === win) mainWindow = undefined;
   });
   win.on("close", (event) => {
     // The daemon outlives the window, so a close is not a quit while a tray can bring it back.
-    if (quitting || tray === undefined) return;
+    const hiding = !quitting && tray !== undefined;
+    quitLog(`window:close ${hiding ? "hide" : "quit"}`);
+    if (!hiding) return;
     event.preventDefault();
     win.hide();
   });
@@ -278,12 +300,21 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on("before-quit", () => {
     // The window's `close` handler decides whether a close is a hide; this only opens the gate.
+    quitLog("app:before-quit");
     quitting = true;
     supervisor?.stop();
     witness?.stop();
   });
   app.on("window-all-closed", () => {
     // With a tray the window never truly closes, so this fires only when nothing can reopen it.
+    quitLog("app:window-all-closed");
     if (tray === undefined && process.platform !== "darwin") app.quit();
+  });
+  app.on("will-quit", () => {
+    // Not prevented anywhere in this app: a line here without `app:quit` would name a real hang.
+    quitLog("app:will-quit");
+  });
+  app.on("quit", () => {
+    quitLog("app:quit");
   });
 }

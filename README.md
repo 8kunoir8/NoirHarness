@@ -509,6 +509,7 @@ disappears behind one marker row.
 | `NOIR_NO_TRAY` | unset | `1` skips the tray, so closing the window quits the app; the end-to-end specs use it |
 | `NOIR_NOTIFY_LOG` | unset | path where the app appends one JSON line per notification it shows; the end-to-end spec uses it instead of a notification daemon |
 | `NOIR_WEB_ROOT` | unset | directory of the built renderer served to a paired browser; the app passes its own `dist/renderer`, unset means a paired device has no page to load |
+| `NOIR_QUIT_LOG` | unset | path where the app appends one line per shutdown step (`window:close`, `app:quit`, …); the window e2e asserts that sequence instead of waiting for the OS to reap the process |
 
 The desktop shell also honours `NOIR_DATA_DIR`, `NOIR_KERNEL_ENTRY`, and `NOIR_NODE_BIN`.
 

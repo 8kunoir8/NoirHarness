@@ -26,3 +26,12 @@ replaced. In full screen the maximize button leaves full screen instead of maxim
 The state shape is written out three times — preload, renderer `api.ts`, and the two handler replies —
 because the preload is bundled separately and cannot import from the renderer. The duplication is
 checked by the typechecker at each end; a shared module would move it, not remove it.
+
+Closing is observable only from inside the process. Electron's exit after `quit` is delivered
+asynchronously by the OS, and under a debugger it waits for the debugger to detach first, so a test
+that treats "the process left" as the proof of a close button is really testing the test runner's
+teardown. `NOIR_QUIT_LOG` therefore records the app's own shutdown one step per line
+(`window:close quit`, `window:closed`, `app:window-all-closed`, `app:before-quit`, `app:will-quit`,
+`app:quit`), and the window spec asserts that sequence. It also makes the two real failures legible:
+a `window:close hide` means the tray path took over, and a log that stops at `app:will-quit` means
+something prevented the quit.

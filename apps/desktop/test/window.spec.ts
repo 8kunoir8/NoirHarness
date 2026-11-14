@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import { createDirs, launchApp } from "./app-harness.js";
@@ -83,18 +85,29 @@ test("the maximize and minimize buttons drive the real window", async () => {
  * swallowed the Close click. It also keeps `NOIR_NO_TRAY=1`'s close-means-quit assertion — the only
  * way to prove `window:close` calls `close()` and not `hide()` — off the other test's critical path.
  *
- * The budget is generous because a full run serialises twenty app launches and this is the last of
- * them; the assertion is still "the process leaves", and the failure message says which half of that
- * did not happen.
+ * What the app controls is the sequence, and that is what this asserts: the window closes, nothing
+ * reopens it, and the app reaches `quit`. What it does not control is the operating system reaping
+ * the process. Under Playwright Electron runs with `--inspect`, so after `quit` the process waits for
+ * the debugger to detach, and on Windows that wait is delivered through a `cmd.exe` wrapper which can
+ * outlive it by a minute. Waiting on that would put a debugger's teardown in the pass/fail path of a
+ * caption button, which is why `NOIR_QUIT_LOG` exists: it records the app's own shutdown, step by
+ * step, so "closed the window" can never be mistaken for "quit".
  */
 test("the close button quits, because the harness has no tray", async () => {
-  test.setTimeout(180_000);
+  test.setTimeout(120_000);
   const harness = createDirs("noir window close ");
-  const app = await launchApp(harness);
+  const quitLog = join(harness.dataDir, "quit.log");
+  const app = await launchApp(harness, { NOIR_QUIT_LOG: quitLog });
   try {
     const page = await app.firstWindow();
-    await expect(page.getByTestId("kernel-status")).toHaveText("kernel ok", { timeout: 120_000 });
-    const child = app.process();
+    await expect(page.getByTestId("kernel-status")).toHaveText("kernel ok", { timeout: 20_000 });
+    const readQuitLog = (): string[] => {
+      try {
+        return readFileSync(quitLog, "utf8").trim().split("\n").filter((line) => line !== "");
+      } catch {
+        return [];
+      }
+    };
     // The click tears the page down mid-action, so Playwright reports its own target vanishing. That
     // rejection is expected and must not be read as "the click was lost", so keep it and print it.
     const clickError = await caption(page, "Close window")
@@ -103,19 +116,11 @@ test("the close button quits, because the harness has no tray", async () => {
         () => "none",
         (error: unknown) => (error instanceof Error ? (error.message.split("\n")[0] ?? "unknown") : String(error)),
       );
-    let exited = child.exitCode !== null;
-    for (let attempt = 0; attempt < 600 && !exited; attempt += 1) {
-      await delay(100);
-      exited = child.exitCode !== null;
-    }
-    // Still alive here means `window:close` never reached the main process, or reached it and the
-    // window refused to go. Both diagnoses are worth more than a bare boolean.
-    const windows = exited
-      ? "exited"
-      : await app
-          .evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((win) => ({ destroyed: win.isDestroyed(), visible: win.isVisible() })))
-          .catch(() => "driver gone");
-    expect({ exited, clickError, windows }).toEqual({ exited: true, clickError, windows: "exited" });
+    const want = ["window:close quit", "window:closed", "app:window-all-closed", "app:before-quit", "app:will-quit", "app:quit"];
+    for (let attempt = 0; attempt < 200 && readQuitLog().length < want.length; attempt += 1) await delay(50);
+    // A hidden window still logs `window:close hide`, and a prevented quit stops at `app:will-quit`.
+    // Both failures name the step instead of reporting a process that never left.
+    expect({ clickError, steps: readQuitLog() }, `quit log:\n${readQuitLog().join("\n")}`).toEqual({ clickError, steps: want });
   } finally {
     await cleanup(app, harness);
   }
