@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -106,13 +106,30 @@ describe("checkpoint capture", () => {
 
   it("counts what it could not capture", async () => {
     const r = rig();
-    mkdirSync(join(r.root, "node_modules", "pkg"), { recursive: true });
+    mkdirSync(join(r.root, "node_modules", "pkg", "sub"), { recursive: true });
     writeFileSync(join(r.root, "node_modules", "pkg", "index.js"), "x\n");
+    writeFileSync(join(r.root, "node_modules", "pkg", "sub", "b.js"), "x\n");
     writeFileSync(join(r.root, ".gitignore"), "secret.txt\n");
     writeFileSync(join(r.root, "secret.txt"), "x\n");
     writeFileSync(join(r.root, "a.txt"), "one\n");
     const row = await r.capture("t-1", 1);
-    expect(row.notCaptured).toBeGreaterThanOrEqual(2);
+    expect(row.notCaptured).toBeGreaterThanOrEqual(3);
+  });
+
+  it("refuses a data dir that is the workspace root", async () => {
+    const root = tempDir("noir checkpoints self ");
+    const db = openDb(join(root, "noir.db"));
+    opened.push(db);
+    const service = new CheckpointService(db, new EventStore(db), { dataDir: root });
+    db.prepare("INSERT INTO projects (id, name, root_path, created_at) VALUES (?,?,?,?)").run("p-1", "p", root, Date.now());
+    db.prepare("INSERT INTO workspaces (id, project_id, path, kind, status, created_at) VALUES (?,?,?,?,?,?)").run("w-1", "p-1", root, "local", "ready", Date.now());
+    db.prepare("INSERT INTO agents (id, name, role, engine_id) VALUES (?,?,?,?)").run("a-1", "Agent", "default", "native");
+    db.prepare("INSERT INTO sessions (id, workspace_id, agent_id, engine, status, created_at) VALUES (?,?,?,?,?,?)").run("s-1", "w-1", "a-1", "native", "idle", Date.now());
+
+    const row = await service.capture({ sessionId: "s-1", workspaceId: "w-1", workspaceRoot: root, turnId: "t-1", seq: 1 });
+    expect(row.error).toBe("The workspace root is the checkpoint data directory");
+    expect(row.treeSha).toBeNull();
+    expect(existsSync(join(root, "checkpoints", "w-1"))).toBe(false);
   });
 
   it("lists accepted checkpoints and hides the abandoned ones", async () => {

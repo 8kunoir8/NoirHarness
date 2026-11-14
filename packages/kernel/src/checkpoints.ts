@@ -47,6 +47,8 @@ interface Row {
 export class CheckpointService {
   private readonly gitCommand: string;
   private healthCache: { checkpoints: "ok" | "unavailable"; checkpointReason?: string } | undefined;
+  /** A store's config is written once per process: seven `git config` spawns per turn start is not free. */
+  private readonly configured = new Map<string, string>();
 
   constructor(
     private readonly db: Database.Database,
@@ -167,8 +169,13 @@ export class CheckpointService {
     return result.stdout;
   }
 
+  /** One exclusion list per store: the forced excludes plus this workspace's data dir, if nested. */
   private async ensureStore(workspaceId: string, root: string): Promise<void> {
     const store = this.storeDir(workspaceId);
+    const nested = relative(root, this.opts.dataDir);
+    const ignore = join(store, "ignore");
+    const fingerprint = `${root}\u0000${nested}\u0000${this.gitCommand}`;
+    if (this.configured.get(workspaceId) === fingerprint) return;
     await mkdir(store, { recursive: true });
     try {
       await stat(join(store, ".git"));
@@ -176,17 +183,14 @@ export class CheckpointService {
       await run(this.gitCommand, ["init", "--quiet", store], { timeout: GIT_TIMEOUT_MS, windowsHide: true });
     }
     const hooks = join(store, "hooks-disabled");
-    const metadata = join(this.opts.dataDir, "checkpoints");
-    const ignore = join(metadata, "ignore");
     await mkdir(hooks, { recursive: true });
-    await mkdir(metadata, { recursive: true });
     // The store must never capture its own database or objects. `dataDir` is normally outside every
     // workspace, but a portable install can put it inside one, and then the first snapshot would
-    // index the snapshot — so the path is excluded in work-tree-relative form when it is inside.
-    const inside = relative(root, this.opts.dataDir);
-    const self = inside !== "" && !inside.startsWith("..") && !isAbsolute(inside)
-      ? [`/${inside.split(sep).join("/")}/`]
-      : [];
+    // index the snapshot. `nested` is work-tree-relative, so `..` and `../x` are outside; `""` means
+    // the data dir *is* the root, which no exclude can express and which `refusal` refuses.
+    const self = nested === "" || nested === ".." || nested.startsWith(`..${sep}`) || isAbsolute(nested)
+      ? []
+      : [`/${nested.split(sep).join("/")}/`];
     await writeFile(ignore, `${[...FORCED_EXCLUDES, ...self].join("\n")}\n`, "utf8");
     const settings: Array<[string, string]> = [
       ["core.worktree", root],
@@ -199,10 +203,12 @@ export class CheckpointService {
       ["core.excludesFile", ignore],
     ];
     for (const [key, value] of settings) await this.git(workspaceId, ["config", key, value]);
+    this.configured.set(workspaceId, fingerprint);
   }
 
   /** Reasons a workspace is never snapshotted. Everything else is a per-turn error row. */
   private async refusal(root: string): Promise<string | undefined> {
+    if (relative(root, this.opts.dataDir) === "") return "The workspace root is the checkpoint data directory";
     try {
       const attributes = await readFile(join(root, ".gitattributes"), "utf8");
       if (/filter\s*=\s*lfs/.test(attributes)) return "LFS worktrees are not supported";
@@ -219,7 +225,7 @@ export class CheckpointService {
   }
 
   private async countIgnored(workspaceId: string): Promise<number> {
-    const out = await this.git(workspaceId, ["status", "--porcelain", "-z", "--ignored=matching", "--untracked-files=all"]);
+    const out = await this.git(workspaceId, ["status", "--porcelain", "-z", "--ignored=traditional", "--untracked-files=all"]);
     let count = 0;
     for (const entry of out.split("\u0000")) if (entry.startsWith("!! ")) count += 1;
     return Math.min(count, MAX_NOT_CAPTURED);
