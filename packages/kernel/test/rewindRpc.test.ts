@@ -178,7 +178,7 @@ describe("rewind over RPC", () => {
         (error: unknown) => error,
       );
       expect(failure).toBeInstanceOf(Error);
-      expect((failure as Error).message).toMatch(/A checkpoint plan is already running/);
+      expect((failure as Error).message).toMatch(/A rewind is already running/);
       expect(failure).toMatchObject({ code: -32009 });
     } finally {
       manager.endRewind(workspace.result.id);

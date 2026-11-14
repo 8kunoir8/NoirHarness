@@ -533,7 +533,11 @@ export class EngineManager {
 
   /** One check-and-set, so a plan and a restore cannot both pass their guard on the same tick. */
   beginPlan(workspaceId: string): void {
-    if (this.rewinding.has(workspaceId) || this.planning.has(workspaceId)) {
+    // A restore has the store's index pinned at the snapshot, so a plan cannot scan into it.
+    if (this.rewinding.has(workspaceId)) {
+      throw new RpcFault(ErrorCodes.conflict, "A rewind is already running in this workspace");
+    }
+    if (this.planning.has(workspaceId)) {
       throw new RpcFault(ErrorCodes.conflict, "A checkpoint plan is already running in this workspace");
     }
     this.planning.add(workspaceId);
