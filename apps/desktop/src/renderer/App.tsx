@@ -54,6 +54,7 @@ import {
 } from "./tabs.js";
 import { useTheme } from "./theme.js";
 import { useShortcuts } from "./useShortcuts.js";
+import { WindowControlsBar } from "./WindowControls.js";
 import { WorkspacePanel, type ProjectView, type WorkspaceView } from "./WorkspacePanel.js";
 import "./styles.css";
 
@@ -858,6 +859,7 @@ export function App() {
           Inspector
         </button>
       ) : null}
+      <WindowControlsBar />
     </>
   );
 

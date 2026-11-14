@@ -203,6 +203,10 @@ M1 UI supports `openai-completions`, `anthropic-messages`, `google-generative-ai
 
 Top bar: workspace switcher · branch · engine status · ⌘K search · notifications · settings. Body: rail + list + main + inspector. Bottom status bar: kernel health, running agents, quota, keyboard hints.
 
+The window is frameless (ADR-0013): the top bar is the titlebar, it carries the minimize /
+maximize-restore / close buttons at its right edge, and it is the drag surface. The kernel banner
+above it is draggable too, so the window keeps a handle while the banner shows.
+
 | Rail item | List pane | Main |
 |---|---|---|
 | Chats | filters (`All / Needs you / Working / Unread / Done`), status/time-grouped rows with model·project tags | Session tabs |
@@ -300,7 +304,7 @@ design still names as owed:
 |---|---|
 | `session.fork` | shipped — prefix copy, palette entry; the engine's context is replayed only for the native engine |
 | Paged `session.list` | shipped — page, total, keyset cursor, kernel-answered filters |
-| ADRs 0009–0012 | recorded (pairing, TLS, supervision, notifications) |
+| ADRs 0009–0013 | recorded (pairing, TLS, supervision, notifications, frameless window) |
 | ACP → `--mode rpc` | transport shipped behind `NOIR_OMP_TRANSPORT=rpc`: same `Engine`, one approve-per-tool prompt (`extension_ui_request` select, answered from the approval card), usage per message. The earlier "write ran without asking" reading was omp's default auto-approve; `--approval-mode always-ask` is now always passed. Default stays ACP until a field run; `docs/superpowers/notes/2026-11-13-omp-rpc-mode.md` has the wire |
 | `lsp.*` | unstarted; reserved since M2, needs a product decision before code |
 | Mobile shell | unstarted; a phone loads the desktop layout today |

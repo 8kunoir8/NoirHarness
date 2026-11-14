@@ -1,6 +1,6 @@
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
-import { app, BrowserWindow, Menu, Notification, Tray, dialog, ipcMain, nativeImage, shell } from "electron";
+import { app, BrowserWindow, Menu, Notification, Tray, dialog, ipcMain, nativeImage, shell, type IpcMainInvokeEvent } from "electron";
 import { KernelEvents } from "./kernelEvents.js";
 import { hostKernel, probeHealth, type HostedKernel } from "./kernelHost.js";
 import type { NotificationSink } from "./notifications.js";
@@ -55,9 +55,23 @@ async function createWindow(): Promise<void> {
     minWidth: 1024,
     minHeight: 680,
     backgroundColor: "#f4efe6",
+    // The page draws its own caption row: the window has one surface from edge to edge, and the
+    // buttons follow the app's theme instead of the OS one. `thickFrame` keeps the resize border
+    // and the snap/maximize animations that a frameless Windows window otherwise loses.
+    frame: false,
+    thickFrame: true,
     webPreferences: { preload: join(__dirname, "preload.cjs"), contextIsolation: true, nodeIntegration: false },
   });
   mainWindow = win;
+  /** The page's maximize glyph is the only thing it cannot read from its own state. */
+  const announceState = (): void => {
+    if (win.isDestroyed()) return;
+    win.webContents.send("window:changed", { maximized: win.isMaximized(), fullScreen: win.isFullScreen() });
+  };
+  win.on("maximize", announceState);
+  win.on("unmaximize", announceState);
+  win.on("enter-full-screen", announceState);
+  win.on("leave-full-screen", announceState);
   win.on("closed", () => {
     if (mainWindow === win) mainWindow = undefined;
   });
@@ -226,6 +240,36 @@ if (!app.requestSingleInstanceLock()) {
       }
       if (!["http:", "https:", "mailto:"].includes(url.protocol)) throw new Error("blocked url");
       await shell.openExternal(url.toString());
+    });
+    // The caption buttons live in the page, so the page needs these four verbs. Each call resolves
+    // its own window from the sender: a reload or a second window can never target the wrong one.
+    const windowOf = (event: IpcMainInvokeEvent): BrowserWindow => {
+      const win = BrowserWindow.fromWebContents(event.sender);
+      if (win === null) throw new Error("no window for this sender");
+      return win;
+    };
+    // Both replies carry the same shape the preload's `WindowState` promises; keep them literal so a
+    // field added to one cannot silently diverge from the other.
+    ipcMain.handle("window:minimize", (event) => {
+      windowOf(event).minimize();
+    });
+    ipcMain.handle("window:toggle-maximize", (event) => {
+      const win = windowOf(event);
+      // In full screen the maximize glyph means "leave full screen": maximizing under a full-screen
+      // window would move nothing the user can see.
+      if (win.isFullScreen()) win.setFullScreen(false);
+      else if (win.isMaximized()) win.unmaximize();
+      else win.maximize();
+      return { maximized: win.isMaximized(), fullScreen: win.isFullScreen() };
+    });
+    // `close`, never `hide`: the window's own close handler decides whether a tray turns it into a
+    // hide, so a custom button cannot diverge from the titlebar it replaced.
+    ipcMain.handle("window:close", (event) => {
+      windowOf(event).close();
+    });
+    ipcMain.handle("window:state", (event) => {
+      const win = windowOf(event);
+      return { maximized: win.isMaximized(), fullScreen: win.isFullScreen() };
     });
     await createWindow();
     createTray();

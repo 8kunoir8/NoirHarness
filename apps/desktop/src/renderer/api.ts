@@ -8,6 +8,20 @@ export interface KernelInfo {
   daemon: boolean;
 }
 
+/** Mirrors `WindowState`/`WindowControls` in `preload.ts`; the preload cannot be imported here. */
+export interface WindowState {
+  maximized: boolean;
+  fullScreen: boolean;
+}
+
+export interface WindowControls {
+  minimize(): Promise<void>;
+  toggleMaximize(): Promise<WindowState>;
+  close(): Promise<void>;
+  state(): Promise<WindowState>;
+  onState(listener: (state: WindowState) => void): () => void;
+}
+
 declare global {
   interface Window {
     /** Absent in a browser: the shell there is served by the kernel and has no preload. */
@@ -15,6 +29,7 @@ declare global {
       kernelInfo(): Promise<KernelInfo>;
       openExternal(url: string): Promise<void>;
       automationsArmed(count: number): void;
+      windowControls?: WindowControls;
     };
   }
 }

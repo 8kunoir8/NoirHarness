@@ -108,6 +108,8 @@ input, select, textarea {
   color: var(--warning);
   background: var(--surface-sunken);
   border-bottom: 1px solid var(--border-strong);
+  /* It sits above the topbar, so a frameless window would have no handle while it shows. */
+  -webkit-app-region: drag;
 }
 
 label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; color: var(--muted); }
@@ -138,12 +140,51 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; colo
   height: 40px;
   background: var(--surface-raised);
   border-bottom: 1px solid var(--border);
+  /* The window is frameless: this row is the titlebar, so it moves the window and selects nothing.
+     Every control in it opts back out with `no-drag`, or it would swallow the click. */
+  -webkit-app-region: drag;
+  user-select: none;
 }
+
+.shell-topbar button,
+.shell-topbar input,
+.shell-topbar select,
+.shell-topbar a { -webkit-app-region: no-drag; }
 
 .brand { font-weight: 650; letter-spacing: 0.01em; }
 .topbar-workspace { color: var(--muted); font-size: 0.85rem; margin-right: auto; }
 .topbar-action { font-size: 0.78rem; padding: 3px 8px; }
 .topbar-action[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+
+/* Caption cluster: 46×40 per button, flush to the top-right corner, so the hit targets are the ones
+   the OS caption had. The negative margin eats the topbar's own right padding. */
+.window-controls {
+  display: flex;
+  align-self: stretch;
+  margin-right: -12px;
+  -webkit-app-region: no-drag;
+}
+
+.window-control {
+  width: 46px;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: default;
+  transition: background var(--ease), color var(--ease);
+}
+
+.window-control:hover { background: var(--surface-sunken); color: var(--text); }
+.window-control:active { background: var(--border); }
+.window-control:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.window-control svg { width: 14px; height: 14px; }
+.window-control-close:hover { background: var(--danger); color: var(--surface-raised); }
+.window-control-close:active { background: var(--danger); color: var(--surface-raised); filter: brightness(0.9); }
 
 .shell-nav {
   grid-area: nav;
