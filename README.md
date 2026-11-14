@@ -469,6 +469,33 @@ reissued — with a new fingerprint — when the machine's addresses change. The
 enable, disable, pair, devices, revoke — refuse anything that is not loopback, so a stolen cookie
 cannot mint or remove devices.
 
+## Rewind
+
+Every turn starts by snapshotting the workspace into a hidden git repository under the app's data
+directory (`checkpoints/<workspace>/` — `%APPDATA%\NoirHarness\checkpoints\` on Windows), never
+into your own `.git`. A prompt you sent carries **Rewind to before this prompt**, dimmed until you
+hover its bubble, and the app shows what would move before it moves anything: modified and deleted
+files come back, files the turn created are removed, and the conversation after that prompt
+disappears behind one marker row.
+
+- Build outputs, `node_modules`, and the directories in the store's own ignore file are never
+  captured or moved. Anything your `.gitignore` hides stays on disk untouched.
+- The state you are about to lose is snapshotted first, as a `pre-restore` checkpoint, and the
+  rewind is refused outright if that snapshot cannot be taken. Nothing moves when it refuses. The
+  row is listed by `checkpoint.list`; the transcript has no prompt to hang an action on, so the
+  undo is reachable through `checkpoint.restore` rather than through a second click in the UI.
+- `session.rewound` is appended, never inserted: the log stays append-only and every seq keeps
+  its meaning.
+- The native engine is disposed and its history is rebuilt from the visible log. An ACP engine
+  keeps its own memory, so the marker says it was not rewound; the workspace and the transcript
+  still are.
+- A rewind is refused while a turn runs anywhere in that workspace, and no turn starts while one
+  is in flight.
+- The engine's own `.noir/skills-engine.json`, written when the turn started, postdates the
+  snapshot, so a rewind removes it with the turn's other new files; the next turn writes it again.
+- LFS work trees are refused, as is a disk with less than 500 MiB free. `git` must be on `PATH`
+  (or named by `NOIR_GIT_COMMAND`); `system.health` reports it as `checkpoints`.
+
 ## Configuration
 
 | variable | default | meaning |
@@ -494,8 +521,8 @@ pnpm --filter @noir/desktop test
 pnpm --filter @noir/desktop test:e2e
 ```
 
-`test:e2e` builds the app and drives Electron with Playwright against a local mock provider. Fourteen
-specs, nineteen tests: `smoke` (2) — boot, process spawn, health, and a provider surviving an app
+`test:e2e` builds the app and drives Electron with Playwright against a local mock provider. Fifteen
+specs, twenty-one tests: `smoke` (2) — boot, process spawn, health, and a provider surviving an app
 restart; `chat` (4) — a streamed reply, a permission-approved tool call, a GFM table with a decoded
 workspace image, and deleting a chat from the list; `shell` (1) — a tool turn
 that survives the restart, a prompt queued behind a slow turn, an interrupt, the queued turn draining
@@ -506,8 +533,12 @@ body, materialize it through a turn, then disable it and assert the manifest ent
 directory drop it; `recovery` (1) — a crashed kernel is reported and its session recovered; `native`
 (1) — the native engine's SSE stream, a real `Allow once`, and a restart that reconstructs the wire
 history; `artifacts` (1) — Markdown, CSV, and PDF previews, hostile Markdown staying inert, a
-restored tab, and a deleted file; `office` (1) — two agents painted from the roster, an approval
-bubble that clears, desks that survive a cold start, and `Enter` opening a chat from a focused row;
+restored tab, and a deleted file; `rewind` (2) — a native turn, an edit made outside it, a rewind
+that restores the file and removes the one the turn created, the marker replacing the abandoned turn,
+and a retried prompt reaching the provider with no trace of the one before it; then a rewind
+refused while a turn waits on a tool approval; `office` (1) — two agents painted from the roster, an
+approval bubble that clears, desks that survive a cold start, and `Enter` opening a chat from a
+focused row;
 `mcp` (1) — an MCP server configured in Setup and probed, an agent bound to it, and a brokered
 `mcp__calc__add` call approved through the card; `automations` (1) — a schedule created in the panel,
 retimed to a minute, fired by the kernel's own timer into a real agent, and the run appearing in the
