@@ -110,6 +110,16 @@ describe("checkpoint capture", () => {
     await expect(service.availability("w-1")).resolves.toEqual({ available: false, reason: "git is not available" });
   });
 
+  it("records a missing workspace root instead of throwing", async () => {
+    const r = rig();
+    rmSync(r.root, { recursive: true, force: true });
+    const row = await r.capture("t-1", 1);
+    expect(row.treeSha).toBeNull();
+    expect(row.error).not.toBeNull();
+    // The row still exists, so the turn it belongs to keeps a record of why nothing was captured.
+    expect(r.checkpoints.entries(r.sessionId).map((entry) => entry.id)).toContain(row.id);
+  });
+
   it("counts what it could not capture", async () => {
     const r = rig();
     mkdirSync(join(r.root, "node_modules", "pkg", "sub"), { recursive: true });
@@ -195,6 +205,21 @@ describe("checkpoint plan and restore", () => {
     writeFileSync(join(r.root, "win.txt"), "rewritten\n");
     await restore(r, row.id);
     expect(readFileSync(join(r.root, "win.txt"), "utf8")).toBe("a\r\nb\r\n");
+  });
+
+  it("keeps binary bytes and a 200 KB file byte-for-byte", async () => {
+    const r = rig();
+    const binary = Buffer.from([0x00, 0xff, 0xfe, 0x0d, 0x0a, 0x1a, 0x80, 0x7f]);
+    const large = Buffer.from("line\n".repeat(40_000));
+    writeFileSync(join(r.root, "blob.bin"), binary);
+    writeFileSync(join(r.root, "large.txt"), large);
+    const row = await r.capture("t-1", 1);
+    writeFileSync(join(r.root, "blob.bin"), "clobbered\n");
+    writeFileSync(join(r.root, "large.txt"), "clobbered\n");
+
+    await restore(r, row.id);
+    expect(readFileSync(join(r.root, "blob.bin")).equals(binary)).toBe(true);
+    expect(readFileSync(join(r.root, "large.txt")).equals(large)).toBe(true);
   });
 
   it("does not touch what it never captured", async () => {
