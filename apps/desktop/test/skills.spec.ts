@@ -52,7 +52,8 @@ test("lists a project skill, toggles it, and shows its body", async () => {
 
       // The first turn spawns the engine, which materializes the enabled set on disk. The list row
       // alone does not prove that, so assert the copy and the manifest before toggling anything.
-      await page.getByRole("navigation", { name: "Main" }).getByRole("button", { name: "Chats" }).click();
+      // `exact`, because the "Chats column" toggle would also match.
+      await page.getByRole("navigation", { name: "Main" }).getByRole("button", { name: "Chats", exact: true }).click();
       await sendPrompt(page, "stream");
       await expect(
         page.getByTestId("message-assistant").filter({ hasText: "Hello from mock." }),

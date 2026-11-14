@@ -90,6 +90,9 @@ interface DocumentState {
 
 const READ_KEY = "noir.read.sessions";
 
+/** Which of the two left columns are open. A closed column is a preference, not a view. */
+const COLUMNS_KEY = "noir.columns";
+
 /**
  * Only events after which the workspace on disk can differ are worth a scan. Streaming produces
  * several events per token, and every one used to trigger a whole-tree `git.status`.
@@ -154,6 +157,11 @@ export function App() {
   const sessionsRef = useRef(sessions);
   const [error, setError] = useState<string | undefined>(undefined);
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  // Two preferences, not two views: a closed column unmounts its contents and leaves its toggle in
+  // the nav, so bringing it back is one click.
+  const [columns, setColumns] = useState<{ rail: boolean; list: boolean }>(() =>
+    loadJson<{ rail: boolean; list: boolean }>(COLUMNS_KEY, { rail: true, list: true }),
+  );
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [armed, setArmed] = useState(0);
   const [skillCount, setSkillCount] = useState<number | undefined>(undefined);
@@ -221,6 +229,10 @@ export function App() {
   useEffect(() => {
     storeJson(TABS_KEY, tabState);
   }, [tabState]);
+
+  useEffect(() => {
+    storeJson(COLUMNS_KEY, columns);
+  }, [columns]);
 
   // Editor/diff/preview tabs are paths inside one workspace. Once the workspace is known, pin them to it:
   // adopt it when the stored set predates the field, drop editor/diff/preview tabs when the stored set was
@@ -820,6 +832,27 @@ export function App() {
         </button>
       </span>
       <span className="nav-spacer" />
+      {/* The two left columns are toggles, not views: `aria-pressed` reports whether each is open. */}
+      <button
+        type="button"
+        className="nav-column"
+        aria-pressed={columns.rail}
+        aria-label="Projects column"
+        title={columns.rail ? "Hide the projects column" : "Show the projects column"}
+        onClick={() => setColumns((current) => ({ ...current, rail: !current.rail }))}
+      >
+        ▤
+      </button>
+      <button
+        type="button"
+        className="nav-column"
+        aria-pressed={columns.list}
+        aria-label="Chats column"
+        title={columns.list ? "Hide the chats column" : "Show the chats column"}
+        onClick={() => setColumns((current) => ({ ...current, list: !current.list }))}
+      >
+        ☰
+      </button>
       <span className="nav-state" data-tone={navTone}>
         <span className="nav-dot" aria-hidden="true" />
         {navState}
@@ -1143,13 +1176,15 @@ export function App() {
         <Shell
           nav={nav}
           topbar={topbar}
-          rail={rail}
+          rail={columns.rail ? rail : undefined}
           list={
-            models.length === 0 ? (
-              <p className="empty">Add a provider and a model to unlock chats.</p>
-            ) : (
-              <p className="empty">Pick a chat from the list, or create one.</p>
-            )
+            columns.list ? (
+              models.length === 0 ? (
+                <p className="empty">Add a provider and a model to unlock chats.</p>
+              ) : (
+                <p className="empty">Pick a chat from the list, or create one.</p>
+              )
+            ) : undefined
           }
           main={
             status === "kernel ok" ? (
@@ -1173,8 +1208,8 @@ export function App() {
       <Shell
         nav={nav}
         topbar={topbar}
-        rail={rail}
-        list={
+        rail={columns.rail ? rail : undefined}
+        list={columns.list ? (
           <>
             {listModeSwitch}
             {listMode === "files" ? (
@@ -1222,7 +1257,7 @@ export function App() {
               </section>
             )}
           </>
-        }
+        ) : undefined}
         main={
           view === "skills" ? (
             <>

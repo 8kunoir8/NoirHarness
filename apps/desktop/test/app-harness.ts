@@ -90,7 +90,8 @@ export async function setupWorkspace(
   await expect(models.locator("li").filter({ hasText: "mock-1" })).toBeVisible();
 
   // Setup is its own page; chat, project and session controls live behind the chat view.
-  await page.getByRole("navigation", { name: "Main" }).getByRole("button", { name: view }).click();
+  // `exact`, because the column toggles are labelled "Chats column" and would also match "Chats".
+  await page.getByRole("navigation", { name: "Main" }).getByRole("button", { name: view, exact: true }).click();
 
   const projects = page.getByRole("region", { name: "Projects", exact: true });
   // One action: the folder becomes a project, the project gets its one workspace, and that

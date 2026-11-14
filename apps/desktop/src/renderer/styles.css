@@ -119,7 +119,12 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; colo
 .shell {
   height: 100%;
   display: grid;
-  grid-template-columns: 200px 300px minmax(0, 1fr) 320px;
+  /* Track sizes are custom properties so the collapse states compose: each attribute closes its
+     own column, and no rule has to enumerate the combinations. */
+  --rail-w: 200px;
+  --list-w: 300px;
+  --sidebar-w: 320px;
+  grid-template-columns: var(--rail-w) var(--list-w) minmax(0, 1fr) var(--sidebar-w);
   grid-template-rows: 40px 34px minmax(0, 1fr) auto;
   grid-template-areas:
     "top top top top"
@@ -128,7 +133,11 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; colo
     "status status status status";
 }
 
-.shell[data-sidebar="closed"] { grid-template-columns: 200px 300px minmax(0, 1fr) 0; }
+.shell[data-rail="closed"] { --rail-w: 0; }
+.shell[data-list="closed"] { --list-w: 0; }
+.shell[data-sidebar="closed"] { --sidebar-w: 0; }
+.shell[data-rail="closed"] .shell-rail,
+.shell[data-list="closed"] .shell-list,
 .shell[data-sidebar="closed"] .shell-sidebar { display: none; }
 
 .shell-topbar {
@@ -228,6 +237,7 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; colo
 .shell-nav .nav-item:has(button[aria-pressed="true"]) { border-bottom-color: var(--accent); }
 .shell-nav .nav-item button[aria-pressed="true"] { border-bottom-color: transparent; }
 .shell-nav .nav-theme { padding: 0 6px; }
+.shell-nav .nav-column { padding: 0 6px; }
 .shell-nav .nav-count {
   font-family: var(--font-mono);
   font-size: 0.7rem;
@@ -1305,13 +1315,11 @@ button.diff-gutter:hover, button.diff-gutter:focus-visible { color: var(--accent
  * fourth column by shrinking the rail and the list, and the main pane gives up the rest.
  */
 @media (max-width: 1200px) {
-  .shell { grid-template-columns: 150px 228px minmax(0, 1fr) 264px; }
-  .shell[data-sidebar="closed"] { grid-template-columns: 150px 228px minmax(0, 1fr) 0; }
+  .shell { --rail-w: 150px; --list-w: 228px; --sidebar-w: 264px; }
 }
 
 @media (max-width: 1050px) {
-  .shell { grid-template-columns: 132px 200px minmax(0, 1fr) 248px; }
-  .shell[data-sidebar="closed"] { grid-template-columns: 132px 200px minmax(0, 1fr) 0; }
+  .shell { --rail-w: 132px; --list-w: 200px; --sidebar-w: 248px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
