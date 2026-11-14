@@ -257,6 +257,7 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; o
         providers,
         skills,
         mcp,
+        checkpoints,
         dataDir: dir,
       });
       engines = engineManager;

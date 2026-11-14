@@ -27,6 +27,7 @@ import {
   type ToolKind,
 } from "@noir/protocol";
 import type { AgentService } from "./agents.js";
+import type { CheckpointService } from "./checkpoints.js";
 import type { EventStore } from "./eventStore.js";
 import { resolveModelFor, type EngineRegistryDeps } from "./engineRegistry.js";
 import type { McpService } from "./mcp/service.js";
@@ -88,6 +89,8 @@ interface QueuedTurn {
   turnId: string;
   idx: number;
   content: PromptContent;
+  /** The seq the prompt's own event takes, so a rewind here hides the prompt and everything after. */
+  cutSeq: number;
 }
 
 interface TurnContext extends QueuedTurn {
@@ -327,6 +330,7 @@ export class EngineManager {
       providers: ProviderService;
       skills: SkillService;
       mcp: McpService;
+      checkpoints: CheckpointService;
       dataDir: string;
       ompCommand?: string;
       turnTimeoutMs?: number;
@@ -373,6 +377,8 @@ export class EngineManager {
 
     // The request id is unique per send and a retried prompt returned above, so this lands once.
     // Emitting before the turn starts keeps the prompt ahead of `turn.started` in seq order.
+    // Read before the prompt events exist: the cut has to sit at the prompt, not after it.
+    const cutSeq = this.deps.events.nextSeq(params.sessionId);
     this.emit(
       state,
       "message.delta",
@@ -381,7 +387,7 @@ export class EngineManager {
     );
     this.emit(state, "message.completed", { messageId: params.requestId, status: "done" }, turnId);
 
-    const turn: QueuedTurn = { turnId, idx, content };
+    const turn: QueuedTurn = { turnId, idx, content, cutSeq };
     if (!immediate) {
       state.queue.push(turn);
       return { turnId, queued: true };
@@ -513,6 +519,27 @@ export class EngineManager {
       | undefined;
     if (row === undefined || row.status === "closed") return;
     this.reconcile({ sessionId: row.id, agentId: row.agent_id, engineKind: row.engine });
+  }
+
+  /** True when any session in the workspace is mid-turn; a restore must not race it. */
+  busyWorkspace(workspaceId: string): boolean {
+    for (const state of this.states.values()) {
+      if (state.workspaceId === workspaceId && state.turn !== undefined) return true;
+    }
+    return false;
+  }
+
+  /**
+   * The engine half of a rewind: the abandoned turns' queue and usage go, and a native engine is
+   * disposed so the next prompt rebuilds its history from the filtered log. An ACP engine keeps its
+   * own memory — the kernel has never replayed history into one — and the marker says so.
+   */
+  async afterRewind(sessionId: string): Promise<void> {
+    const state = this.states.get(sessionId);
+    if (state === undefined) return;
+    this.dropQueue(state, "rewound");
+    state.usage = undefined;
+    if (state.engineKind === "native") await this.disposeEngine(state);
   }
 
   /** Fails sessions a previous kernel left active; the next prompt resumes them from `error`. */
@@ -659,7 +686,8 @@ export class EngineManager {
       // still is, even when its spawn failed before `turn.started` — the UI shows its prompt.
       let history: EngineHistoryMessage[] = [];
       if (state.engineKind === "native") {
-        const log = this.deps.events.list(state.sessionId, 0);
+        // A rewound range is not history: the retried turn must not learn about the discarded one.
+        const log = this.deps.events.visible(state.sessionId, 0);
         const replayedTurns = new Set<string>();
         for (const event of log) {
           if (event.turnId === null || event.turnId === undefined) continue;
@@ -750,6 +778,17 @@ export class EngineManager {
     state.turn = context;
     state.usage = undefined;
     try {
+      // Before the engine starts: a snapshot taken after it could see this turn's own writes.
+      // `capture` records its own failures on the row, so a broken git never fails the turn.
+      await this.deps.checkpoints
+        .capture({
+          sessionId: state.sessionId,
+          workspaceId: state.workspaceId,
+          workspaceRoot: state.workspaceRoot,
+          turnId: turn.turnId,
+          seq: turn.cutSeq,
+        })
+        .catch(() => undefined);
       const engineSession = await this.ensureEngine(state, context.turnId);
       if (state.closing) {
         // The session closed while the engine was spawning: reap it and stay silent.

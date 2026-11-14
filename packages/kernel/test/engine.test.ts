@@ -21,6 +21,7 @@ import {
   type SessionState,
 } from "@noir/protocol";
 import { AgentService } from "../src/agents.js";
+import { CheckpointService } from "../src/checkpoints.js";
 import { openDb } from "../src/db.js";
 import { EngineManager } from "../src/engineManager.js";
 import { EventStore } from "../src/eventStore.js";
@@ -184,6 +185,7 @@ function setup(
     providers,
     skills,
     mcp: new McpService(db),
+    checkpoints: new CheckpointService(db, events, { dataDir }),
     dataDir,
     ompCommand: process.execPath,
     ...(opts.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: opts.turnTimeoutMs }),
@@ -214,6 +216,7 @@ function restartedManager(deps: {
     providers: deps.providers,
     skills: deps.skills,
     mcp: new McpService(deps.db),
+    checkpoints: new CheckpointService(deps.db, deps.events, { dataDir: deps.dataDir }),
     dataDir: deps.dataDir,
     ompCommand: process.execPath,
   });
@@ -1215,6 +1218,7 @@ describe("EngineManager over the fake ACP server", () => {
       providers: new ProviderService(db, memorySecrets()),
       skills: new SkillService(db, tempDir()),
       mcp: new McpService(db),
+      checkpoints: new CheckpointService(db, events, { dataDir: tempDir() }),
       dataDir: tempDir(),
     });
     managers.push(manager);
@@ -1301,6 +1305,73 @@ describe("EngineManager over the fake ACP server", () => {
       ]);
       expect(events.list(session.id).some((event) => event.type === "turn.started")).toBe(false);
       expect(manager.enginePid(session.id)).toBeUndefined();
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "captures the workspace when a turn starts",
+    async () => {
+      const rig = setup();
+      writeFileSync(join(rig.root, "seed.txt"), "hello\n");
+      await rig.manager.prompt({
+        sessionId: rig.session.id,
+        requestId: "req-1",
+        content: [{ type: "text", text: "hi" }],
+      });
+      await waitForEvent(rig.events, rig.session.id, (event) => event.type === "turn.completed" || event.type === "turn.failed");
+
+      const row = rig.db
+        .prepare("SELECT turn_id, seq, tree_sha, error FROM checkpoints WHERE session_id = ?")
+        .get(rig.session.id) as { turn_id: string; seq: number; tree_sha: string | null; error: string | null } | undefined;
+      expect(row).toBeDefined();
+      expect(row?.error).toBeNull();
+      expect(row?.tree_sha).toMatch(/^[0-9a-f]{40,64}$/);
+
+      // The cut is the prompt's own seq, so rewinding hides the prompt and not just the reply.
+      const prompt = rig.events
+        .list(rig.session.id)
+        .find((event) => event.type === "message.delta" && eventPayload(event, "message.delta").role === "user");
+      expect(row?.seq).toBe(prompt?.seq);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "reports the workspace busy until the last approval settles",
+    async () => {
+      const rig = setup({ acpPermissionTitle: "Run the thing", acpPermissionKind: "execute" });
+      await rig.manager.prompt({
+        sessionId: rig.session.id,
+        requestId: "req-1",
+        content: [{ type: "text", text: "permission" }],
+      });
+      const requested = await waitForEvent(rig.events, rig.session.id, (event) => event.type === "permission.requested");
+      expect(rig.manager.busyWorkspace(rig.workspaceId)).toBe(true);
+
+      await rig.manager.respond(eventPayload(requested, "permission.requested").approvalId, "reject");
+      await waitForEvent(rig.events, rig.session.id, (event) => event.type === "turn.completed" || event.type === "turn.failed");
+      expect(rig.manager.busyWorkspace(rig.workspaceId)).toBe(false);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "takes another turn after a rewind",
+    async () => {
+      const rig = setup();
+      await rig.manager.prompt({ sessionId: rig.session.id, requestId: "req-1", content: [{ type: "text", text: "one" }] });
+      await waitForEvent(rig.events, rig.session.id, (event) => event.type === "turn.completed" || event.type === "turn.failed");
+
+      // Disposing the engine is the thing under test: the next turn has to spawn a fresh one.
+      await rig.manager.afterRewind(rig.session.id);
+      const baseline = rig.events.list(rig.session.id).at(-1)?.seq ?? 0;
+      await rig.manager.prompt({ sessionId: rig.session.id, requestId: "req-2", content: [{ type: "text", text: "two" }] });
+      await waitForEvent(rig.events, rig.session.id, (event) => event.type === "turn.completed" && event.seq > baseline);
+
+      // Two prompts, two snapshots — the second taken by the turn that followed the rewind.
+      const rows = rig.db.prepare("SELECT COUNT(*) AS n FROM checkpoints WHERE session_id = ?").get(rig.session.id) as { n: number };
+      expect(rows.n).toBe(2);
     },
     TEST_TIMEOUT_MS,
   );

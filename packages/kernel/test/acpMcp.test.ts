@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import type { PermissionPolicy } from "@noir/protocol";
 import { AgentService } from "../src/agents.js";
+import { CheckpointService } from "../src/checkpoints.js";
 import { openDb } from "../src/db.js";
 import { EngineManager } from "../src/engineManager.js";
 import { EventStore } from "../src/eventStore.js";
@@ -114,6 +115,7 @@ async function harness(policy: PermissionPolicy) {
     providers,
     skills,
     mcp,
+    checkpoints: new CheckpointService(db, events, { dataDir }),
     dataDir,
     ompCommand: process.execPath,
   });

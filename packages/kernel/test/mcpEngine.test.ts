@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentEvent, PermissionPolicy } from "@noir/protocol";
 import { startFakeOpenAiServer, type FakeOpenAiServer } from "../../engines/native/test/fakeOpenAiServer.js";
 import { AgentService } from "../src/agents.js";
+import { CheckpointService } from "../src/checkpoints.js";
 import { openDb } from "../src/db.js";
 import { EngineManager } from "../src/engineManager.js";
 import { EventStore } from "../src/eventStore.js";
@@ -159,6 +160,7 @@ async function harness(server: FakeOpenAiServer, policy: PermissionPolicy, pidFi
     providers,
     skills,
     mcp,
+    checkpoints: new CheckpointService(db, events, { dataDir }),
     dataDir,
   });
   managers.push(manager);
