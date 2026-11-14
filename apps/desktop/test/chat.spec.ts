@@ -113,3 +113,17 @@ test("deletes a chat from the list and closes its tab", async () => {
     await expect(page.getByLabel("Prompt", { exact: true })).toHaveCount(0);
   });
 });
+
+test("sends the first prompt of a new chat on Enter", async () => {
+  await runChat(async (page, mock, harness) => {
+    // `bootstrap` has just created the chat, which the kernel reports as `starting`: the status the
+    // composer used to read as "a turn is streaming" and swallow the first Enter.
+    await bootstrap(page, mock, harness.workspacePath);
+    await page.getByLabel("Prompt", { exact: true }).fill("first turn");
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("message-user").filter({ hasText: "first turn" })).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByTestId("message-assistant").filter({ hasText: "Hello from mock." })).toBeVisible({
+      timeout: 20_000,
+    });
+  });
+});
