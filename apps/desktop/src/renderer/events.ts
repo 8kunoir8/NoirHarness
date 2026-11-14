@@ -24,6 +24,23 @@ export interface ChatMessage {
   role: "user" | "assistant";
   blocks: ChatBlock[];
   status?: "streaming" | "done" | "interrupted" | "failed";
+  /** The turn this message belongs to; a rewind is addressed by turn, not by message. */
+  turnId?: string;
+  /** Seq of its first event, so markers and messages can be ordered together. */
+  seq?: number;
+}
+
+/** One rewind as the transcript draws it: where the cut was and what the restore moved. */
+export interface ChatRewind {
+  seq: number;
+  cutSeq: number;
+  promptSeq: number | null;
+  restored: number;
+  deleted: number;
+  removed: number;
+  failed: number;
+  notCaptured: number;
+  engineNotRewound: boolean;
 }
 
 export interface ChatTool {
@@ -83,11 +100,23 @@ export interface ChatState {
   skillsLoaded: LoadedSkillState[];
   /** Kernel-side failures a turn did not stop for, e.g. an MCP server that would not start. */
   notices: string[];
+  /** Every rewind the log still shows, in seq order; the transcript draws a marker per entry. */
+  rewinds: ChatRewind[];
   lastSeq: number;
 }
 
 export function emptyChatState(sessionId?: string): ChatState {
-  const base: ChatState = { messages: [], tools: [], files: [], plan: [], skillsLoaded: [], notices: [], status: "idle", lastSeq: 0 };
+  const base: ChatState = {
+    messages: [],
+    tools: [],
+    files: [],
+    plan: [],
+    skillsLoaded: [],
+    notices: [],
+    rewinds: [],
+    status: "idle",
+    lastSeq: 0,
+  };
   return sessionId === undefined ? base : { ...base, sessionId };
 }
 
@@ -168,6 +197,27 @@ export function reduceChat(state: ChatState, event: AgentEvent): ChatState {
     }
     case "session.closed":
       return { ...next, status: "closed" };
+    case "session.rewound": {
+      const parsed = PayloadSchemas["session.rewound"].safeParse(event.payload);
+      if (!parsed.success) return next;
+      return {
+        ...next,
+        rewinds: [
+          ...next.rewinds,
+          {
+            seq: event.seq,
+            cutSeq: parsed.data.cutSeq,
+            promptSeq: parsed.data.promptSeq,
+            restored: parsed.data.restored,
+            deleted: parsed.data.deleted,
+            removed: parsed.data.removed,
+            failed: parsed.data.failed,
+            notCaptured: parsed.data.notCaptured,
+            engineNotRewound: parsed.data.engineNotRewound,
+          },
+        ],
+      };
+    }
     case "turn.started": {
       const parsed = PayloadSchemas["turn.started"].safeParse(event.payload);
       return parsed.success
@@ -210,7 +260,17 @@ export function reduceChat(state: ChatState, event: AgentEvent): ChatState {
         if (index === -1) {
           return {
             ...next,
-            messages: [...next.messages, { id: messageId, role, blocks: [{ kind: "file", path }], status: "streaming" }],
+            messages: [
+              ...next.messages,
+              {
+                id: messageId,
+                role,
+                blocks: [{ kind: "file", path }],
+                status: "streaming",
+                seq: event.seq,
+                ...(event.turnId === null || event.turnId === undefined ? {} : { turnId: event.turnId }),
+              },
+            ],
           };
         }
         const message = next.messages[index]!;
@@ -227,7 +287,14 @@ export function reduceChat(state: ChatState, event: AgentEvent): ChatState {
       if (role === "user" && index !== -1) return next;
       const messages = [...next.messages];
       if (index === -1) {
-        messages.push({ id: messageId, role, blocks: [{ kind, text: block.text }], status: "streaming" });
+        messages.push({
+          id: messageId,
+          role,
+          blocks: [{ kind, text: block.text }],
+          status: "streaming",
+          seq: event.seq,
+          ...(event.turnId === null || event.turnId === undefined ? {} : { turnId: event.turnId }),
+        });
       } else {
         messages[index] = appendBlock(messages[index]!, kind, block.text);
       }
@@ -373,6 +440,8 @@ export interface SessionEvents {
  */
 export function useSessionEvents(sessionId: string, requestFn: RequestFn = defaultRequest): SessionEvents {
   const [state, setState] = useState<ChatState>(() => emptyChatState(sessionId));
+  // A rewind invalidates every projection of the old log; bumping this replays from zero.
+  const [generation, setGeneration] = useState(0);
 
   useEffect(() => {
     if (sessionId === "") {
@@ -386,6 +455,12 @@ export function useSessionEvents(sessionId: string, requestFn: RequestFn = defau
 
     const listener = (event: AgentEvent): void => {
       if (event.sessionId !== sessionId) return;
+      if (event.type === "session.rewound") {
+        // The kernel answers a replay without the abandoned range, so the transcript is rebuilt
+        // rather than truncated here: one way to build a transcript, not two.
+        setGeneration((value) => value + 1);
+        return;
+      }
       if (replaying) buffered.push(event);
       else if (active) setState((prev) => reduceChat(prev, event));
     };
@@ -417,7 +492,7 @@ export function useSessionEvents(sessionId: string, requestFn: RequestFn = defau
       active = false;
       offEvent(listener);
     };
-  }, [sessionId, requestFn]);
+  }, [sessionId, requestFn, generation]);
 
   const appendUser = useCallback((text: string, id: string) => {
     setState((prev) => appendUserMessage(prev, text, id));

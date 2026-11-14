@@ -7,7 +7,13 @@ import { emptyChatState, reduceChat, type ChatState } from "../src/renderer/even
 import { formatDuration, formatTokens } from "../src/renderer/format.js";
 import { ToolCard } from "../src/renderer/ToolCard.js";
 
-function event(seq: number, ts: number, type: AgentEvent["type"], payload: unknown): AgentEvent {
+function event(
+  seq: number,
+  ts: number,
+  type: AgentEvent["type"],
+  payload: unknown,
+  turnId: string | null = null,
+): AgentEvent {
   return {
     v: 1,
     id: `e-${seq}`,
@@ -16,7 +22,7 @@ function event(seq: number, ts: number, type: AgentEvent["type"], payload: unkno
     sessionId: "s1",
     agentId: "a1",
     parentAgentId: null,
-    turnId: null,
+    turnId,
     type,
     payload,
     provenance: { engine: "native", engineName: "test", adapterVersion: "1" },
@@ -84,6 +90,26 @@ describe("reduceChat projections", () => {
     expect(state.lastTurn).toEqual({ status: "failed", ms: 2_000 });
     expect(state.error).toBe("engine died");
     expect(state.turnStartedAt).toBeUndefined();
+  });
+
+  it("remembers the turn each message belongs to", () => {
+    const state = [
+      event(1, 1_000, "message.delta", { messageId: "u-1", role: "user", block: { type: "text", text: "go" } }, "t-1"),
+    ].reduce(reduceChat, emptyChatState());
+    expect(state.messages[0]?.turnId).toBe("t-1");
+    expect(state.messages[0]?.seq).toBe(1);
+  });
+
+  it("keeps a rewind marker with its counts", () => {
+    const state = [
+      event(1, 1_000, "session.rewound", {
+        cutSeq: 1, checkpointId: "c-1", promptSeq: 1, restored: 7, deleted: 1, removed: 2,
+        failed: 0, notCaptured: 3, engine: "acp", engineNotRewound: true,
+      }),
+    ].reduce(reduceChat, emptyChatState());
+    expect(state.rewinds).toEqual([
+      { seq: 1, cutSeq: 1, promptSeq: 1, restored: 7, deleted: 1, removed: 2, failed: 0, notCaptured: 3, engineNotRewound: true },
+    ]);
   });
 });
 
