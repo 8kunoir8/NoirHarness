@@ -358,6 +358,21 @@ describe("skill enabled state and materialization", () => {
     expect(readdirSync(engine).filter((name) => name.startsWith(".tmp-") || name.startsWith(".old-"))).toEqual([]);
   });
 
+  it("leaves an unchanged skill untouched on the next materialize", async () => {
+    const { service: s } = service();
+    const project = root();
+    skill(projectSkills(project), "p", "first");
+    await s.list("ws-1", project);
+    await s.materialize("ws-1", project);
+    const written = join(project, ".noir", "skills-engine", "p", "SKILL.md");
+    // A distinctive body the copy would overwrite; if the file survives with this text, no copy ran.
+    writeFileSync(written, "---\nname: p\ndescription: first\n---\nhand edit\n");
+    await s.materialize("ws-1", project);
+    expect(readFileSync(written, "utf8")).toContain("hand edit");
+    // The manifest must still describe the skill, or the next pass would delete its directory.
+    expect((await s.manifestFor(project)).has("p")).toBe(true);
+  });
+
   it("refuses to materialize through a symlinked engine root", async (context) => {
     const { service: s } = service();
     const project = root();

@@ -525,8 +525,18 @@ export class SkillService {
     // Read before writing: this is the only record of which directories this engine owns.
     const previous = await this.manifestFor(root);
     for (const skill of winners) {
-      const temp = join(target, `.tmp-${randomUUID()}`);
       const destination = join(target, skill.name);
+      // The manifest hash is the skill's content hash, so an unchanged skill is already on disk
+      // exactly as this pass would write it. Re-copying it is what makes an install of one skill
+      // rewrite every other one: with 432 skills a warm materialize measured 6.1 s against 6.0 s
+      // cold, and it runs on every engine start.
+      const prior = previous.get(skill.name);
+      const current = prior !== undefined && prior.hash === skill.hash ? await lstatOrUndefined(destination) : undefined;
+      if (current?.isDirectory() === true) {
+        manifest.skills.push({ name: skill.name, scope: skill.scope, hash: skill.hash, description: skill.description });
+        continue;
+      }
+      const temp = join(target, `.tmp-${randomUUID()}`);
       const old = join(target, `.old-${randomUUID()}`);
       let movedOld = false;
       try {
