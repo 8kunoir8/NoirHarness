@@ -83,6 +83,7 @@ const READ_KEY = "noir.read.sessions";
  */
 const FILE_EVENTS: Readonly<Partial<Record<AgentEvent["type"], true>>> = {
   "file.changed": true,
+  "session.rewound": true,
   "tool.completed": true,
   "tool.failed": true,
   "turn.completed": true,
