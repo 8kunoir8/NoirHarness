@@ -320,6 +320,8 @@ export class EngineManager {
   private readonly states = new Map<string, SessionState>();
   private readonly approvals = new Map<string, PendingApproval>();
   private readonly closing = new Set<string>();
+  /** Workspaces whose work tree and log are being rewritten; no turn may start in one. */
+  private readonly rewinding = new Set<string>();
   private shuttingDown = false;
 
   constructor(
@@ -353,6 +355,9 @@ export class EngineManager {
     if (this.shuttingDown) throw new RpcFault(ErrorCodes.conflict, "Kernel is shutting down");
     if (this.closing.has(params.sessionId)) throw new RpcFault(ErrorCodes.conflict, "Session is closing");
     const row = this.loadSession(params.sessionId);
+    // The RPC handler and the scheduler both arrive here. A restore rewrites the shared work tree
+    // and the log, and this runs before the fan-out below can append a user message or a queue row.
+    if (this.rewinding.has(row.workspace_id)) throw new RpcFault(ErrorCodes.conflict, "A rewind is running in this workspace");
     if (row.status === "closed") throw new RpcFault(ErrorCodes.conflict, "Session is closed");
 
     const fresh = !this.states.has(params.sessionId);
@@ -524,8 +529,27 @@ export class EngineManager {
     this.reconcile({ sessionId: row.id, agentId: row.agent_id, engineKind: row.engine });
   }
 
-  /** True when any session in the workspace is mid-turn; a restore must not race it. */
+  /** True when any session in the workspace is mid-turn, or a restore is rewriting the workspace. */
   busyWorkspace(workspaceId: string): boolean {
+    return this.rewinding.has(workspaceId) || this.turnIn(workspaceId);
+  }
+
+  /** Held across the whole restore, so no turn starts while the shared work tree is rewritten. */
+  beginRewind(workspaceId: string): void {
+    if (this.rewinding.has(workspaceId)) {
+      throw new RpcFault(ErrorCodes.conflict, "A rewind is already running in this workspace");
+    }
+    // Synchronous with the reservation below: a turn either started before this scan (and is seen)
+    // or is refused by `prompt` after it, so no turn is mid-flight while the work tree is rewritten.
+    if (this.turnIn(workspaceId)) throw new RpcFault(ErrorCodes.conflict, "A turn is running in this workspace");
+    this.rewinding.add(workspaceId);
+  }
+
+  endRewind(workspaceId: string): void {
+    this.rewinding.delete(workspaceId);
+  }
+
+  private turnIn(workspaceId: string): boolean {
     for (const state of this.states.values()) {
       if (state.workspaceId === workspaceId && state.turn !== undefined) return true;
     }

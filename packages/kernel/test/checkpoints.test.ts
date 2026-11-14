@@ -55,6 +55,12 @@ function rig(): Rig {
   };
 }
 
+/** The two steps the RPC handler runs; these tests care about the pair, not the gap between them. */
+async function restore(r: Rig, checkpointId: string) {
+  const prepared = await r.checkpoints.prepareRestore(r.sessionId, checkpointId);
+  return r.checkpoints.applyRestore(r.sessionId, prepared);
+}
+
 describe("checkpoint capture", () => {
   it("writes a tree that holds the work tree's files", async () => {
     const r = rig();
@@ -175,7 +181,7 @@ describe("checkpoint plan and restore", () => {
     const plan = await r.checkpoints.plan(r.sessionId, row.id);
     expect(plan).toMatchObject({ restored: 1, deleted: 1, removed: 1, failed: [] });
 
-    const result = await r.checkpoints.restore(r.sessionId, row.id);
+    const result = await restore(r, row.id);
     expect(result).toMatchObject({ ok: true, restored: 1, deleted: 1, removed: 1, failed: [] });
     expect(readFileSync(join(r.root, "keep.txt"), "utf8")).toBe("original\n");
     expect(readFileSync(join(r.root, "gone.txt"), "utf8")).toBe("delete me\n");
@@ -187,7 +193,7 @@ describe("checkpoint plan and restore", () => {
     writeFileSync(join(r.root, "win.txt"), "a\r\nb\r\n");
     const row = await r.capture("t-1", 1);
     writeFileSync(join(r.root, "win.txt"), "rewritten\n");
-    await r.checkpoints.restore(r.sessionId, row.id);
+    await restore(r, row.id);
     expect(readFileSync(join(r.root, "win.txt"), "utf8")).toBe("a\r\nb\r\n");
   });
 
@@ -199,7 +205,7 @@ describe("checkpoint plan and restore", () => {
     const row = await r.capture("t-1", 1);
     writeFileSync(join(r.root, "a.txt"), "two\n");
     writeFileSync(join(r.root, "node_modules", "pkg", "later.js"), "later\n");
-    await r.checkpoints.restore(r.sessionId, row.id);
+    await restore(r, row.id);
     expect(readFileSync(join(r.root, "node_modules", "pkg", "index.js"), "utf8")).toBe("module\n");
     expect(readFileSync(join(r.root, "node_modules", "pkg", "later.js"), "utf8")).toBe("later\n");
   });
@@ -219,7 +225,7 @@ describe("checkpoint plan and restore", () => {
       return totals?.n ?? 0;
     };
     const before = count();
-    const result = await r.checkpoints.restore(r.sessionId, row.id);
+    const result = await restore(r, row.id);
     expect(count()).toBe(before + 1);
 
     const marker = r.events.at(r.sessionId, result.eventSeq);
@@ -246,7 +252,7 @@ describe("checkpoint plan and restore", () => {
       provenance: { engine: "native", engineName: "native", adapterVersion: "1" },
     });
     writeFileSync(join(r.root, "a.txt"), "two\n");
-    await r.checkpoints.restore(r.sessionId, row.id);
+    await restore(r, row.id);
 
     const safety = r.checkpoints.entries(r.sessionId).find((entry) => entry.label === "pre-restore");
     expect(safety).toBeDefined();
@@ -256,7 +262,7 @@ describe("checkpoint plan and restore", () => {
     expect(r.events.visible(r.sessionId).filter((event) => event.type === "message.delta")).toHaveLength(0);
 
     writeFileSync(join(r.root, "a.txt"), "three\n");
-    await r.checkpoints.restore(r.sessionId, safety!.id);
+    await restore(r, safety!.id);
     expect(readFileSync(join(r.root, "a.txt"), "utf8")).toBe("two\n");
 
     // The conversation came back with the files: the undone marker is hidden, only the undo's own
@@ -276,8 +282,29 @@ describe("checkpoint plan and restore", () => {
     writeFileSync(join(r.root, "a.txt"), "two\n");
     // LFS attributes appear after the checkpoint, so the pre-restore capture is the one refused.
     writeFileSync(join(r.root, ".gitattributes"), "*.bin filter=lfs\n");
-    await expect(r.checkpoints.restore(r.sessionId, row.id)).rejects.toThrow(/could not be captured/);
+    await expect(r.checkpoints.prepareRestore(r.sessionId, row.id)).rejects.toThrow(/could not be captured/);
     expect(readFileSync(join(r.root, "a.txt"), "utf8")).toBe("two\n");
+  });
+
+  it("refuses a locked store before any of the restore's writes", async () => {
+    const r = rig();
+    writeFileSync(join(r.root, "a.txt"), "one\n");
+    const row = await r.capture("t-1", 1);
+    writeFileSync(join(r.root, "a.txt"), "two\n");
+    writeFileSync(join(r.root, "new.txt"), "created after\n");
+    // Another git holds the store's index: the safety capture cannot record what is about to be lost.
+    writeFileSync(join(r.dataDir, "checkpoints", r.workspaceId, ".git", "index.lock"), "");
+    const before = r.checkpoints.entries(r.sessionId).map((entry) => entry.id);
+
+    await expect(r.checkpoints.prepareRestore(r.sessionId, row.id)).rejects.toThrow(/could not be captured/);
+
+    // Refused before the queue is anywhere near it: no byte of the work tree moved.
+    expect(readFileSync(join(r.root, "a.txt"), "utf8")).toBe("two\n");
+    expect(readFileSync(join(r.root, "new.txt"), "utf8")).toBe("created after\n");
+    const added = r.checkpoints.entries(r.sessionId).filter((entry) => !before.includes(entry.id));
+    expect(added).toHaveLength(1);
+    expect(added[0]).toMatchObject({ label: "pre-restore" });
+    expect(added[0]?.error).not.toBeNull();
   });
 
   it("refuses a checkpoint that never captured a tree", async () => {
@@ -285,6 +312,6 @@ describe("checkpoint plan and restore", () => {
     writeFileSync(join(r.root, ".gitattributes"), "*.bin filter=lfs\n");
     const row = await r.capture("t-1", 1);
     await expect(r.checkpoints.plan(r.sessionId, row.id)).rejects.toThrow(/LFS/);
-    await expect(r.checkpoints.restore(r.sessionId, row.id)).rejects.toThrow(/LFS/);
+    await expect(r.checkpoints.prepareRestore(r.sessionId, row.id)).rejects.toThrow(/LFS/);
   });
 });

@@ -1391,6 +1391,9 @@ describe("EngineManager over the fake ACP server", () => {
       });
       const requested = await waitForEvent(rig.events, rig.session.id, (event) => event.type === "permission.requested");
       expect(rig.manager.busyWorkspace(rig.workspaceId)).toBe(true);
+      // The reservation re-scans synchronously, so a turn that started while the handler was
+      // awaiting availability is caught rather than raced.
+      expect(() => rig.manager.beginRewind(rig.workspaceId)).toThrow(/A turn is running in this workspace/);
 
       await rig.manager.respond(eventPayload(requested, "permission.requested").approvalId, "reject");
       await waitForEvent(rig.events, rig.session.id, (event) => event.type === "turn.completed" || event.type === "turn.failed");
@@ -1435,6 +1438,24 @@ describe("EngineManager over the fake ACP server", () => {
     },
     TEST_TIMEOUT_MS,
   );
+});
+
+describe("EngineManager rewind guard", () => {
+  it("holds the workspace still while a rewind runs", async () => {
+    const { manager, session, events, workspaceId } = setup();
+    manager.beginRewind(workspaceId);
+    expect(manager.busyWorkspace(workspaceId)).toBe(true);
+
+    await expect(
+      manager.prompt({ sessionId: session.id, requestId: "held-1", content: [{ type: "text", text: "held" }] }),
+    ).rejects.toThrow(/A rewind is running in this workspace/);
+    // The refused prompt wrote nothing: no user message, no queue row.
+    expect(events.list(session.id).filter((event) => event.type === "message.delta")).toHaveLength(0);
+
+    expect(() => manager.beginRewind(workspaceId)).toThrow(/A rewind is already running in this workspace/);
+    manager.endRewind(workspaceId);
+    expect(manager.busyWorkspace(workspaceId)).toBe(false);
+  });
 });
 
 describe("EngineManager with the native engine", () => {

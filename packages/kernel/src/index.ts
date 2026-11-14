@@ -584,18 +584,25 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; o
           if (engineManager.busyWorkspace(view.workspaceId)) {
             throw new RpcFault(ErrorCodes.conflict, "A turn is running in this workspace");
           }
-          // Validate before the engine is touched: a checkpoint with no tree, an LFS work tree or a
-          // workspace gone from disk must fail without dropping the queue. `plan` reads only the
-          // checkpoint's row, so the workspace-level refusals come from `availability`.
+          // A checkpoint with no tree, an LFS work tree or a workspace gone from disk must fail
+          // without dropping the queue; `plan` reads only the checkpoint's row, so the
+          // workspace-level refusals come from `availability`.
           const availability = await checkpoints.availability(view.workspaceId);
           if (!availability.available) {
             throw new RpcFault(ErrorCodes.conflict, availability.reason ?? "Checkpoints are not available");
           }
-          await checkpoints.plan(sessionId, checkpointId);
-          // Before the marker exists: a dropped queued turn's `turn.failed` must land inside the
-          // range the restore is about to abandon, or the retry replay shows a turn nobody asked for.
-          await engineManager.afterRewind(sessionId);
-          return checkpoints.restore(sessionId, checkpointId);
+          engineManager.beginRewind(view.workspaceId);
+          try {
+            // Every refusal happens here, before the queue is touched: a rewind that cannot be undone
+            // must leave the workspace and the log exactly as they were.
+            const prepared = await checkpoints.prepareRestore(sessionId, checkpointId);
+            // Before the marker exists: a dropped queued turn's `turn.failed` must land inside the
+            // range the restore is about to abandon, or the retry replay shows a turn nobody asked for.
+            await engineManager.afterRewind(sessionId);
+            return await checkpoints.applyRestore(sessionId, prepared);
+          } finally {
+            engineManager.endRewind(view.workspaceId);
+          }
         },
         [Methods.sessionEvent]: async (params) => {
           const { sessionId, seq } = SessionEventParams.parse(params);

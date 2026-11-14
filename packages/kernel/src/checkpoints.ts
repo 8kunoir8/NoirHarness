@@ -48,6 +48,15 @@ export interface CheckpointRow extends CheckpointView {
   commitSha: string | null;
 }
 
+/** Everything a restore can refuse on, resolved before the caller drops anything. */
+export interface PreparedRestore {
+  row: CheckpointRow;
+  workspaceRoot: string;
+  plan: CheckpointPlanResult;
+  paths: { modified: string[]; deleted: string[]; created: string[] };
+  safetyId: string;
+}
+
 interface Row {
   id: string; workspace_id: string; session_id: string; turn_id: string | null; seq: number;
   tree_sha: string | null; commit_sha: string | null; label: string; created_at: number;
@@ -72,7 +81,8 @@ export class CheckpointService {
     const ranges = this.events.rewoundRanges(sessionId);
     return this.rows(sessionId)
       // A checkpoint at the cut belongs to the turn the rewind abandoned. A pre-restore checkpoint
-      // sits at the marker's own seq, which is `to`, and stays listed.
+      // is placed at the marker's own seq (which is `to`) by `applyRestore`, not at the seq its
+      // capture took, so it is never inside the range it created and stays listed.
       .filter((row) => !ranges.some((range) => row.seq >= range.from && row.seq < range.to))
       .map((row) => ({
         id: row.id,
@@ -197,15 +207,19 @@ export class CheckpointService {
     return this.counts(row);
   }
 
-  async restore(sessionId: string, checkpointId: string): Promise<CheckpointRestoreResult> {
+  /**
+   * Everything a restore can refuse on: the row, the safety capture that must succeed before the
+   * work tree is touched, the counts, and `read-tree`. It reads the work tree and rewrites only the
+   * store's index, so it belongs before the caller drops the queue. `capture` re-reads the work tree
+   * with `add -A` itself, so a separate `refresh` here would be the same scan twice.
+   */
+  async prepareRestore(sessionId: string, checkpointId: string): Promise<PreparedRestore> {
     const row = this.row(sessionId, checkpointId);
     const workspaceRoot: string | null = row.workspaceRoot;
     if (workspaceRoot === null || workspaceRoot === undefined) throw new RpcFault(ErrorCodes.notFound, "Workspace missing");
     if (row.treeSha === null) throw new RpcFault(ErrorCodes.notFound, row.error ?? "Checkpoint has no tree");
-    await this.refresh(row);
     // What the user is about to lose becomes a checkpoint too, so a mistaken restore is one more
-    // rewind away instead of a lost afternoon. Its seq is the one the marker is about to take, so
-    // the range this rewind abandons ends exactly where the safety checkpoint starts.
+    // rewind away instead of a lost afternoon.
     const safety = await this.capture({
       sessionId, workspaceId: row.workspaceId, workspaceRoot, turnId: null, seq: this.events.nextSeq(sessionId), label: "pre-restore",
     });
@@ -216,11 +230,22 @@ export class CheckpointService {
     }
     const plan = await this.counts(row);
     const paths = await this.changedPaths(row);
+    // The index becomes the snapshot's tree; a locked store fails here, before any work-tree byte
+    // moves and before anything is dropped.
+    await this.git(row.workspaceId, ["read-tree", row.treeSha]);
+    return { row, workspaceRoot, plan, paths, safetyId: safety.id };
+  }
+
+  /**
+   * The writes and the marker. Nothing here refuses except per-path failures, which are collected
+   * and reported; the caller has already dropped the queue, so the marker must land.
+   */
+  async applyRestore(sessionId: string, prepared: PreparedRestore): Promise<CheckpointRestoreResult> {
+    const { row, workspaceRoot, plan, paths, safetyId } = prepared;
     const failed: string[] = [];
 
-    // The index becomes the snapshot's tree; `checkout-index` then writes those bytes per path, so
-    // one locked file is reported instead of aborting the whole restore.
-    await this.git(row.workspaceId, ["read-tree", row.treeSha]);
+    // `checkout-index` writes those bytes per path, so one locked file is reported instead of
+    // aborting the whole restore.
     for (const path of [...paths.modified, ...paths.deleted]) {
       try {
         await this.git(row.workspaceId, ["checkout-index", "--force", "-z", "--stdin"], [path]);
@@ -266,6 +291,10 @@ export class CheckpointService {
       },
       provenance: provenanceFor(session.engine),
     });
+    // The safety row belongs at the marker, not at the seq its capture took. The queue's
+    // `turn.failed` events now sit between the two, and `entries()` hides a checkpoint inside an
+    // abandoned range; placing the row at `to` keeps the undo one rewind away and listed.
+    this.db.prepare("UPDATE checkpoints SET seq = ? WHERE id = ?").run(event.seq, safetyId);
     return { ...plan, failed, ok: true, eventSeq: event.seq };
   }
 

@@ -556,7 +556,7 @@ describe("AgentService.roster", () => {
     try {
       services.agents.roster();
       const baseline = calls;
-      expect(baseline).toBe(5); // session list (3) + agent list (1) + one batched event query
+      expect(baseline).toBe(6); // session list (4, one added by the rewound-range filter) + agent list (1) + one batched event query
 
       for (let index = 0; index < 8; index += 1) {
         const extra = services.agents.create(agentInput({ name: `Extra ${index}` }));
