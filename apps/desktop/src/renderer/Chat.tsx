@@ -79,9 +79,13 @@ export function Chat({
 
   const error = actionError ?? state.error;
   const canInterrupt = SESSION_STATUS_FACTS[state.status].interruptible;
-  // "Streaming" here means a turn is in flight, which is exactly `live`: an approval wait keeps the
-  // composer disabled, because the turn cannot take text until the approval is answered.
-  const streaming = SESSION_STATUS_FACTS[state.status].live;
+  /**
+   * "A turn is in flight" is `activeTurnId`, not `live`: `starting` is live too, and a brand-new
+   * session is `starting` until its first prompt lands, so a status fact would tell the composer a
+   * turn was already streaming and swallow the very first Enter. An approval wait is still a turn in
+   * flight, so the composer keeps its streaming shape; the card itself owns Esc.
+   */
+  const streaming = state.activeTurnId !== undefined;
   const queued = queuedTurnId !== undefined;
 
   async function submit(): Promise<void> {

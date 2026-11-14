@@ -196,6 +196,18 @@ function ChatHarness({ request, onPreview }: { request: RequestFn; onPreview?: (
   const events = useSessionEvents(session.id, request);
   return <Chat session={session} models={[]} request={request} events={events} onPreview={onPreview} />;
 }
+
+/**
+ * A freshly created session, which the kernel reports as `starting` until the first turn runs. That
+ * status counts as live, so it is the case where a wrong "is a turn streaming?" predicate swallows
+ * the first Enter.
+ */
+function StartingChatHarness({ request }: { request: RequestFn }) {
+  const starting: SessionView = { ...session, status: "starting" };
+  const events = useSessionEvents(starting.id, request);
+  return <Chat session={starting} models={[]} request={request} events={events} />;
+}
+
 describe("Chat", () => {
   it("renders streamed text, tool cards and a permission dialog", async () => {
     const request = vi.fn(async (method: string): Promise<unknown> => {
@@ -294,6 +306,21 @@ describe("Chat", () => {
     expect(sent[0]?.content).toEqual([{ type: "text", text: "hello" }]);
     expect(sent[1]?.content).toEqual([{ type: "text", text: "a\nb" }]);
     expect(sent[0]?.requestId).not.toBe(sent[1]?.requestId);
+  });
+
+  it("sends the first prompt of a starting session on Enter", async () => {
+    const request = vi.fn(async (method: string): Promise<unknown> => {
+      if (method === "session.subscribe") return { events: [], lastSeq: 0 };
+      if (method === "session.prompt") return { turnId: "t-1", queued: false };
+      throw new Error(method);
+    });
+
+    render(<StartingChatHarness request={request as unknown as RequestFn} />);
+    await userEvent.type(screen.getByLabelText("Prompt"), "first{Enter}");
+
+    await waitFor(() => {
+      expect(request.mock.calls.filter(([method]) => method === "session.prompt")).toHaveLength(1);
+    });
   });
 
   it("shows loaded skills above the transcript", async () => {
