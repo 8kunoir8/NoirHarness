@@ -13,6 +13,9 @@ import {
   AnnotationListParams,
   ApprovalRespondParams,
   ArtifactReadParams,
+  CheckpointListParams,
+  CheckpointPlanParams,
+  CheckpointRestoreParams,
   ErrorCodes,
   FsFilesParams,
   FsListParams,
@@ -42,6 +45,7 @@ import {
   ScheduleUpdateParams,
   SessionCloseParams,
   SessionDeleteParams,
+  SessionEventParams,
   SessionForkParams,
   SessionListParams,
   SessionCreateParams,
@@ -311,7 +315,12 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; o
       };
 
       const handlers: Record<string, Handler> = {
-        [Methods.systemHealth]: async () => ({ status: "ok", pid: process.pid, engineDir: profileAgentDir(dir) }),
+        [Methods.systemHealth]: async () => ({
+          status: "ok",
+          pid: process.pid,
+          engineDir: profileAgentDir(dir),
+          ...(await checkpoints.health()),
+        }),
         [Methods.projectAdd]: async (params) => projects.add(ProjectAddParams.parse(params).path),
         [Methods.projectList]: async () => ({ projects: projects.list() }),
         [Methods.workspaceCreate]: async (params) => workspaces.createLocal(WorkspaceCreateParams.parse(params).projectId),
@@ -558,6 +567,42 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; o
           // the abandoned range disappear from the screen.
           const replay = events.visible(sessionId, sinceSeq);
           return { events: replay, lastSeq: replay.at(-1)?.seq ?? sinceSeq };
+        },
+        [Methods.checkpointList]: async (params) => {
+          const { sessionId } = CheckpointListParams.parse(params);
+          const view = sessions.view(sessionId);
+          return { checkpoints: checkpoints.entries(sessionId), ...(await checkpoints.availability(view.workspaceId)) };
+        },
+        [Methods.checkpointPlan]: async (params) => {
+          const { sessionId, checkpointId } = CheckpointPlanParams.parse(params);
+          sessions.view(sessionId);
+          return checkpoints.plan(sessionId, checkpointId);
+        },
+        [Methods.checkpointRestore]: async (params) => {
+          const { sessionId, checkpointId } = CheckpointRestoreParams.parse(params);
+          const view = sessions.view(sessionId);
+          if (engineManager.busyWorkspace(view.workspaceId)) {
+            throw new RpcFault(ErrorCodes.conflict, "A turn is running in this workspace");
+          }
+          // Validate before the engine is touched: a checkpoint with no tree, an LFS work tree or a
+          // workspace gone from disk must fail without dropping the queue. `plan` reads only the
+          // checkpoint's row, so the workspace-level refusals come from `availability`.
+          const availability = await checkpoints.availability(view.workspaceId);
+          if (!availability.available) {
+            throw new RpcFault(ErrorCodes.conflict, availability.reason ?? "Checkpoints are not available");
+          }
+          await checkpoints.plan(sessionId, checkpointId);
+          // Before the marker exists: a dropped queued turn's `turn.failed` must land inside the
+          // range the restore is about to abandon, or the retry replay shows a turn nobody asked for.
+          await engineManager.afterRewind(sessionId);
+          return checkpoints.restore(sessionId, checkpointId);
+        },
+        [Methods.sessionEvent]: async (params) => {
+          const { sessionId, seq } = SessionEventParams.parse(params);
+          sessions.view(sessionId);
+          const event = events.at(sessionId, seq);
+          if (event === undefined) throw new RpcFault(ErrorCodes.notFound, "Event not found");
+          return { event };
         },
       };
 
