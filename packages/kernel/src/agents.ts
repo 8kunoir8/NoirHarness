@@ -5,6 +5,7 @@ import {
   PayloadSchemas,
   PermissionCategory,
   RpcFault,
+  SESSION_STATUS_FACTS,
   type AgentCreateParams,
   type AgentRosterEntry,
   type AgentUpdateParams,
@@ -242,7 +243,7 @@ export class AgentService {
         role: agent.role,
         status: mine.some((session) => session.pendingApproval)
           ? "needs_you"
-          : mine.some((session) => session.status === "running" || session.status === "starting")
+          : mine.some((session) => SESSION_STATUS_FACTS[session.status].working)
             ? "working"
             : mine.some((session) => session.status === "error")
               ? "error"

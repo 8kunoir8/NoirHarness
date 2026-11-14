@@ -2,12 +2,14 @@ import type Database from "better-sqlite3";
 import { v7 as uuidv7 } from "uuid";
 import {
   ErrorCodes,
+  LIVE_STATUSES,
   RpcFault,
   type ScheduleCreateParams,
   type ScheduleRunStatus,
   type ScheduleRunView,
   type ScheduleUpdateParams,
   type ScheduleView,
+  type SessionStatus,
 } from "@noir/protocol";
 import { anchoredOn, nextAfter, occurrencesBetween } from "./cadence.js";
 
@@ -50,9 +52,6 @@ interface RunRow {
 const COLUMNS =
   "id, workspace_id, agent_id, name, prompt, interval_minutes, anchor_minutes, enabled, next_run_at, last_run_at, created_at";
 const RUN_COLUMNS = "id, schedule_id, status, due_at, started_at, session_id, reason";
-
-/** A session in one of these states still owns its schedule: a fire now would double up. */
-const ACTIVE_SESSION: Record<string, true> = { starting: true, running: true, waiting: true };
 
 export class ScheduleService {
   constructor(private readonly db: Database.Database) {}
@@ -198,8 +197,8 @@ export class ScheduleService {
          FROM schedule_runs r JOIN sessions s ON s.id = r.session_id
          WHERE r.schedule_id = ? AND r.status = 'fired' ORDER BY r.due_at DESC LIMIT 1`,
       )
-      .get(scheduleId) as { session_status: string } | undefined;
-    return row !== undefined && ACTIVE_SESSION[row.session_status] === true;
+      .get(scheduleId) as { session_status: SessionStatus } | undefined;
+    return row !== undefined && LIVE_STATUSES.includes(row.session_status);
   }
 
   /**

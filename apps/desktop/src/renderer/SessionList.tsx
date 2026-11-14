@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { ModelView, SessionView } from "@noir/protocol";
+import { SESSION_STATUS_FACTS, type ModelView, type SessionView } from "@noir/protocol";
 
 export type SessionFilter = "all" | "needs" | "working" | "unread" | "done";
 
@@ -21,11 +21,13 @@ export function matchesFilter(session: SessionView, filter: SessionFilter, read:
     case "needs":
       return session.pendingApproval || session.status === "error";
     case "working":
-      return session.status === "starting" || session.status === "running" || (session.status === "waiting" && !session.pendingApproval);
+      // The kernel's own `working` filter: live, and not waiting on the user. This copy exists only
+      // because `unread` cannot be answered server-side; the rest must not answer differently.
+      return SESSION_STATUS_FACTS[session.status].live && !session.pendingApproval;
     case "unread":
-      return session.status !== "closed" && session.lastEventSeq > (read[session.id] ?? 0);
+      return !SESSION_STATUS_FACTS[session.status].terminal && session.lastEventSeq > (read[session.id] ?? 0);
     case "done":
-      return session.status === "closed";
+      return SESSION_STATUS_FACTS[session.status].terminal;
   }
 }
 

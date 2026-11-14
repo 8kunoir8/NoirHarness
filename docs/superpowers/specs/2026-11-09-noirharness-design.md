@@ -163,6 +163,13 @@ created → starting → idle ⇄ running → waiting(permission|input) → runn
 - `session.prompt` takes a client `requestId`; duplicate submissions are idempotent.
 - Forking copies an event prefix into a new session; schema supports it, UI is deferred.
 
+The status enum is not interpreted ad hoc: `packages/protocol/src/lifecycle.ts` owns the table of
+what each status *means* — `live` (killing the kernel discards work), `working` (a turn is
+executing), `interruptible`, `terminal` — plus the legal transitions and `canTransition`. An
+approval wait is live and interruptible but not working, which is why "Working" excludes it in both
+the kernel's `session.list` filter and the client's copy. Adding a status to the enum fails every
+consumer that forgot to answer for it.
+
 ## 7. Engines and providers
 
 ### 7.1 Engine interface

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   PayloadSchemas,
+  SESSION_STATUS_FACTS,
   type AgentEvent,
   type CheckpointPlanResult,
   type ModelView,
@@ -77,8 +78,10 @@ export function Chat({
   }, [queuedTurnId, state.activeTurnId, state.status]);
 
   const error = actionError ?? state.error;
-  const canInterrupt = state.status === "running" || state.status === "waiting";
-  const streaming = state.status === "starting" || canInterrupt;
+  const canInterrupt = SESSION_STATUS_FACTS[state.status].interruptible;
+  // "Streaming" here means a turn is in flight, which is exactly `live`: an approval wait keeps the
+  // composer disabled, because the turn cannot take text until the approval is answered.
+  const streaming = SESSION_STATUS_FACTS[state.status].live;
   const queued = queuedTurnId !== undefined;
 
   async function submit(): Promise<void> {

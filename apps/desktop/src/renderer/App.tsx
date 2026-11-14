@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ModelListResult,
   ScheduleListResult,
+  SESSION_STATUS_FACTS,
   SessionListResult,
   SessionView,
   SystemHealthResult,
@@ -487,7 +488,11 @@ export function App() {
 
   const workspaceSessions = sessions.filter((session) => workspaceId === "" || session.workspaceId === workspaceId);
   const activeSession = activeTab?.kind === "chat" ? sessions.find((session) => session.id === activeTab.sessionId) : undefined;
-  const running = workspaceSessions.filter((session) => session.status === "running" || session.status === "starting").length;
+  // Same predicate as the kernel's `working` filter and the Working tab: live, and not waiting on
+  // the user. A `waiting` session with no approval left is still a turn in flight.
+  const running = workspaceSessions.filter(
+    (session) => SESSION_STATUS_FACTS[session.status].live && !session.pendingApproval,
+  ).length;
   const pendingApprovals = workspaceSessions.filter((session) => session.pendingApproval).length;
 
   const unread = countUnread(workspaceSessions, read);
@@ -963,7 +968,7 @@ export function App() {
       label: "Interrupt the running turn",
       keywords: "stop cancel",
       shortcut: { key: ".", mod: true },
-      enabled: activeChatId !== undefined && (events.state.status === "running" || events.state.status === "waiting"),
+      enabled: activeChatId !== undefined && SESSION_STATUS_FACTS[events.state.status].interruptible,
       allowInInput: true,
       run: () => {
         if (activeChatId === undefined) return;

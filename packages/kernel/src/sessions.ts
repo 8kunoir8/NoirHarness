@@ -1,21 +1,12 @@
 import type Database from "better-sqlite3";
 import { v7 as uuidv7 } from "uuid";
-import { ErrorCodes, RpcFault, type EngineKind, type PermissionPolicy, type SessionStatus, type SessionView } from "@noir/protocol";
+import { canTransition, ErrorCodes, LIVE_STATUSES, statusSqlList, RpcFault, type EngineKind, type PermissionPolicy, type SessionStatus, type SessionView } from "@noir/protocol";
 import type { EventStore } from "./eventStore.js";
 import type { ModelService } from "./models.js";
 import { parsePermissionPolicy } from "./policy.js";
 
-const TRANSITIONS: Record<SessionStatus, SessionStatus[]> = {
-  starting: ["idle", "running", "error", "closed"],
-  idle: ["running", "closed", "error"],
-  running: ["waiting", "idle", "error", "closed"],
-  waiting: ["running", "idle", "error", "closed"],
-  error: ["idle", "running", "closed"],
-  closed: [],
-};
-
-export function assertTransition(from: SessionStatus, to: SessionStatus): void {
-  if (!TRANSITIONS[from].includes(to)) throw new RpcFault(ErrorCodes.conflict, `Invalid session transition ${from} -> ${to}`);
+function assertTransition(from: SessionStatus, to: SessionStatus): void {
+  if (!canTransition(from, to)) throw new RpcFault(ErrorCodes.conflict, `Invalid session transition ${from} -> ${to}`);
 }
 
 export interface SessionListOptions {
@@ -257,7 +248,9 @@ export class SessionService {
         where.push("status = 'closed'");
         break;
       case "working":
-        where.push("status IN ('starting','running','waiting')");
+        // "Working" for a filter is live-but-not-awaiting-you: an approval wait is live and must not
+        // hide under the Working tab, which has its own Needs-you tab.
+        where.push(`status IN (${statusSqlList(LIVE_STATUSES)})`);
         if (pendingIds.length > 0) {
           where.push(`id NOT IN (${placeholders})`);
           args.push(...pendingIds);

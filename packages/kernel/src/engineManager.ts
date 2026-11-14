@@ -15,8 +15,10 @@ import type {
 } from "@noir/engine-core";
 import {
   ErrorCodes,
+  LIVE_STATUSES,
   PayloadSchemas,
   RpcFault,
+  statusSqlList,
   type EngineKind,
   type AgentEvent,
   type McpServerView,
@@ -599,7 +601,7 @@ export class EngineManager {
     const rows = this.deps.db
       .prepare(
         `SELECT s.id, s.agent_id, s.engine FROM sessions s
-         WHERE s.status IN ('starting','running','waiting')
+         WHERE s.status IN (${statusSqlList(LIVE_STATUSES)})
            AND (s.status <> 'starting' OR EXISTS (SELECT 1 FROM turns t WHERE t.session_id = s.id))
          ORDER BY s.created_at ASC`,
       )
@@ -637,7 +639,9 @@ export class EngineManager {
     const row = this.deps.db.prepare("SELECT status FROM sessions WHERE id = ?").get(target.sessionId) as
       | { status: SessionStatus }
       | undefined;
-    if (row !== undefined && (row.status === "running" || row.status === "waiting")) {
+    // `starting` is left alone: `reconcileAll` resolves it after this returns, and a session that
+    // never accepted a turn was never live. Every other live state was a turn in flight.
+    if (row !== undefined && LIVE_STATUSES.includes(row.status) && row.status !== "starting") {
       this.setStatus(target.sessionId, "error", "kernel_restart");
     }
   }
