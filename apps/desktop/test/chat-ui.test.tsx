@@ -147,7 +147,7 @@ describe("reduceChat", () => {
     expect(state.skillsLoaded).toEqual([{ name: "demo", scope: "project", hash: "first" }]);
   });
 
-  it("ignores the persisted user prompt the sender already rendered", () => {
+  it("names the persisted user prompt with the echo's seq", () => {
     const optimistic = appendUserMessage(emptyChatState(), "hello", "req-1");
     const replayed = reduceChat(optimistic, makeEvent(1, "message.delta", {
       messageId: "req-1", role: "user", block: { type: "text", text: "hello" },
@@ -155,7 +155,13 @@ describe("reduceChat", () => {
     const completed = reduceChat(replayed, makeEvent(2, "message.completed", { messageId: "req-1", status: "done" }));
 
     expect(completed.messages).toHaveLength(1);
-    expect(completed.messages[0]).toEqual({ id: "req-1", role: "user", blocks: [{ kind: "text", text: "hello" }], status: "done" });
+    expect(completed.messages[0]).toEqual({
+      id: "req-1",
+      role: "user",
+      blocks: [{ kind: "text", text: "hello" }],
+      status: "done",
+      seq: 1,
+    });
     expect(completed.lastSeq).toBe(2);
   });
 
