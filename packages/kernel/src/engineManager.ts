@@ -378,10 +378,14 @@ export class EngineManager {
     if (existing !== undefined) return { turnId: existing.id, queued: existing.status === "queued" };
 
     const content = promptText(params.content);
-    const queued = this.deps.db
-      .prepare("SELECT COUNT(*) AS count FROM turns WHERE session_id = ?")
-      .get(params.sessionId) as { count: number };
-    const idx = queued.count + 1;
+    // `MAX(idx) + 1`, not `COUNT(*) + 1`: cancelling or dropping a queued turn deletes its row, so a
+    // count would hand the next prompt an ordinal an older turn already holds, and `reconcile`'s
+    // `ORDER BY idx` would then interleave two turns. The index is an ordinal, not a tally, so gaps
+    // left by a cancelled turn are correct.
+    const tail = this.deps.db
+      .prepare("SELECT COALESCE(MAX(idx), 0) AS idx FROM turns WHERE session_id = ?")
+      .get(params.sessionId) as { idx: number };
+    const idx = tail.idx + 1;
     const turnId = uuidv7();
     // Delivery is decided by the live turn, never by a persisted status a crashed kernel may have left behind.
     const immediate = state.turn === undefined;

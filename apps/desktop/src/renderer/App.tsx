@@ -488,11 +488,10 @@ export function App() {
 
   const workspaceSessions = sessions.filter((session) => workspaceId === "" || session.workspaceId === workspaceId);
   const activeSession = activeTab?.kind === "chat" ? sessions.find((session) => session.id === activeTab.sessionId) : undefined;
-  // Same predicate as the kernel's `working` filter and the Working tab: live, and not waiting on
-  // the user. A `waiting` session with no approval left is still a turn in flight.
-  const running = workspaceSessions.filter(
-    (session) => SESSION_STATUS_FACTS[session.status].live && !session.pendingApproval,
-  ).length;
+  // "Running" is the fact, not a status spelling: a turn is executing while the session is
+  // `starting` or `running`. An approval wait is live and is counted separately, as the status bar
+  // has always reported it — counting it here too would claim concurrency the app does not have.
+  const running = workspaceSessions.filter((session) => SESSION_STATUS_FACTS[session.status].working).length;
   const pendingApprovals = workspaceSessions.filter((session) => session.pendingApproval).length;
 
   const unread = countUnread(workspaceSessions, read);

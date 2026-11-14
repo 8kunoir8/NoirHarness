@@ -152,12 +152,17 @@ export class SessionService {
     }
   }
 
-  setStatus(sessionId: string, to: SessionStatus, opts?: { from?: SessionStatus; reason?: string }): void {
+  /**
+   * The only writer of session status. The transition table is the guard, and it is enforced here
+   * rather than at the call sites: a caller that skips a step gets a fault naming both ends instead
+   * of a session that quietly went from `starting` to `waiting`. There is no compare-and-set
+   * parameter — better-sqlite3 is synchronous, so the read below cannot interleave with another
+   * writer, and a caller-supplied `from` would only be a second, weaker copy of the same check.
+   */
+  setStatus(sessionId: string, to: SessionStatus, opts?: { reason?: string }): void {
     const row = this.db.prepare("SELECT status, agent_id, engine FROM sessions WHERE id = ?").get(sessionId) as { status: SessionStatus; agent_id: string; engine: EngineKind } | undefined;
     if (!row) throw new RpcFault(ErrorCodes.notFound, "Session not found");
-    const from = opts?.from ?? row.status;
-    if (from !== row.status) throw new RpcFault(ErrorCodes.conflict, `Session is ${row.status}, not ${from}`);
-    assertTransition(from, to);
+    assertTransition(row.status, to);
     if (to === "closed") {
       this.events.append({ sessionId, agentId: row.agent_id, type: "session.closed", payload: {}, provenance: { engine: row.engine, engineName: "none", adapterVersion: "0" } });
       return;

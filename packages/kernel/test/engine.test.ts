@@ -953,6 +953,41 @@ describe("EngineManager over the fake ACP server", () => {
   );
 
   it(
+    "numbers the next turn past the highest ordinal after a cancel, not by counting rows",
+    async () => {
+      const { db, events, manager, session } = setup();
+      const ordinals = (): number[] =>
+        (db.prepare("SELECT idx FROM turns WHERE session_id = ? ORDER BY idx ASC").all(session.id) as Array<{ idx: number }>).map(
+          (row) => row.idx,
+        );
+
+      await manager.prompt({ sessionId: session.id, requestId: "ordinal-1", content: [{ type: "text", text: "slow" }] });
+      await waitForEvent(
+        events,
+        session.id,
+        (event) => event.type === "message.delta" && eventPayload(event, "message.delta").role === "assistant",
+      );
+      const cancelled = await manager.prompt({ sessionId: session.id, requestId: "ordinal-2", content: [{ type: "text", text: "b" }] });
+      const kept = await manager.prompt({ sessionId: session.id, requestId: "ordinal-3", content: [{ type: "text", text: "c" }] });
+      expect([cancelled.queued, kept.queued]).toEqual([true, true]);
+      expect(ordinals()).toEqual([1, 2, 3]);
+
+      // The cancelled row is gone, so a COUNT would now hand the fourth turn the ordinal the third
+      // one holds — two queued rows sharing an ordinal, and `reconcile`'s ORDER BY idx breaks the tie
+      // arbitrarily.
+      await manager.cancelQueued({ sessionId: session.id, turnId: cancelled.turnId });
+      const fourth = await manager.prompt({ sessionId: session.id, requestId: "ordinal-4", content: [{ type: "text", text: "d" }] });
+      expect(fourth.queued).toBe(true);
+      expect(ordinals()).toEqual([1, 3, 4]);
+
+      await manager.interrupt(session.id);
+      await waitForEvent(events, session.id, (event) => event.type === "turn.completed" && event.turnId === kept.turnId);
+      await waitForEvent(events, session.id, (event) => event.type === "turn.completed" && event.turnId === fourth.turnId);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
     "fails the turn and the session when the engine dies mid-turn",
     async () => {
       const { db, events, manager, session } = setup();
