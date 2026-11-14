@@ -327,6 +327,19 @@ export function reduceChat(state: ChatState, event: AgentEvent): ChatState {
   }
 }
 
+/**
+ * The newest tool still running in this session, which is the chat's own description of the turn —
+ * "Run `pnpm test`", not "shell". The sidebar shows it while the chat is open; the roster carries
+ * the same call's kind, so the office can still say what the agent is doing with no title at all.
+ */
+export function runningToolTitle(state: ChatState): string | undefined {
+  for (let index = state.tools.length - 1; index >= 0; index -= 1) {
+    const tool = state.tools[index];
+    if (tool !== undefined && tool.status === "running" && tool.title.trim() !== "") return tool.title;
+  }
+  return undefined;
+}
+
 export function appendUserMessage(state: ChatState, text: string, id: string): ChatState {
   if (text.trim().length === 0) return state;
   // The event log may have rendered this prompt first (it reaches the reducer before the RPC

@@ -2,7 +2,13 @@ import { act, render, renderHook, screen, waitFor } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentEvent, SessionView } from "@noir/protocol";
-import { appendUserMessage, emptyChatState, reduceChat, useSessionEvents } from "../src/renderer/events.js";
+import {
+  appendUserMessage,
+  emptyChatState,
+  reduceChat,
+  runningToolTitle,
+  useSessionEvents,
+} from "../src/renderer/events.js";
 
 const api = vi.hoisted(() => ({
   connect: vi.fn(async (_listener?: unknown) => undefined),
@@ -151,6 +157,22 @@ describe("reduceChat", () => {
     expect(completed.messages).toHaveLength(1);
     expect(completed.messages[0]).toEqual({ id: "req-1", role: "user", blocks: [{ kind: "text", text: "hello" }], status: "done" });
     expect(completed.lastSeq).toBe(2);
+  });
+
+  it("describes the turn with the newest tool still running", () => {
+    let state = reduceChat(emptyChatState(), makeEvent(1, "tool.started", { toolCallId: "t1", title: "Read the map" }));
+    expect(runningToolTitle(state)).toBe("Read the map");
+
+    state = reduceChat(state, makeEvent(2, "tool.completed", { toolCallId: "t1", status: "completed" }));
+    expect(runningToolTitle(state)).toBeUndefined();
+
+    // Two calls in flight: the later one is what the agent is doing now.
+    state = reduceChat(state, makeEvent(3, "tool.started", { toolCallId: "t2", title: "Run `pnpm test`" }));
+    state = reduceChat(state, makeEvent(4, "tool.started", { toolCallId: "t3", title: "Grepping the tree" }));
+    expect(runningToolTitle(state)).toBe("Grepping the tree");
+
+    state = reduceChat(state, makeEvent(5, "tool.failed", { toolCallId: "t3", message: "boom" }));
+    expect(runningToolTitle(state)).toBe("Run `pnpm test`");
   });
 
   it("ignores a second append for a prompt the event log rendered first", () => {

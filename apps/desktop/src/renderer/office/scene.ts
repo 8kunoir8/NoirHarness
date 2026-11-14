@@ -20,13 +20,18 @@ export const STEP_MS = 120;
 /** Idle agents wander to the lounge after this long and return when the next action arrives. */
 export const IDLE_WANDER_MS = 8_000;
 
+/** The agent behind the open chat: tint, foot ring and nameplate all use this one accent. */
 const SELECTED_TINT = 0x9ad0ff;
+const SELECTED_ACCENT = "#9ad0ff";
 /** Text stays on a fixed layer: y-sorting glyphs would let a far agent's bubble cover a near one. */
 const MARKER_DEPTH = 1_000;
 const BUBBLE_DEPTH = 1_001;
 /** Pixels above the top of the character's art, where the status glyph and the bubble sit. */
 const MARKER_GAP = 2;
 const BUBBLE_GAP = 12;
+/** The selected character's ring: a flat ellipse at the feet, so it never covers the sprite. */
+const RING_WIDTH = 14;
+const RING_HEIGHT = 5;
 
 /** The three drawn facings. `left` has no row of its own, so it reuses `right` mirrored. */
 export type Direction = "down" | "up" | "right";
@@ -135,8 +140,11 @@ interface Mover {
   state: AgentOfficeState;
   sprite: Phaser.GameObjects.Image;
   marker: Phaser.GameObjects.Text;
-  /** The `needs_you` speech bubble; hidden for every other state. */
+  /** What the character says: the approval it waits on, or the word for its action. */
   bubble: Phaser.GameObjects.Text;
+  /** Drawn only while this agent is the one behind the open chat. */
+  ring: Phaser.GameObjects.Ellipse;
+  nameplate: Phaser.GameObjects.Text;
   tile: OfficePoint;
   path: OfficePoint[];
   carry: number;
@@ -393,6 +401,8 @@ export function createOfficeScene(
         mover.marker.destroy();
         mover.bubble.destroy();
         mover.screen.destroy();
+        mover.ring.destroy();
+        mover.nameplate.destroy();
         this.movers.delete(agentId);
       }
       for (const mover of this.movers.values()) this.applySelection(mover);
@@ -451,6 +461,23 @@ export function createOfficeScene(
         .setVisible(state.bubble !== null);
 
       const screen = this.add.image(0, 0, "room.png", "pc-off").setOrigin(0.5, 0);
+      // A nameplate under the feet and a ring around them, both hidden until this agent is selected:
+      // the sprite is 16 pixels wide, so a tint alone is hard to find in a room of twelve.
+      const ring = this.add
+        .ellipse(px, py - RING_HEIGHT / 2, RING_WIDTH, RING_HEIGHT, SELECTED_TINT, 0.55)
+        .setDepth(py - 0.5)
+        .setVisible(false);
+      const nameplate = this.add
+        .text(px, py + 1, state.name, {
+          fontFamily: "monospace",
+          fontSize: "8px",
+          color: "#16161c",
+          backgroundColor: SELECTED_ACCENT,
+          padding: { x: 3, y: 1 },
+        })
+        .setOrigin(0.5, 0)
+        .setDepth(MARKER_DEPTH)
+        .setVisible(false);
 
       sprite.setInteractive();
       sprite.on("pointerdown", () => {
@@ -462,6 +489,8 @@ export function createOfficeScene(
         sprite,
         marker,
         bubble,
+        ring,
+        nameplate,
         tile: { x: state.desk.x, y: state.desk.y },
         path: [],
         carry: 0,
@@ -574,6 +603,8 @@ export function createOfficeScene(
       mover.sprite.setPosition(px, py).setDepth(py);
       mover.marker.setPosition(px, py - frameHeight - MARKER_GAP);
       mover.bubble.setPosition(px, py - frameHeight - MARKER_GAP - BUBBLE_GAP);
+      mover.ring.setPosition(px, py - RING_HEIGHT / 2);
+      mover.nameplate.setPosition(px, py + 1);
     }
 
     /** The frame list a pose cycles through; a still pose is a single element, never a special case. */
@@ -643,8 +674,11 @@ export function createOfficeScene(
     }
 
     private applySelection(mover: Mover): void {
-      if (mover.state.agentId === this.selectedId) mover.sprite.setTint(SELECTED_TINT);
+      const selected = mover.state.agentId === this.selectedId;
+      if (selected) mover.sprite.setTint(SELECTED_TINT);
       else mover.sprite.clearTint();
+      mover.ring.setVisible(selected);
+      mover.nameplate.setVisible(selected);
     }
 
     private markerFor(action: OfficeAction): string {

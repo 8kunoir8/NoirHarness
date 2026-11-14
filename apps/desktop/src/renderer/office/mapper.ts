@@ -19,7 +19,7 @@ export interface AgentOfficeState {
   desk: OfficePoint;
   /** Index into the map's desk list; published so an E2E can compare the assignment across restarts. */
   deskIndex: number;
-  /** The `needs_you` speech bubble text; `null` for every other status. */
+  /** What the character says in its speech bubble; `null` only while idle. */
   bubble: string | null;
 }
 
@@ -65,6 +65,29 @@ export function actionFor(entry: Pick<AgentRosterEntry, "status" | "activeToolKi
     case "idle":
       return "idle";
   }
+}
+
+/** The one word a character says while it works: the action, never a description of the tool. */
+const ACTION_LABELS: Record<OfficeAction, string> = {
+  idle: "",
+  working: "Working",
+  reading: "Reading",
+  shell: "Shell",
+  blocked: "Approval",
+  error: "Error",
+};
+
+/**
+ * The bubble text an agent shows: the approval it is waiting on when there is one, otherwise the
+ * single word for what it is doing. Idle characters say nothing, so a quiet room stays quiet.
+ */
+export function statusBubbleText(
+  entry: Pick<AgentRosterEntry, "status" | "activeToolKind" | "pendingApproval">,
+): string | null {
+  const approval = approvalBubbleText(entry);
+  if (approval !== null) return approval;
+  const label = ACTION_LABELS[actionFor(entry)];
+  return label === "" ? null : label;
 }
 
 /**
@@ -128,7 +151,7 @@ export function toOfficeStates(
       action: actionFor(entry),
       desk,
       deskIndex,
-      bubble: approvalBubbleText(entry),
+      bubble: statusBubbleText(entry),
     });
   }
   return states;

@@ -331,6 +331,8 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; colo
 .sidebar-kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-size: 0.78rem; }
 .sidebar-kv dt { color: var(--muted); }
 .sidebar-kv dd { margin: 0; }
+/* A tool title is a whole command line: it wraps in the column instead of widening it. */
+.sidebar-doing { overflow-wrap: anywhere; }
 .sidebar-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .sidebar-actions button { font-size: 0.76rem; padding: 4px 9px; }
 

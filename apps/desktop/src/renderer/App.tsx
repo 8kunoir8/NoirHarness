@@ -19,7 +19,7 @@ import type { DiffStats } from "./ChatHeader.js";
 import { CommandPalette } from "./CommandPalette.js";
 import type { Command } from "./commands.js";
 import { DiffView } from "./DiffView.js";
-import { useSessionEvents, type ChatFile } from "./events.js";
+import { runningToolTitle, useSessionEvents, type ChatFile } from "./events.js";
 import { FileTree } from "./FileTree.js";
 import { Inspector } from "./Inspector.js";
 import { KernelBanner } from "./KernelBanner.js";
@@ -775,6 +775,7 @@ export function App() {
       <LiveSidebar
         roster={roster}
         agentId={activeSession?.agentId}
+        activity={runningToolTitle(events.state)}
         showOffice={view !== "agents"}
         onOpenAgents={() => goTo("agents")}
       />

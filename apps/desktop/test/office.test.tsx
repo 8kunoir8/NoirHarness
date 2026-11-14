@@ -7,6 +7,7 @@ import {
   MAX_OFFICE_AGENTS,
   actionFor,
   approvalBubbleText,
+  statusBubbleText,
   assignDeskIndices,
   hashAgentId,
   toOfficeStates,
@@ -183,16 +184,35 @@ describe("office mapper", () => {
     expect(toOfficeStates(roster, OFFICE_DESKS)).toHaveLength(MAX_OFFICE_AGENTS);
   });
 
-  it("carries the approval title into the needs_you bubble and nothing else", () => {
+  it("puts the approval title in the bubble ahead of the action word", () => {
     const waiting = rosterEntry({
       agentId: "a",
       status: "needs_you",
       pendingApproval: { approvalId: "ap-1", title: "Run ls", category: "shell" },
     });
     expect(toOfficeStates([waiting], DESKS)[0]?.bubble).toBe("Run ls");
+    expect(statusBubbleText(waiting)).toBe("Run ls");
     expect(approvalBubbleText(waiting)).toBe("Run ls");
     expect(approvalBubbleText(rosterEntry({ agentId: "b", status: "working" }))).toBeNull();
     expect(approvalBubbleText(rosterEntry({ agentId: "c", status: "error" }))).toBeNull();
+  });
+
+  it("says one word for the action when there is nothing to approve", () => {
+    const bubble = (
+      status: AgentRosterEntry["status"],
+      kind: AgentRosterEntry["activeToolKind"] = null,
+    ): string | null => statusBubbleText(rosterEntry({ agentId: "a", status, activeToolKind: kind }));
+    expect(bubble("working")).toBe("Working");
+    expect(bubble("working", "read")).toBe("Reading");
+    expect(bubble("working", "search")).toBe("Reading");
+    expect(bubble("working", "skill")).toBe("Reading");
+    expect(bubble("working", "shell")).toBe("Shell");
+    expect(bubble("working", "write")).toBe("Working");
+    expect(bubble("needs_you")).toBe("Approval");
+    expect(bubble("error")).toBe("Error");
+    // Idle says nothing: a room of parked agents must not be a wall of bubbles.
+    expect(bubble("idle")).toBeNull();
+    expect(toOfficeStates([rosterEntry({ agentId: "quiet", status: "idle" })], DESKS)[0]?.bubble).toBeNull();
   });
 
   it("falls back to the category and truncates the bubble at 80 characters", () => {
@@ -413,6 +433,8 @@ describe("office scene", () => {
     text: string;
     visible: boolean;
     flipX: boolean;
+    /** The selection tint, or `undefined` once it was cleared. */
+    tint: number | undefined;
     /** Every frame this object was ever given, in order, so a repaint is observable. */
     paints: string[];
     destroyed: boolean;
@@ -477,6 +499,8 @@ describe("office scene", () => {
     failImages?: boolean;
     /** Keep the texture keys but leave their sources empty, the way a blocked load does. */
     failDecode?: boolean;
+    /** The agent behind the open chat, as the host pushes it. */
+    selected?: string;
   }
 
   function harness(): {
@@ -487,6 +511,7 @@ describe("office scene", () => {
     };
     sprites: FakeGameObject[];
     screens: FakeGameObject[];
+    rings: FakeGameObject[];
     texts: FakeGameObject[];
     createScene: (
       reducedMotion: boolean,
@@ -496,6 +521,7 @@ describe("office scene", () => {
   } {
     const sprites: FakeGameObject[] = [];
     const screens: FakeGameObject[] = [];
+    const rings: FakeGameObject[] = [];
     const texts: FakeGameObject[] = [];
     const registry = new Map<string, unknown>();
     const game = {
@@ -587,6 +613,11 @@ describe("office scene", () => {
           if (frame.startsWith("pc-")) screens.push(object);
           return object;
         },
+        ellipse: (x: number, y: number): FakeGameObject => {
+          const object = new GameObject(x, y, "ring");
+          rings.push(object);
+          return object;
+        },
         text: (x: number, y: number, text: string): FakeGameObject => {
           const object = new GameObject(x, y, "text");
           object.setText(text);
@@ -613,6 +644,7 @@ describe("office scene", () => {
       game,
       sprites,
       screens,
+      rings,
       texts,
       createScene: async (
         reducedMotion: boolean,
@@ -633,6 +665,7 @@ describe("office scene", () => {
         const scene = new (factory as unknown as new () => SceneLike)();
         registry.set(keys.OFFICE_STATES_KEY, states);
         registry.set(keys.OFFICE_REDUCED_KEY, reducedMotion);
+        registry.set(keys.OFFICE_SELECTED_KEY, options.selected);
         await scene.create();
         return { scene };
       },
@@ -889,6 +922,44 @@ describe("office scene", () => {
     scene.update(68_001, 16);
     scene.update(68_017, 200);
     expect(sprite?.x === 2 * 16 + 8 && sprite?.y === 6 * 16).toBe(false);
+  });
+
+  it("rings and names only the agent behind the open chat", async () => {
+    const harnessed = harness();
+    const states = [
+      officeState({ agentId: "a-1", name: "Scout", status: "working", action: "working", desk: { x: 2, y: 5 } }),
+      officeState({
+        agentId: "a-2",
+        name: "Beta",
+        status: "working",
+        action: "working",
+        desk: { x: 5, y: 5 },
+        deskIndex: 1,
+      }),
+    ];
+    const { scene } = await harnessed.createScene(false, states, { selected: "a-1" });
+
+    const [scout, beta] = harnessed.sprites;
+    expect(scout?.tint).toBe(0x9ad0ff);
+    expect(beta?.tint).toBeUndefined();
+    // One ring and one nameplate per character; the ring sits under the feet, the plate below them.
+    expect(harnessed.rings).toHaveLength(2);
+    expect(harnessed.rings.map((ring) => ring.visible)).toEqual([true, false]);
+    expect(scout?.x).toBe(harnessed.rings[0]?.x);
+    expect(harnessed.rings[0]?.y).toBe((5 + 1) * 16 - 2.5);
+    const plates = harnessed.texts.filter((text) => text.text === "Scout" || text.text === "Beta");
+    expect(plates.map((plate) => [plate.text, plate.visible])).toEqual([
+      ["Scout", true],
+      ["Beta", false],
+    ]);
+
+    // Moving the chat to the other agent swaps the highlight without a re-spawn.
+    harnessed.game.registry.set(keys.OFFICE_SELECTED_KEY, "a-2");
+    harnessed.game.events.emit(keys.OFFICE_STATES_EVENT, states);
+    expect(scout?.tint).toBeUndefined();
+    expect(beta?.tint).toBe(0x9ad0ff);
+    expect(harnessed.rings.map((ring) => ring.visible)).toEqual([false, true]);
+    expect(plates.map((plate) => plate.visible)).toEqual([false, true]);
   });
 
   it("destroys a removed agent's objects and stops painting it", async () => {

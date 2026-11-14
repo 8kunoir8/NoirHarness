@@ -11,6 +11,11 @@ export interface LiveSidebarProps {
   /** The chat on screen; its agent is the one this column describes. */
   agentId: string | undefined;
   /**
+   * The tool this chat's agent is running right now, as the chat names it ("Run `pnpm test`").
+   * Only the open session has one, so every other agent falls back to its status word.
+   */
+  activity: string | undefined;
+  /**
    * Off while the Agents view is open: that page mounts its own canvas, and two Phaser games in one
    * window is two render loops for the same picture.
    */
@@ -23,7 +28,13 @@ export interface LiveSidebarProps {
  * selection of its own — the office highlights the active chat's agent — so opening a chat is the
  * only way to focus a character here.
  */
-export function LiveSidebar({ roster: entries, agentId, showOffice, onOpenAgents }: LiveSidebarProps) {
+export function LiveSidebar({
+  roster: entries,
+  agentId,
+  activity,
+  showOffice,
+  onOpenAgents,
+}: LiveSidebarProps) {
   const [unavailable, setUnavailable] = useState(false);
   const reducedMotion = useReducedMotion();
 
@@ -34,6 +45,15 @@ export function LiveSidebar({ roster: entries, agentId, showOffice, onOpenAgents
   const active = entries?.find((entry) => entry.agentId === agentId);
   const working = entries?.filter((entry) => entry.status === "working").length ?? 0;
   const waiting = entries?.filter((entry) => entry.status === "needs_you").length ?? 0;
+  // Status first: a tool can still read "running" for a tick after an approval or a stop arrives.
+  const doing =
+    active === undefined
+      ? undefined
+      : active.status === "needs_you"
+        ? "Waiting on your approval"
+        : active.status === "error"
+          ? "Stopped on an error"
+          : (activity ?? (active.status === "working" ? "Thinking" : "Idle"));
 
   return (
     <>
@@ -79,6 +99,8 @@ export function LiveSidebar({ roster: entries, agentId, showOffice, onOpenAgents
             <dd>{active.name}</dd>
             <dt>Status</dt>
             <dd>{active.status === "needs_you" ? "Needs you" : active.status}</dd>
+            <dt>Doing</dt>
+            <dd className="sidebar-doing">{doing}</dd>
             <dt>Sessions</dt>
             <dd>{active.sessionCount}</dd>
             {active.usage === null ? null : (

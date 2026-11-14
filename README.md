@@ -175,9 +175,10 @@ The window is one grid: a top bar, a horizontal nav strip, and four columns unde
   and sessions grouped by `Today` / `Yesterday` / `Earlier` from the last event time.
 - **Main pane** — tab strip, chat header (session status, model picker, token usage, `Interrupt`),
   transcript (assistant text, tool cards, permission cards, diffs), and the composer.
-- **Live sidebar** — the pixel office, the agent behind the open chat, and, when asked for, the
-  inspector: usage, the changed files (git's uncommitted changes plus the files the session
-  reported), the plan, and pending approvals.
+- **Live sidebar** — the pixel office, the agent behind the open chat with what it is doing right
+  now (the running tool, named the way the chat names it), and, when asked for, the inspector:
+  usage, the changed files (git's uncommitted changes plus the files the session reported), the
+  plan, and pending approvals.
 - **Status bar** — kernel health, turns running, approvals waiting, and the engine directory in use.
 
 The sidebar is never collapsed: the office is the point of the column, so the inspector opens inside
@@ -375,7 +376,10 @@ cannot land on top of a newer refresh.
 The **Office** pane renders a Phaser pixel office from the same roster data: each agent gets a stable
 desk derived from its id, walks there in a direction-aware gait, works through a typing clip with its
 monitor lit and flickering, reads at the shelves, sits out an approval, and wanders to the lounge past
-the plants, coffee table and bins after an idle spell. It appears in two
+the plants, coffee table and bins after an idle spell. Every working agent says one word over its head
+— `Working`, `Reading`, `Shell` — and an agent waiting on a permission says the request's title
+instead; idle agents say nothing. The agent behind the open chat is ringed, named and tinted, so the
+character is findable in a room of twelve. It appears in two
 places: full width on the Agents view, and permanently in the chat shell's live sidebar, which
 highlights the agent behind the open chat. Only one of the two is mounted at a time, so the window
 never runs two Phaser render loops. The canvas is `aria-hidden` and publishes `data-office-ready`,
