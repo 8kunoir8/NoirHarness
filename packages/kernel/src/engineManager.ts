@@ -531,7 +531,12 @@ export class EngineManager {
 
   /** True when any session in the workspace is mid-turn, or a restore is rewriting the workspace. */
   busyWorkspace(workspaceId: string): boolean {
-    return this.rewinding.has(workspaceId) || this.turnIn(workspaceId);
+    return this.inRewind(workspaceId) || this.turnIn(workspaceId);
+  }
+
+  /** True while this workspace's store and work tree are being rewritten by a restore. */
+  inRewind(workspaceId: string): boolean {
+    return this.rewinding.has(workspaceId);
   }
 
   /** Held across the whole restore, so no turn starts while the shared work tree is rewritten. */
@@ -564,7 +569,8 @@ export class EngineManager {
   async afterRewind(sessionId: string): Promise<void> {
     const state = this.states.get(sessionId);
     if (state === undefined) return;
-    // The handler's gate runs before two awaits; a turn that started since must not lose its engine.
+    // The workspace is reserved across the handler's awaits; a turn that started since must not
+    // lose its engine.
     if (state.turn !== undefined) throw new RpcFault(ErrorCodes.conflict, "A turn is running in this session");
     this.dropQueue(state, "rewound");
     state.usage = undefined;

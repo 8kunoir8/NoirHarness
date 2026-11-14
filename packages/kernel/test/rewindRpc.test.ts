@@ -7,6 +7,7 @@ import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import type { Kernel } from "../src/index.js";
+import { EngineManager } from "../src/engineManager.js";
 import { startKernel } from "./support.js";
 
 const dirs: string[] = [];
@@ -20,6 +21,26 @@ afterEach(async () => {
   for (const kernel of kernels.splice(0)) await kernel.close();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
+
+/**
+ * Captures the manager the handlers close over, so a test can hold the rewind reservation across
+ * another caller's RPC. `reconcileAll` runs once per `startKernel`, before any RPC can arrive.
+ */
+async function startKernelWithManager(opts: { dataDir?: string } = {}): Promise<{ kernel: Kernel; manager: EngineManager }> {
+  let manager: EngineManager | undefined;
+  const original = EngineManager.prototype.reconcileAll;
+  EngineManager.prototype.reconcileAll = function (this: EngineManager) {
+    manager = this;
+    return original.call(this);
+  };
+  try {
+    const kernel = await startKernel(opts);
+    if (manager === undefined) throw new Error("the kernel did not build an engine manager");
+    return { kernel, manager };
+  } finally {
+    EngineManager.prototype.reconcileAll = original;
+  }
+}
 
 async function call(kernel: Kernel, method: string, params?: unknown): Promise<any> {
   const ws = new WebSocket(`ws://127.0.0.1:${kernel.port}/?token=${kernel.token}`);
@@ -113,5 +134,72 @@ describe("rewind over RPC", () => {
     const types = replay.result.events.map((event: { type: string }) => event.type);
     expect(types).not.toContain("session.rewound");
     expect(types).not.toContain("turn.failed");
+  });
+
+  it("refuses checkpoint.plan while a rewind holds the workspace", async () => {
+    const root = tempDir();
+    const dataDir = tempDir();
+    const { kernel, manager } = await startKernelWithManager({ dataDir });
+    kernels.push(kernel);
+    const project = await call(kernel, "project.add", { path: root });
+    const workspace = await call(kernel, "workspace.create", { projectId: project.result.id });
+    const session = await call(kernel, "session.create", { workspaceId: workspace.result.id });
+
+    // No RPC creates a checkpoint, so the store and its row are seeded here with a real tree: the
+    // same call must succeed once the reservation is gone.
+    const store = join(dataDir, "checkpoints", workspace.result.id);
+    execFileSync("git", ["init", "--quiet", store], { stdio: "ignore" });
+    execFileSync("git", ["-C", store, "config", "core.worktree", root]);
+    writeFileSync(join(root, "kept.txt"), "one\n");
+    execFileSync("git", ["-C", store, "add", "-A", "--", "."]);
+    const tree = execFileSync("git", ["-C", store, "write-tree"], { encoding: "utf8" }).trim();
+    const db = new Database(join(dataDir, "noir.db"));
+    try {
+      db.prepare(
+        `INSERT INTO checkpoints (id, workspace_id, session_id, turn_id, seq, tree_sha, commit_sha, label, created_at, not_captured, error)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+      ).run("c-1", workspace.result.id, session.result.id, null, 1, tree, null, "turn", Date.now(), 0, null);
+    } finally {
+      db.close();
+    }
+
+    manager.beginRewind(workspace.result.id);
+    try {
+      const failure: unknown = await call(kernel, "checkpoint.plan", { sessionId: session.result.id, checkpointId: "c-1" }).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toMatch(/A rewind is already running/);
+      expect(failure).toMatchObject({ code: -32009 });
+    } finally {
+      manager.endRewind(workspace.result.id);
+    }
+
+    const planned = await call(kernel, "checkpoint.plan", { sessionId: session.result.id, checkpointId: "c-1" });
+    expect(planned.result).toEqual({ restored: 0, deleted: 0, removed: 0, failed: [] });
+  });
+
+  it("names the running rewind when a second restore asks for the same workspace", async () => {
+    const root = tempDir();
+    const { kernel, manager } = await startKernelWithManager({ dataDir: tempDir() });
+    kernels.push(kernel);
+    const project = await call(kernel, "project.add", { path: root });
+    const workspace = await call(kernel, "workspace.create", { projectId: project.result.id });
+    const session = await call(kernel, "session.create", { workspaceId: workspace.result.id });
+
+    manager.beginRewind(workspace.result.id);
+    try {
+      const failure: unknown = await call(kernel, "checkpoint.restore", { sessionId: session.result.id, checkpointId: "c-1" }).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toMatch(/A rewind is already running/);
+      expect((failure as Error).message).not.toMatch(/A turn is running/);
+      expect(failure).toMatchObject({ code: -32009 });
+    } finally {
+      manager.endRewind(workspace.result.id);
+    }
   });
 });

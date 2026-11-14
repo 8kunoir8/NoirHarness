@@ -575,24 +575,30 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; o
         },
         [Methods.checkpointPlan]: async (params) => {
           const { sessionId, checkpointId } = CheckpointPlanParams.parse(params);
-          sessions.view(sessionId);
+          const view = sessions.view(sessionId);
+          // `plan` refreshes the store's index with `add -A`, the same index a restore has pointed at
+          // the snapshot and whose checkouts read it per path: from this workspace it would write
+          // post-turn bytes or fail while the marker still claims the predicted counts.
+          if (engineManager.inRewind(view.workspaceId)) {
+            throw new RpcFault(ErrorCodes.conflict, "A rewind is already running in this workspace");
+          }
           return checkpoints.plan(sessionId, checkpointId);
         },
         [Methods.checkpointRestore]: async (params) => {
           const { sessionId, checkpointId } = CheckpointRestoreParams.parse(params);
           const view = sessions.view(sessionId);
-          if (engineManager.busyWorkspace(view.workspaceId)) {
-            throw new RpcFault(ErrorCodes.conflict, "A turn is running in this workspace");
-          }
-          // A checkpoint with no tree, an LFS work tree or a workspace gone from disk must fail
-          // without dropping the queue; `plan` reads only the checkpoint's row, so the
-          // workspace-level refusals come from `availability`.
-          const availability = await checkpoints.availability(view.workspaceId);
-          if (!availability.available) {
-            throw new RpcFault(ErrorCodes.conflict, availability.reason ?? "Checkpoints are not available");
-          }
+          // Reserve first: `beginRewind` is the gate that names a rewind already running, and it
+          // scans for a live turn synchronously itself. Nothing is dropped before `afterRewind`, so
+          // holding the reservation across `availability` costs nothing and cannot strand a refusal.
           engineManager.beginRewind(view.workspaceId);
           try {
+            // A checkpoint with no tree, an LFS work tree or a workspace gone from disk must fail
+            // without dropping the queue; `plan` reads only the checkpoint's row, so the
+            // workspace-level refusals come from `availability`.
+            const availability = await checkpoints.availability(view.workspaceId);
+            if (!availability.available) {
+              throw new RpcFault(ErrorCodes.conflict, availability.reason ?? "Checkpoints are not available");
+            }
             // Every refusal happens here, before the queue is touched: a rewind that cannot be undone
             // must leave the workspace and the log exactly as they were.
             const prepared = await checkpoints.prepareRestore(sessionId, checkpointId);
