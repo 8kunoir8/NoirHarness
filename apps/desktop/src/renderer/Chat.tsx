@@ -49,6 +49,8 @@ export function Chat({
   const [queuedTurnId, setQueuedTurnId] = useState<string | undefined>(undefined);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
   const queuedAtTurn = useRef<string | undefined>(undefined);
+  /** Which dialog's plan is still wanted; a dismissed dialog's answer must not reach the next. */
+  const planTarget = useRef<string | undefined>(undefined);
   const checkpoints = useCheckpoints(
     session.id,
     request,
@@ -141,20 +143,25 @@ export function Chat({
   async function beginRewind(turnId: string): Promise<void> {
     const entry = checkpoints.byTurn.get(turnId);
     if (entry === undefined) return;
+    planTarget.current = entry.id;
     setRewind({ checkpointId: entry.id, notCaptured: entry.notCaptured });
     setRewindPhase("planning");
     setRewindPlan(undefined);
     setRewindError(undefined);
     try {
-      setRewindPlan(await checkpoints.plan(entry.id));
+      const plan = await checkpoints.plan(entry.id);
+      if (planTarget.current !== entry.id) return;
+      setRewindPlan(plan);
       setRewindPhase("ready");
     } catch (failure) {
+      if (planTarget.current !== entry.id) return;
       setRewindError(errorMessage(failure));
       setRewindPhase("failed");
     }
   }
 
   function closeRewind(): void {
+    planTarget.current = undefined;
     setRewind(undefined);
     setRewindPhase("planning");
     setRewindPlan(undefined);
@@ -285,7 +292,7 @@ export function Chat({
           const message = row.message;
           if (message === undefined) return null;
           const turnId = row.turnId;
-          const canRewind = turnId !== undefined && checkpoints.byTurn.has(turnId);
+          const canRewind = message.role === "user" && turnId !== undefined && checkpoints.byTurn.has(turnId);
           return (
             <li
               key={message.id}

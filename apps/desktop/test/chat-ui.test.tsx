@@ -358,6 +358,39 @@ describe("Chat", () => {
     expect(document.querySelectorAll("li.message-user")).toHaveLength(1);
   });
 
+  it("offers the rewind on the prompt only, once per turn", async () => {
+    const turn = (event: AgentEvent, turnId: string): AgentEvent => ({ ...event, turnId });
+    const request = vi.fn(async (method: string): Promise<unknown> => {
+      if (method === "session.subscribe") {
+        return {
+          events: [
+            turn(makeEvent(1, "message.delta", { messageId: "u-1", role: "user", block: { type: "text", text: "do it" } }), "t-1"),
+            turn(makeEvent(2, "message.delta", { messageId: "a-1", role: "assistant", block: { type: "text", text: "on it" } }), "t-1"),
+            turn(makeEvent(3, "message.delta", { messageId: "a-2", role: "assistant", block: { type: "text", text: "done" } }), "t-1"),
+          ],
+          lastSeq: 3,
+        };
+      }
+      if (method === "checkpoint.list") {
+        return {
+          available: true,
+          checkpoints: [{ id: "c-1", turnId: "t-1", seq: 1, createdAt: 1, notCaptured: 0, label: "turn", error: null }],
+        };
+      }
+      throw new Error(method);
+    });
+
+    render(<ChatHarness request={request as unknown as RequestFn} />);
+
+    expect(await screen.findByText("done")).toBeTruthy();
+    // The turn has a checkpoint, but only the prompt it belongs to can start the rewind.
+    await waitFor(() => {
+      expect(screen.getAllByRole("button", { name: "Rewind to before this prompt" })).toHaveLength(1);
+    });
+    expect(screen.getByTestId("message-user").textContent).toContain("do it");
+    expect(screen.getAllByTestId("message-assistant")).toHaveLength(2);
+  });
+
   it("shows a failed request and keeps the draft", async () => {
     const request = vi.fn(async (method: string): Promise<unknown> => {
       if (method === "session.subscribe") return { events: [], lastSeq: 0 };
