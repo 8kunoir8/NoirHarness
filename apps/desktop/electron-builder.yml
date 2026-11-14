@@ -27,6 +27,9 @@ asar: true
 # modules were built for; rebuilding them for Electron would break that pairing.
 npmRebuild: false
 win:
+  # Generated from the app mark; the .ico carries 16-256 so the taskbar, Start menu and Explorer
+  # each pick their own size instead of downscaling one bitmap.
+  icon: build/icon.ico
   target: nsis
 nsis:
   oneClick: false

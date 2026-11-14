@@ -144,9 +144,16 @@ const trayDisabled = process.env.NOIR_NO_TRAY === "1";
 
 function createTray(): void {
   if (trayDisabled) return;
-  // Embedded so packaging cannot miss it and a missing asset cannot break startup.
+  // Embedded so packaging cannot miss it and a missing asset cannot break startup. The source is
+  // `build/icon.png` reduced to 16x16 and quantized to 32 colours, which is all a tray row shows.
   const icon = nativeImage.createFromDataURL(
-    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAIklEQVR4nGNgGDTgxb1j/0nBNDVgFQE8asDIMGCAUuKAAQB49+kANVznbgAAAABJRU5ErkJggg==",
+    "data:image/png;base64," +
+      "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAMAAAAoLQ9TAAAAYFBMVEXd3+6sq8Bxn7iNiKQpd7GIYZ9MYJQpXJcS" +
+      "YKCGP55bRoNESpBBNoAoT5ELTn8bO28KOHJ9Kn1hKYFOG1EkJmM0GVAtDy8QJkQPIEsJFCsJBRgCAQICAAEAAgIA" +
+      "AAEAAACKAnPRAAAAvElEQVR42h1QCQ6EMAikay9t6eVRa1X+/8ulTkIgE5gBgOjt9NCHmwNGUV1M274e1Jl4n9bM" +
+      "ib8f7vNg4KGKRgOA2kreewdqCeUiQE9mWSvdQEFKM03C+eAWs7NGi1wJEHrL3q3s0le0J4aUTlfiRdCpShtC8n6z" +
+      "s386j9hoAqI0fvH5eIGqjZKhlRK5DI0ma0jWuDLPZR5EwIkhhBgps201Tvvlg1Lc8VI7E6IfE3webzpOv9q5H9c9" +
+      "HvAHpIsRT9CQUz4AAAAASUVORK5CYII=",
   );
   try {
     tray = new Tray(icon.resize({ width: 16, height: 16 }));
