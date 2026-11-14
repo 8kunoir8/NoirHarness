@@ -16,10 +16,12 @@ function count(value: number, noun: string): string {
 
 /** The confirmation step. It never starts work: a rewind is only ever a click on `Rewind`. */
 export function RewindDialog({ phase, plan, notCaptured, error, onConfirm, onCancel }: RewindDialogProps) {
-  const confirm = useRef<HTMLButtonElement>(null);
+  const cancel = useRef<HTMLButtonElement>(null);
   useEffect(() => {
-    if (phase === "ready") confirm.current?.focus();
-  }, [phase]);
+    // Focus lands inside the dialog on open, so Escape reaches the container in every phase, and
+    // the destructive button is never the default target of a held Enter.
+    cancel.current?.focus();
+  }, []);
 
   return (
     <div
@@ -57,10 +59,10 @@ export function RewindDialog({ phase, plan, notCaptured, error, onConfirm, onCan
         </p>
       )}
       <div className="rewind-actions">
-        <button type="button" onClick={onCancel}>
+        <button ref={cancel} type="button" onClick={onCancel}>
           Cancel
         </button>
-        <button ref={confirm} type="button" className="primary" disabled={phase !== "ready"} onClick={onConfirm}>
+        <button type="button" className="primary" disabled={phase !== "ready"} onClick={onConfirm}>
           {phase === "applying" ? "Rewinding…" : "Rewind"}
         </button>
       </div>

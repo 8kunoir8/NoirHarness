@@ -15,10 +15,11 @@ export function RewindMarker({
         <p className="rewind-counts">
           {String(rewind.restored)} restored · {String(rewind.deleted)} deleted · {String(rewind.removed)} removed
         </p>
-        {rewind.failed === 0 ? null : <p role="alert">{String(rewind.failed)} could not be restored.</p>}
+        {rewind.failed === 0 ? null : <p role="alert">{String(rewind.failed)} could not be applied.</p>}
         {rewind.notCaptured === 0 ? null : (
           <p>
-            {String(rewind.notCaptured)} not captured, left as they were.
+            {String(rewind.notCaptured)} {rewind.notCaptured === 1 ? "item was" : "items were"} not captured, left as{" "}
+            {rewind.notCaptured === 1 ? "it was" : "they were"}.
           </p>
         )}
         {rewind.engineNotRewound ? (

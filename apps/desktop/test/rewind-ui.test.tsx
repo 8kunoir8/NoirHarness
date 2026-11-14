@@ -28,7 +28,9 @@ describe("RewindDialog", () => {
     render(
       <RewindDialog phase="ready" plan={plan} notCaptured={0} error={undefined} onConfirm={onConfirm} onCancel={vi.fn()} />,
     );
-    expect(screen.getByTestId("rewind-counts").textContent).toContain("2 files restored");
+    expect(screen.getByTestId("rewind-counts").textContent).toContain(
+      "2 files restored · 1 deleted file · 3 created files removed",
+    );
     await userEvent.click(screen.getByRole("button", { name: "Rewind" }));
     expect(onConfirm).toHaveBeenCalledOnce();
   });
@@ -39,12 +41,20 @@ describe("RewindDialog", () => {
     );
     expect(screen.getByRole<HTMLButtonElement>("button", { name: "Rewind" }).disabled).toBe(true);
     expect(screen.getByText("Checking what would change…")).not.toBeNull();
+    // Focus is inside the dialog before a plan exists, and it is not on the destructive button.
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Cancel" }));
   });
 
-  it("states what it could not capture and closes on Escape", async () => {
-    const onCancel = vi.fn();
-    render(<RewindDialog phase="ready" plan={plan} notCaptured={4} error={undefined} onConfirm={vi.fn()} onCancel={onCancel} />);
+  it("states what it could not capture", () => {
+    render(<RewindDialog phase="ready" plan={plan} notCaptured={4} error={undefined} onConfirm={vi.fn()} onCancel={vi.fn()} />);
     expect(screen.getByText(/4 items were not captured/)).not.toBeNull();
+  });
+
+  it("closes on Escape before the plan resolves", async () => {
+    const onCancel = vi.fn();
+    render(
+      <RewindDialog phase="planning" plan={undefined} notCaptured={0} error={undefined} onConfirm={vi.fn()} onCancel={onCancel} />,
+    );
     await userEvent.keyboard("{Escape}");
     expect(onCancel).toHaveBeenCalledOnce();
   });
@@ -79,8 +89,18 @@ describe("RewindMarker", () => {
     expect(screen.getByText(/keeps its own memory/)).not.toBeNull();
   });
 
+  it("speaks of one uncaptured item in the singular", () => {
+    render(<RewindMarker rewind={rewind({ notCaptured: 1 })} />);
+    expect(screen.getByText(/1 item was not captured/)).not.toBeNull();
+  });
+
   it("has no prompt button when the prompt is gone", () => {
     render(<RewindMarker rewind={rewind({ promptSeq: null })} onLoadPrompt={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: "Load the prompt again" })).toBeNull();
+  });
+
+  it("has no prompt button without a handler", () => {
+    render(<RewindMarker rewind={rewind()} />);
     expect(screen.queryByRole("button", { name: "Load the prompt again" })).toBeNull();
   });
 });
