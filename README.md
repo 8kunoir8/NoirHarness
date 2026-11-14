@@ -495,8 +495,9 @@ pnpm --filter @noir/desktop test:e2e
 ```
 
 `test:e2e` builds the app and drives Electron with Playwright against a local mock provider. Fourteen
-specs, seventeen tests: `smoke` (2) — boot, process spawn, health, and a provider surviving an app
-restart; `chat` (2) — a streamed reply and a permission-approved tool call; `shell` (1) — a tool turn
+specs, nineteen tests: `smoke` (2) — boot, process spawn, health, and a provider surviving an app
+restart; `chat` (4) — a streamed reply, a permission-approved tool call, a GFM table with a decoded
+workspace image, and deleting a chat from the list; `shell` (1) — a tool turn
 that survives the restart, a prompt queued behind a slow turn, an interrupt, the queued turn draining
 after it, and a restart that replays the transcript; `editor` (2) — open a file, edit it, save
 through the kernel, assert the file on disk, check the diff stats and `Show diff` from the
