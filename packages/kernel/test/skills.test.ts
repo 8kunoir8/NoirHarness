@@ -30,6 +30,14 @@ describe("skill discovery", () => {
     expect(parseSkillFrontmatter("no frontmatter")).toEqual({});
   });
 
+  it("parses a CRLF frontmatter, quotes and trailing keys included", () => {
+    const text = '---\r\nname: demo\r\ndescription: "Quoted, with a — dash and an \'apostrophe\'."\r\nlicense: MIT\r\nsurface: [claude]\r\n---\r\nbody\r\n';
+    expect(parseSkillFrontmatter(text)).toEqual({ name: "demo", description: "Quoted, with a — dash and an 'apostrophe'." });
+    // LF and CRLF of the same bytes read the same, so a repository's line endings cannot change a
+    // skill's description and shift every hash that depends on it.
+    expect(parseSkillFrontmatter(text.replace(/\r\n/g, "\n"))).toEqual(parseSkillFrontmatter(text));
+  });
+
   it("lists project and global skills, project wins a name collision", async () => {
     const global = root();
     const project = root();

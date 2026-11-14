@@ -51,10 +51,16 @@ export function isStaleSibling(name: string): boolean {
 const compareCodeUnits = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
 export function parseSkillFrontmatter(text: string): { name?: string; description?: string } {
-  if (!text.startsWith("---")) return {};
-  const end = text.indexOf("\n---", 3);
+  // A skill file written on Windows ends its lines with CRLF, and the fence is searched as `\n---`:
+  // slicing there leaves the preceding `\r` on the last line, where YAML reads it as a break that
+  // ends the document mid-scalar — a `description: "…"` dies and every later key becomes a stray
+  // node. 355 of the 432 skills on this machine are CRLF, so this is the common case, not an edge.
+  // Normalizing first also makes the parsed `description` free of stray `\r`.
+  const normalized = text.replace(/\r\n?/g, "\n");
+  if (!normalized.startsWith("---")) return {};
+  const end = normalized.indexOf("\n---", 3);
   if (end === -1) return {};
-  const yaml = text.slice(3, end).replace(/^\r?\n/, "");
+  const yaml = normalized.slice(3, end).replace(/^\n/, "");
   let doc: unknown;
   try {
     doc = parseYaml(yaml);
