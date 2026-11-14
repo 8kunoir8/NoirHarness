@@ -1,6 +1,6 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { _electron as electron, expect, type ElectronApplication, type Page } from "@playwright/test";
 import type { MockProvider } from "./mock-provider.js";
@@ -93,11 +93,17 @@ export async function setupWorkspace(
   await page.getByRole("navigation", { name: "Main" }).getByRole("button", { name: view }).click();
 
   const projects = page.getByRole("region", { name: "Projects", exact: true });
+  // One action: the folder becomes a project, the project gets its one workspace, and that
+  // workspace becomes the selected one — the OS-dialog flow the desktop app presents.
+  if ((await projects.getByLabel("Project path", { exact: true }).count()) === 0) {
+    await projects.getByRole("button", { name: "New project" }).click();
+  }
   await projects.getByLabel("Project path", { exact: true }).fill(workspacePath);
   await projects.getByRole("button", { name: "Add project" }).click();
-  await projects.getByLabel("Project", { exact: true }).selectOption({ label: basename(workspacePath) });
-  await projects.getByRole("button", { name: "Create workspace" }).click();
-  await projects.getByLabel("Workspace", { exact: true }).selectOption({ label: workspacePath });
+  await expect(projects.getByRole("button", { name: workspacePath, exact: true })).toHaveAttribute(
+    "aria-current",
+    "true",
+  );
 }
 
 /** `setupWorkspace` plus one chat created from the rail list: the path the shell owns. */

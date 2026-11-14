@@ -32,6 +32,8 @@ const windowControls: WindowControls = {
 contextBridge.exposeInMainWorld("noir", {
   kernelInfo: () => ipcRenderer.invoke("kernel:info"),
   openExternal: (url: string) => ipcRenderer.invoke("shell:openExternal", url),
+  /** The OS directory picker; `null` when the user cancels. */
+  pickFolder: () => ipcRenderer.invoke("dialog:pickFolder"),
   automationsArmed: (count: number) => ipcRenderer.send("automations:armed", count),
   windowControls,
 });

@@ -69,6 +69,17 @@ type ListMode = "chats" | "files";
 
 /** Which file overlay is open; `undefined` means none, so only one can render. */
 type QuickOpenMode = "files" | "preview";
+/**
+ * The kernel stores the resolved absolute path, so a folder re-picked from the OS dialog matches
+ * loosely: the separator style always differs, and a Windows drive letter is case-insensitive.
+ */
+function samePath(left: string, right: string): boolean {
+  const normalize = (value: string): string => value.replace(/[\\/]+/g, "/").replace(/\/$/, "");
+  const a = normalize(left);
+  const b = normalize(right);
+  if (a === b) return true;
+  return /^[a-z]:\//i.test(a) && /^[a-z]:\//i.test(b) && a.toLowerCase() === b.toLowerCase();
+}
 
 /** One open editor document: the text last read from (or written to) disk, and the editable draft. */
 interface DocumentState {
@@ -656,17 +667,41 @@ export function App() {
     setTabState((current) => closeTab(current, id));
   }
 
-  async function addProject(path: string): Promise<void> {
-    await request("project.add", { path });
-    const result = await request<{ projects: ProjectView[] }>("project.list");
-    setProjects(result.projects);
+  async function addProject(path: string): Promise<ProjectView> {
+    try {
+      const added = await request<ProjectView>("project.add", { path });
+      // The kernel lists newest first; prepending keeps this window in the same order.
+      setProjects((current) => [added, ...current]);
+      return added;
+    } catch (addError) {
+      // Another client may already have added this folder: it is still the folder the user chose,
+      // so the list is refetched instead of failing the one action they asked for.
+      const fresh = await request<{ projects: ProjectView[] }>("project.list");
+      setProjects(fresh.projects);
+      const known = fresh.projects.find((candidate) => samePath(candidate.rootPath, path));
+      if (known === undefined) throw addError;
+      return known;
+    }
   }
 
   async function createWorkspace(projectId: string): Promise<void> {
-    const created = await request<WorkspaceView & { id: string }>("workspace.create", { projectId });
+    const created = await request<WorkspaceView>("workspace.create", { projectId });
     const result = await request<{ workspaces: WorkspaceView[] }>("workspace.list");
     setWorkspaces(result.workspaces);
     setWorkspaceId(created.id);
+  }
+
+  /** Adding a folder is one action: the project, its one workspace, and the selection it implies. */
+  async function openProject(path: string): Promise<void> {
+    const project = await addProject(path);
+    const listed = await request<{ workspaces: WorkspaceView[] }>("workspace.list");
+    setWorkspaces(listed.workspaces);
+    const existing = listed.workspaces.find((workspace) => workspace.projectId === project.id);
+    if (existing !== undefined) {
+      setWorkspaceId(existing.id);
+      return;
+    }
+    await createWorkspace(project.id);
   }
 
   /**
@@ -807,7 +842,7 @@ export function App() {
         workspaces={workspaces}
         workspaceId={workspaceId}
         onSelectWorkspace={setWorkspaceId}
-        onAddProject={addProject}
+        onOpenProject={openProject}
         onCreateWorkspace={createWorkspace}
       />
     </>

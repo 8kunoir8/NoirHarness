@@ -28,6 +28,8 @@ declare global {
     noir?: {
       kernelInfo(): Promise<KernelInfo>;
       openExternal(url: string): Promise<void>;
+      /** Absent in a browser build: only the desktop shell owns a native dialog. */
+      pickFolder?(): Promise<string | null>;
       automationsArmed(count: number): void;
       windowControls?: WindowControls;
     };

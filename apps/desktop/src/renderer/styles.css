@@ -427,12 +427,135 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; colo
   border-bottom: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
+  min-width: 0;
 }
-.workspace-panel details summary { cursor: pointer; color: var(--muted); font-size: 0.8rem; }
-.workspace-panel details[open] { display: flex; flex-direction: column; gap: 8px; }
-.project-list { list-style: none; margin: 0; padding: 0; font-size: 0.78rem; color: var(--muted); }
-.project-list li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-panel .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.workspace-panel .panel-title {
+  margin: 0;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+/*
+ * The rail's own `button` rule is `.shell-rail button` (0,1,1), which would set the 8px padding
+ * and muted colour of a nav row on every control here. These rules carry the extra class on the
+ * panel so they win on the first component and every descendant starts from a quiet default.
+ */
+.workspace-panel .panel-action {
+  padding: 2px 8px;
+  font-size: 0.72rem;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  transition: background var(--ease), color var(--ease), border-color var(--ease);
+}
+.workspace-panel .panel-action:hover:not(:disabled) {
+  background: var(--surface-raised);
+  border-color: var(--border);
+  color: var(--text);
+}
+/* The rail is 150px at its narrowest, so the header's own control is a glyph, not a label. */
+.workspace-panel .panel-icon-action {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font-size: 0.9rem;
+  line-height: 1;
+}
+.workspace-panel .panel-hint { margin: 2px 0; font-size: 0.75rem; color: var(--muted); }
+
+.workspace-panel .project-add { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.workspace-panel .project-add input { font-size: 0.78rem; }
+.workspace-panel .project-add-actions { display: flex; gap: 6px; }
+.workspace-panel .project-add-actions > button { flex: 1; padding: 3px 6px; font-size: 0.75rem; }
+
+.workspace-panel .project-tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.workspace-panel .project-row { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.workspace-panel .project-toggle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 0.8rem;
+  font-weight: 500;
+  text-align: left;
+  transition: background var(--ease);
+}
+.workspace-panel .project-toggle:hover { background: var(--surface-sunken); }
+.workspace-panel .project-caret { color: var(--muted); font-size: 0.65rem; width: 8px; flex: none; }
+.workspace-panel .project-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-panel .project-add-workspace {
+  flex: none;
+  padding: 0 6px;
+  height: 22px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1;
+}
+.workspace-panel .project-add-workspace:hover:not(:disabled) { background: var(--surface-sunken); color: var(--text); }
+.workspace-panel .project-add-workspace:disabled { opacity: 0.35; }
+
+.workspace-panel .workspace-list {
+  list-style: none;
+  margin: 0 0 4px;
+  padding: 0 0 0 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.workspace-panel .workspace-row {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-align: left;
+  transition: background var(--ease), color var(--ease);
+}
+.workspace-panel .workspace-row:hover { background: var(--surface-sunken); color: var(--text); }
+.workspace-panel .workspace-row[aria-current="true"] {
+  background: var(--surface-raised);
+  border-color: var(--border);
+  color: var(--text);
+  font-weight: 500;
+}
+.workspace-panel .workspace-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.workspace-panel .workspace-branch {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--muted);
+  opacity: 0.9;
+}
 
 .sessions-region { display: flex; flex-direction: column; min-height: 0; }
 .new-chat-row { padding: 10px 12px 0; }

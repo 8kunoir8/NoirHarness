@@ -42,7 +42,9 @@ the **Setup** page (the app opens there until a model exists); the last two live
    the model's own id (`gpt-4.1`, `claude-sonnet-4-5`) and may contain `/` when the provider uses
    path-style ids (`meta-llama/Llama-3.3-70B`): the engine selector is `<provider>/<id>` and the
    engine splits it at the first slash, so the id's slashes are preserved.
-3. **Workspace.** Add a project path, create a workspace for it, then select that workspace.
+3. **Workspace.** In the rail's `Projects` block press `+`, pick the folder in the OS dialog (or type
+   its path), and confirm. The folder becomes a project and its workspace in one step, and that
+   workspace is selected for you.
 4. **Chat.** Create a new chat on the workspace with a model, type a prompt, and press send.
 
 The first turn spawns the engine: the kernel regenerates its agent directory, launches
@@ -170,7 +172,8 @@ The window is one grid: a top bar, a horizontal nav strip, and four columns unde
   (chats with an unread badge, agents in the roster, project skills, armed schedules), then the
   kernel state, the clock, and the theme toggle. Entering `Chats` reloads providers, models,
   workspaces, and sessions, so setup changes show up without a restart.
-- **Rail** — the `Chats` filters over `Projects` (project path, project, workspace).
+- **Rail** — the `Chats` filters, then `Projects`: each project is a collapsible row over its
+  workspace, `+` adds one folder (also from the OS picker), and the active workspace is marked.
 - **List pane** — the file tree, or `Sessions`: the new-chat model picker, `New chat`, a search box,
   and sessions grouped by `Today` / `Yesterday` / `Earlier` from the last event time.
 - **Main pane** — tab strip, chat header (session status, model picker, token usage, `Interrupt`),

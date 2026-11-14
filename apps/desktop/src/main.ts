@@ -270,6 +270,14 @@ if (!app.requestSingleInstanceLock()) {
       if (!["http:", "https:", "mailto:"].includes(url.protocol)) throw new Error("blocked url");
       await shell.openExternal(url.toString());
     });
+    // Adding a project is a directory choice, so the OS picker is the honest control: the page
+    // cannot enumerate the disk, and a typed path is a guess the kernel then has to reject.
+    ipcMain.handle("dialog:pickFolder", async (event) => {
+      const win = BrowserWindow.fromWebContents(event.sender);
+      const options = { properties: ["openDirectory" as const], title: "Choose a project folder" };
+      const result = win === null ? await dialog.showOpenDialog(options) : await dialog.showOpenDialog(win, options);
+      return result.canceled ? null : (result.filePaths[0] ?? null);
+    });
     // The caption buttons live in the page, so the page needs these four verbs. Each call resolves
     // its own window from the sender: a reload or a second window can never target the wrong one.
     const windowOf = (event: IpcMainInvokeEvent): BrowserWindow => {
