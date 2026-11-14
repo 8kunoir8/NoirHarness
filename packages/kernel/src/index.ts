@@ -239,7 +239,7 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; o
       const sessions = new SessionService(db, events, models);
       const providers = new ProviderService(db, opts.secrets ?? new KeyringSecrets());
       for (const key of providers.secretValues()) redactor.addSecret(key);
-      const agents = new AgentService(db, models, sessions);
+      const agents = new AgentService(db, models, sessions, events);
       // Task 5 shares this instance with EngineManager so enabled flags match what is materialized.
       const skills = new SkillService(database, dir);
       const skillSources = new SkillSourceService(database, skills, dir);
@@ -564,8 +564,11 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; o
           const { sessionId, sinceSeq } = SessionSubscribeParams.parse(params);
           engineManager.reconcileSession(sessionId);
           // A rewind rebuilds the transcript by replaying from 0, so this is the filter that makes
-          // the abandoned range disappear from the screen.
-          const replay = events.visible(sessionId, sinceSeq);
+          // the abandoned range disappear from the screen. Undoing a rewind (a restore of the
+          // `pre-restore` checkpoint) re-opens a range below the marker that closes it, so a cursor
+          // cannot be honoured for a session whose log was ever cut: the delta from `sinceSeq` would
+          // skip the turn that came back. Whole log, then: the ranges are the filter that matters.
+          const replay = events.visible(sessionId, events.hasRewind(sessionId) ? 0 : sinceSeq);
           return { events: replay, lastSeq: replay.at(-1)?.seq ?? sinceSeq };
         },
         [Methods.checkpointList]: async (params) => {

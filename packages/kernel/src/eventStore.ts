@@ -43,6 +43,19 @@ export class EventStore {
   }
 
   /**
+   * Whether this session's log was ever cut, standing or undone. Undoing a rewind re-opens a range
+   * below the marker that closes it, and neither `rewoundRanges` nor the marker says where that
+   * range starts, so a reader resuming from a seq cannot be handed a delta: it might skip the turn
+   * that came back. `session.subscribe` therefore replays the whole log for a rewound session.
+   */
+  hasRewind(sessionId: string): boolean {
+    return (
+      this.db.prepare("SELECT 1 AS hit FROM events WHERE session_id = ? AND type = 'session.rewound' LIMIT 1").get(sessionId) !==
+      undefined
+    );
+  }
+
+  /**
    * The ranges a rewind abandoned, as `[from, to)`: `from` is the checkpoint's seq (the turn about
    * to start) and `to` is the rewind event's own seq, which stays visible.
    */

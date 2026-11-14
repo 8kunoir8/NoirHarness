@@ -148,7 +148,7 @@ function setup(
     engine: opts.engine ?? "acp",
   });
   const skills = new SkillService(db, dataDir);
-  const agents = new AgentService(db, models, sessions);
+  const agents = new AgentService(db, models, sessions, events);
   const session =
     opts.agentPermissionPolicy === undefined
       ? sessions.create(workspace.id, { modelId: model.id })
@@ -1213,7 +1213,7 @@ describe("EngineManager over the fake ACP server", () => {
       db,
       events,
       sessions,
-      agents: new AgentService(db, models, sessions),
+      agents: new AgentService(db, models, sessions, events),
       models,
       providers: new ProviderService(db, memorySecrets()),
       skills: new SkillService(db, tempDir()),
@@ -2011,9 +2011,11 @@ describe("kernel RPC over the fake ACP server", () => {
         expect(live.map((event) => event.type)).toContain("turn.started");
         expect(live.map((event) => event.type)).toContain("message.delta");
 
+        // The session never rewound, so the cursor is honoured: a strict delta, not a full replay.
         const tail = await call("session.subscribe", { sessionId, sinceSeq: replayResult.lastSeq });
         const tailResult = SubscribeResult.parse(tail.result);
         expect(tailResult.events[0]!.seq).toBe(replayResult.lastSeq + 1);
+        expect(tailResult.events.every((event) => event.seq > replayResult.lastSeq)).toBe(true);
         const tailIds = new Set(tailResult.events.map((event) => event.id));
         expect(live.every((event) => tailIds.has(event.id))).toBe(true);
         expect(tailResult.lastSeq).toBeGreaterThanOrEqual(live.at(-1)!.seq);

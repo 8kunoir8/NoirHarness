@@ -46,7 +46,7 @@ async function startKernelWithManager(opts: { dataDir?: string } = {}): Promise<
  * No RPC creates a checkpoint, so a test that needs a real tree seeds the store and one row here,
  * in the layout `CheckpointService` builds: a git dir whose work tree is the workspace.
  */
-function seedCheckpoint(args: { dataDir: string; root: string; workspaceId: string; sessionId: string }): void {
+function seedCheckpoint(args: { dataDir: string; root: string; workspaceId: string; sessionId: string; seq?: number }): void {
   const store = join(args.dataDir, "checkpoints", args.workspaceId);
   execFileSync("git", ["init", "--quiet", store], { stdio: "ignore" });
   execFileSync("git", ["-C", store, "config", "core.worktree", args.root]);
@@ -58,7 +58,7 @@ function seedCheckpoint(args: { dataDir: string; root: string; workspaceId: stri
     db.prepare(
       `INSERT INTO checkpoints (id, workspace_id, session_id, turn_id, seq, tree_sha, commit_sha, label, created_at, not_captured, error)
        VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-    ).run("c-1", args.workspaceId, args.sessionId, null, 1, tree, null, "turn", Date.now(), 0, null);
+    ).run("c-1", args.workspaceId, args.sessionId, null, args.seq ?? 1, tree, null, "turn", Date.now(), 0, null);
   } finally {
     db.close();
   }
@@ -242,5 +242,35 @@ describe("rewind over RPC", () => {
     } finally {
       manager.endRewind(workspace.result.id);
     }
+  });
+
+  it("replays the turn an undone rewind brought back, even from a cursor above it", async () => {
+    const root = tempDir();
+    const dataDir = tempDir();
+    const kernel = await startKernel({ dataDir });
+    kernels.push(kernel);
+    const project = await call(kernel, "project.add", { path: root });
+    const workspace = await call(kernel, "workspace.create", { projectId: project.result.id });
+    const session = await call(kernel, "session.create", { workspaceId: workspace.result.id });
+    const sessionId: string = session.result.id;
+
+    // A checkpoint at seq 1 cuts at the start of the log, so the marker has something real to hide.
+    seedCheckpoint({ dataDir, root, workspaceId: workspace.result.id, sessionId, seq: 1 });
+    const restored = await call(kernel, "checkpoint.restore", { sessionId, checkpointId: "c-1" });
+    const cut = await call(kernel, "session.subscribe", { sessionId, sinceSeq: 0 });
+    expect(cut.result.events.map((event: { type: string }) => event.type)).toEqual(["session.rewound"]);
+    const cursor: number = cut.result.lastSeq;
+    expect(cursor).toBe(restored.result.eventSeq);
+
+    // Restoring the safety capture hides the marker, so the range it closed comes back — all of it
+    // below `cursor`. A delta from that cursor would answer with the new marker alone.
+    const listed = await call(kernel, "checkpoint.list", { sessionId });
+    const safety = (listed.result.checkpoints as Array<{ id: string; label: string }>).find((row) => row.label === "pre-restore");
+    if (safety === undefined) throw new Error("the first restore wrote no pre-restore checkpoint");
+    await call(kernel, "checkpoint.restore", { sessionId, checkpointId: safety.id });
+
+    const resumed = await call(kernel, "session.subscribe", { sessionId, sinceSeq: cursor });
+    expect(resumed.result.events.map((event: { seq: number }) => event.seq)).toEqual([1, 2, cursor + 1]);
+    expect(resumed.result.lastSeq).toBe(cursor + 1);
   });
 });
