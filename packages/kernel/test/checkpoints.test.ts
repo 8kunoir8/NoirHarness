@@ -33,7 +33,7 @@ interface Rig {
   dataDir: string;
   sessionId: string;
   workspaceId: string;
-  capture: (turnId: string, seq: number) => Promise<CheckpointRow>;
+  capture: (turnId: string, seq: number, label?: "turn" | "pre-restore") => Promise<CheckpointRow>;
 }
 
 function rig(): Rig {
@@ -51,7 +51,7 @@ function rig(): Rig {
   db.prepare("INSERT INTO sessions (id, workspace_id, agent_id, engine, status, created_at) VALUES (?,?,?,?,?,?)").run(sessionId, workspaceId, "a-1", "native", "idle", Date.now());
   return {
     db, events, checkpoints, root, dataDir, sessionId, workspaceId,
-    capture: (turnId, seq) => checkpoints.capture({ sessionId, workspaceId, workspaceRoot: root, turnId, seq }),
+    capture: (turnId, seq, label) => checkpoints.capture({ sessionId, workspaceId, workspaceRoot: root, turnId, seq, ...(label === undefined ? {} : { label }) }),
   };
 }
 
@@ -118,8 +118,14 @@ describe("checkpoint capture", () => {
   it("lists accepted checkpoints and hides the abandoned ones", async () => {
     const r = rig();
     writeFileSync(join(r.root, "a.txt"), "one\n");
-    // The first turn's checkpoint sits at the cut, so the rewind that undoes it abandons the row.
+    // The abandoned turn's prompt takes seq 1 — the seq the first capture recorded.
     const first = await r.capture("t-1", 1);
+    r.events.append({
+      sessionId: r.sessionId, agentId: "a-1", type: "message.delta",
+      payload: { messageId: "m1", role: "user", block: { type: "text", text: "doomed" } },
+      provenance: { engine: "native", engineName: "native", adapterVersion: "1" },
+    });
+    // The marker is seq 2, so the abandoned range is [1, 2) and the row at 1 goes with it.
     r.events.append({
       sessionId: r.sessionId, agentId: "a-1", type: "session.rewound", turnId: null,
       payload: { cutSeq: 1, checkpointId: first.id, promptSeq: 1, restored: 0, deleted: 0, removed: 0, failed: 0, notCaptured: 0, engine: "native", engineNotRewound: false },
@@ -129,5 +135,9 @@ describe("checkpoint capture", () => {
 
     const listed = r.checkpoints.entries(r.sessionId).map((entry) => entry.id);
     expect(listed).toEqual([second.id]);
+
+    // A pre-restore checkpoint records the seq the marker is about to take, so it must survive.
+    const safety = await r.capture("safety", 2, "pre-restore");
+    expect(r.checkpoints.entries(r.sessionId).map((entry) => entry.id)).toEqual([second.id, safety.id]);
   });
 });

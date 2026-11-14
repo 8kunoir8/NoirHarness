@@ -59,10 +59,9 @@ export class CheckpointService {
   entries(sessionId: string): CheckpointView[] {
     const ranges = this.events.rewoundRanges(sessionId);
     return this.rows(sessionId)
-      // The checkpoint at the cut is abandoned with the turn it precedes. When the cut and the
-      // marker share a seq nothing was written between them, and the range must still claim that
-      // one row; a pre-restore checkpoint sits at the marker's seq and stays listed.
-      .filter((row) => !ranges.some((range) => row.seq >= range.from && row.seq < Math.max(range.to, range.from + 1)))
+      // A checkpoint at the cut belongs to the turn the rewind abandoned. A pre-restore checkpoint
+      // sits at the marker's own seq, which is `to`, and stays listed.
+      .filter((row) => !ranges.some((range) => row.seq >= range.from && row.seq < range.to))
       .map((row) => ({
         id: row.id,
         turnId: row.turn_id,
