@@ -64,3 +64,25 @@ test("allows a tool once and streams the follow-up reply", async () => {
     expect(mock.toolMessageSeen()).toBe(true);
   });
 });
+
+test("deletes a chat from the list and closes its tab", async () => {
+  await runChat(async (page, mock, harness) => {
+    await bootstrap(page, mock, harness.workspacePath);
+    await sendPrompt(page, "stream");
+    await expect(page.getByTestId("message-assistant").filter({ hasText: "Hello from mock." })).toBeVisible({
+      timeout: 20_000,
+    });
+
+    const sessions = page.getByRole("region", { name: "Sessions", exact: true });
+    // The first click only arms the row: the chat is still there and still open.
+    await sessions.getByRole("button", { name: /^Delete / }).first().click();
+    await expect(sessions.getByRole("button", { name: /^Confirm delete / }).first()).toBeVisible();
+    await expect(page.getByLabel("Prompt", { exact: true })).toBeVisible();
+
+    await sessions.getByRole("button", { name: /^Confirm delete / }).first().click();
+    await expect(sessions.getByText("No chats yet. Create one to start talking to the agent.")).toBeVisible();
+    // Deleting took the tab with it, so nothing is left pointing at the removed session.
+    await expect(page.getByRole("tablist", { name: "Open tabs" }).getByRole("tab")).toHaveCount(0);
+    await expect(page.getByLabel("Prompt", { exact: true })).toHaveCount(0);
+  });
+});

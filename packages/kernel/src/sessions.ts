@@ -239,6 +239,17 @@ export class SessionService {
   }
 
   /**
+   * Removes a session and everything it wrote. Turns, events, approvals and file changes leave with
+   * it through the schema's cascades, and a schedule run keeps its row with the link cleared. This is
+   * the one irreversible call on the session surface, so the RPC handler closes a live session first:
+   * an engine still streaming would otherwise write to rows that no longer exist.
+   */
+  remove(sessionId: string): void {
+    const removed = this.db.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId).changes;
+    if (removed === 0) throw new RpcFault(ErrorCodes.notFound, "Session not found");
+  }
+
+  /**
    * One page of sessions, newest first. The filters are answered here rather than in the window:
    * a filter that only sees the current page would quietly hide matches on the pages below it.
    */

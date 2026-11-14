@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { ModelView, SessionView } from "@noir/protocol";
 
 export type SessionFilter = "all" | "needs" | "working" | "unread" | "done";
@@ -148,6 +149,8 @@ export interface SessionListProps {
   query: string;
   onQueryChange: (query: string) => void;
   onSelect: (session: SessionView) => void;
+  /** Deleting is irreversible, so the row arms it on the first click and only fires on the second. */
+  onDelete?: (session: SessionView) => void;
   onNewChat: () => void;
   canCreate: boolean;
   /** True while the kernel has another page behind this one. */
@@ -167,6 +170,7 @@ export function SessionList({
   query,
   onQueryChange,
   onSelect,
+  onDelete,
   onNewChat,
   canCreate,
   hasMore = false,
@@ -174,6 +178,8 @@ export function SessionList({
   onLoadMore,
   now = Date.now(),
 }: SessionListProps) {
+  // One row at a time can be armed: a second click anywhere else re-arms that row instead.
+  const [armed, setArmed] = useState<string | undefined>(undefined);
   const needle = query.trim().toLowerCase();
   const visible = sortSessions(sessions).filter(
     (session) =>
@@ -207,8 +213,9 @@ export function SessionList({
               {group.sessions.map((session) => {
                 const label = session.title === "" ? "Untitled chat" : session.title;
                 const meta = modelLabel(session, models);
+                const isArmed = armed === session.id;
                 return (
-                  <li key={session.id}>
+                  <li key={session.id} className="session-item">
                     <button
                       type="button"
                       className="session-row"
@@ -226,6 +233,26 @@ export function SessionList({
                       </span>
                       <time dateTime={new Date(session.lastEventAt).toISOString()}>{timeLabel(session.lastEventAt)}</time>
                     </button>
+                    {onDelete === undefined ? null : (
+                      // A sibling, not a child: the row above is itself a button.
+                      <button
+                        type="button"
+                        className="session-delete"
+                        data-armed={isArmed}
+                        aria-label={isArmed ? `Confirm delete ${label}` : `Delete ${label}`}
+                        title={isArmed ? "Click again to delete this chat" : "Delete chat"}
+                        onClick={() => {
+                          if (isArmed) {
+                            setArmed(undefined);
+                            onDelete(session);
+                            return;
+                          }
+                          setArmed(session.id);
+                        }}
+                      >
+                        {isArmed ? "Delete?" : "✕"}
+                      </button>
+                    )}
                   </li>
                 );
               })}

@@ -650,6 +650,32 @@ export function App() {
     setWorkspaceId(created.id);
   }
 
+  /**
+   * Deleting a chat is the irreversible action; closing its tab only closed the view and left the
+   * row in the list. The kernel closes a live session before removing it, so no engine survives.
+   */
+  async function deleteSession(session: SessionView): Promise<void> {
+    setError(undefined);
+    try {
+      await request("session.delete", { sessionId: session.id });
+      setSessions((current) => current.filter((candidate) => candidate.id !== session.id));
+      setRead((current) => {
+        if (current[session.id] === undefined) return current;
+        const next = { ...current };
+        delete next[session.id];
+        return next;
+      });
+      // The tab renders rows the kernel no longer has, so it goes in the same commit as the row.
+      closeTabById(chatTab(session.id).id);
+      // The page under the deleted row refills from the filter the window is showing.
+      void loadSessions().catch((refreshError: unknown) => {
+        setError(refreshError instanceof Error ? refreshError.message : "Deleted, but the list did not refresh");
+      });
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "Could not delete the chat");
+    }
+  }
+
   async function newChat(): Promise<void> {
     if (workspaceId === "") {
       setError("Add a workspace before creating a chat");
@@ -1130,6 +1156,7 @@ export function App() {
                   query={query}
                   onQueryChange={setQuery}
                   onSelect={openSession}
+                  onDelete={(session) => void deleteSession(session)}
                   onNewChat={() => void newChat()}
                   canCreate={workspaceId !== "" && models.length > 0}
                   hasMore={hasMore}

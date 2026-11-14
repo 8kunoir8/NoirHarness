@@ -238,7 +238,11 @@ restored on launch, and each restored chat tab replays its transcript from seque
 `Chat list` / `File list` switch what the list pane shows: sessions, or the workspace tree. `⌘P`
 searches the whole workspace by path; opening a file adds an editor tab beside the chat tabs.
 `Show diff` adds a diff tab the same way, and `⌘W` closes whichever tab is active — a dirty editor
-tab refuses to close until it is saved. Restored editor and diff tabs belong to the workspace they
+tab refuses to close until it is saved. Closing a chat tab only closes the view; the chat stays in
+the list. To remove a chat for good, hover its row and press `✕` twice (the first press arms the
+row, the second deletes it): `session.delete` closes the session if it is still running, then removes
+it with its events, turns, approvals and file changes. That is irreversible, and it is the only way
+a chat leaves the list. Restored editor and diff tabs belong to the workspace they
 were opened in: when the selected workspace differs they are dropped and the chat tabs stay, and
 chat tabs whose session no longer exists are dropped too.
 

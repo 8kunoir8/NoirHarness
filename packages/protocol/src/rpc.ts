@@ -30,6 +30,7 @@ export const Methods = {
   sessionInterrupt: "session.interrupt",
   sessionCancelQueued: "session.cancelQueued",
   sessionClose: "session.close",
+  sessionDelete: "session.delete",
   sessionFork: "session.fork",
   sessionSetModel: "session.setModel",
   approvalRespond: "approval.respond",
@@ -168,6 +169,11 @@ export type SessionCancelQueuedParams = z.infer<typeof SessionCancelQueuedParams
 export const SessionCancelQueuedResult = z.object({ cancelled: z.boolean() });
 export type SessionCancelQueuedResult = z.infer<typeof SessionCancelQueuedResult>;
 export const SessionCloseParams = z.object({ sessionId: z.string().min(1) });
+export const SessionDeleteParams = z.object({ sessionId: z.string().min(1) });
+export type SessionDeleteParams = z.infer<typeof SessionDeleteParams>;
+/** Deleting takes the session's events, turns, approvals and file changes with it. */
+export const SessionDeleteResult = z.object({ deleted: z.boolean() });
+export type SessionDeleteResult = z.infer<typeof SessionDeleteResult>;
 
 /** `upToSeq` forks the conversation as it stood at an event, not as it stands now. */
 export const SessionForkParams = z.object({

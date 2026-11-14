@@ -41,6 +41,7 @@ import {
   ScheduleRunsParams,
   ScheduleUpdateParams,
   SessionCloseParams,
+  SessionDeleteParams,
   SessionForkParams,
   SessionListParams,
   SessionCreateParams,
@@ -434,6 +435,14 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; o
         [Methods.sessionClose]: async (params) => {
           await engineManager.closeSession(SessionCloseParams.parse(params).sessionId);
           return { ok: true };
+        },
+        [Methods.sessionDelete]: async (params) => {
+          const { sessionId } = SessionDeleteParams.parse(params);
+          // Close first: closing reaps the engine and every MCP child it started, so nothing is
+          // left emitting events into rows this call is about to remove.
+          await engineManager.closeSession(sessionId);
+          sessions.remove(sessionId);
+          return { deleted: true };
         },
         [Methods.sessionFork]: async (params) => {
           const { sessionId, upToSeq } = SessionForkParams.parse(params);

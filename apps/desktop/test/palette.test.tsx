@@ -202,7 +202,8 @@ describe("App fork entry point", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(await screen.findByRole("button", { name: /Shell/ }));
+    // Anchored: the row reads "Shell <status> <time>", while its delete control reads "Delete Shell".
+    await user.click(await screen.findByRole("button", { name: /^Shell/ }));
     await user.click(await screen.findByRole("button", { name: "Commands" }));
     await user.type(await screen.findByLabelText("Command"), "fork");
     await user.click(screen.getByTestId("palette-fork-session"));

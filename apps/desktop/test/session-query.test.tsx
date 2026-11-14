@@ -82,3 +82,59 @@ describe("SessionList paging", () => {
     expect(screen.queryByRole("button", { name: /Load older chats/ })).toBeNull();
   });
 });
+
+describe("SessionList delete", () => {
+  const base = {
+    models: [],
+    read: {},
+    filter: "all" as const,
+    query: "",
+    onQueryChange: () => undefined,
+    onSelect: () => undefined,
+    onNewChat: () => undefined,
+    canCreate: true,
+  };
+
+  it("arms the row on the first click and only deletes on the second", async () => {
+    const user = userEvent.setup();
+    const deleted: string[] = [];
+    render(
+      <SessionList
+        {...base}
+        sessions={[session({ id: "s1", title: "Fix the parser" })]}
+        onDelete={(target) => deleted.push(target.id)}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Delete Fix the parser" }));
+    expect(deleted).toEqual([]);
+    await user.click(screen.getByRole("button", { name: "Confirm delete Fix the parser" }));
+    expect(deleted).toEqual(["s1"]);
+    // One delete per arming: the row is no longer armed after it fires.
+    expect(screen.getByRole("button", { name: "Delete Fix the parser" })).toBeTruthy();
+  });
+
+  it("moves the arming to the row that was clicked last", async () => {
+    const user = userEvent.setup();
+    const deleted: string[] = [];
+    render(
+      <SessionList
+        {...base}
+        sessions={[session({ id: "s1", title: "First" }), session({ id: "s2", title: "Second" })]}
+        onDelete={(target) => deleted.push(target.id)}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Delete First" }));
+    await user.click(screen.getByRole("button", { name: "Delete Second" }));
+    expect(deleted).toEqual([]);
+    expect(screen.queryByRole("button", { name: "Confirm delete First" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Confirm delete Second" }));
+    expect(deleted).toEqual(["s2"]);
+  });
+
+  it("offers no delete control when the caller cannot delete", () => {
+    render(<SessionList {...base} sessions={[session({ id: "s1", title: "Tea" })]} />);
+    expect(screen.queryByRole("button", { name: "Delete Tea" })).toBeNull();
+  });
+});
