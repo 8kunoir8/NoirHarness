@@ -924,6 +924,39 @@ describe("office scene", () => {
     expect(sprite?.x === 2 * 16 + 8 && sprite?.y === 6 * 16).toBe(false);
   });
 
+  it("keeps four idle agents on four different tiles while they roam", async () => {
+    const harnessed = harness();
+    const desks: OfficePoint[] = [
+      { x: 2, y: 5 },
+      { x: 5, y: 5 },
+      { x: 8, y: 5 },
+      { x: 11, y: 5 },
+    ];
+    const { scene } = await harnessed.createScene(
+      false,
+      desks.map((desk, index) => officeState({ agentId: `a-${index}`, desk })),
+    );
+    // A minute of idling: six wander windows, each followed by a walk to the next free tile.
+    let time = 60_000;
+    for (let tick = 0; tick < 60; tick += 1) {
+      time += 1_000;
+      scene.update(time, 1_000);
+      const occupied = harnessed.sprites.map((sprite) => `${sprite.x},${sprite.y}`);
+      expect(new Set(occupied).size).toBe(occupied.length);
+    }
+    expect(harnessed.sprites.some((sprite) => sprite.x !== 2 * 16 + 8 || sprite.y !== 6 * 16)).toBe(true);
+  });
+
+  it("stands a cup on the middle of its tabletop instead of its own tile corner", () => {
+    const cups = officeMap.furniture.filter((item) => item.frame === "coffee");
+    // Each cup's art is centred on its table's 32-pixel art and its base three pixels inside the
+    // tabletop, which starts eleven pixels down a 32-tall table frame.
+    expect(cups.map((cup) => realScene.restOn(officeMap.furniture, manifest.frames, cup, 16))).toEqual([
+      { x: 276, y: 119, bottom: 144 },
+      { x: 324, y: 183, bottom: 208 },
+    ]);
+  });
+
   it("rings and names only the agent behind the open chat", async () => {
     const harnessed = harness();
     const states = [

@@ -2,6 +2,7 @@ import type Phaser from "phaser";
 import tilesUrl from "./assets/tiles.png?url";
 import roomUrl from "./assets/room.png?url";
 import charactersUrl from "./assets/characters.png?url";
+import { OFFICE_DESKS } from "./desks.js";
 import { hashAgentId, type AgentOfficeState, type OfficeAction, type OfficePoint } from "./mapper.js";
 import { findPath } from "./pathfinding.js";
 import {
@@ -17,8 +18,13 @@ import {
 
 /** One tile per 120 ms (spec §9.3). */
 export const STEP_MS = 120;
-/** Idle agents wander to the lounge after this long and return when the next action arrives. */
+/** An idle agent picks a new place to stand after this long, and keeps roaming while it waits. */
 export const IDLE_WANDER_MS = 8_000;
+/**
+ * How far a surface item's base sits inside the top face of the piece it rests on. Sitting the base
+ * exactly on the art's top row reads as balanced on the back edge; a few pixels in reads as standing.
+ */
+const SURFACE_REST_PX = 3;
 
 /** The agent behind the open chat: tint, foot ring and nameplate all use this one accent. */
 const SELECTED_TINT = 0x9ad0ff;
@@ -55,13 +61,14 @@ const ASSET_URLS: Record<string, string> = {
   "characters.png": charactersUrl,
 };
 
-interface FurniturePlacement {
+export interface FurniturePlacement {
   frame: string;
   x: number;
   y: number;
   /**
    * Rests on top of whatever furniture it overlaps (a monitor on a desk, a coffee machine on a
-   * table) instead of on the floor, so it sorts half a pixel in front of that piece.
+   * table) instead of on the floor, so it sorts half a pixel in front of that piece and its art is
+   * placed on the support's top face rather than at its own tile corner.
    */
   surface?: boolean;
 }
@@ -79,7 +86,7 @@ export interface OfficeMap {
   floor: string[];
   collision: string[];
   furniture: FurniturePlacement[];
-  zones: { shelf: OfficePoint[]; rack: OfficePoint[]; lounge: OfficePoint[] };
+  zones: { shelf: OfficePoint[]; rack: OfficePoint[] };
 }
 
 export interface AssetFrame {
@@ -88,6 +95,12 @@ export interface AssetFrame {
   y: number;
   w: number;
   h: number;
+  /**
+   * The opaque pixels inside the frame, relative to its corner. The room atlas pads its frames with
+   * transparent margins, so a piece that has to line up with another — a cup on a table — anchors to
+   * its art; a frame without this field is all art.
+   */
+  art?: { x: number; y: number; w: number; h: number };
 }
 
 /** The cast atlas: `count` characters, `columns` frames each, one row per drawn direction. */
@@ -150,7 +163,8 @@ interface Mover {
   carry: number;
   step: number;
   arrivedAt: number;
-  atLounge: boolean;
+  /** Wander stops taken since the last action: each one steps the agent's place in the rotation. */
+  wander: number;
   /** Index into the cast atlas: fixed per agent, so a re-spawn keeps the same character. */
   character: number;
   direction: Direction;
@@ -175,6 +189,82 @@ export function directionBetween(
   const dx = to.x - from.x;
   if (dx !== 0) return { direction: "right", flipX: dx < 0 };
   return { direction: to.y < from.y ? "up" : "down", flipX: false };
+}
+
+/** A frame's art box: the opaque pixels it records, or the whole frame when it has no padding. */
+function artOf(frame: AssetFrame): { x: number; y: number; w: number; h: number } {
+  return frame.art ?? { x: 0, y: 0, w: frame.w, h: frame.h };
+}
+
+/**
+ * Where a surface item is drawn: the frame corner that centres its art across the art of the piece it
+ * rests on and puts its base {@link SURFACE_REST_PX} into that piece's top face, plus the depth the
+ * support sorts at. Both frames are padded with transparent margins, so the item's own tile corner
+ * lands nowhere near the middle of a table — the recorded art boxes are what make this arithmetic
+ * instead of a hand-tuned offset in the map.
+ *
+ * The support is the deepest piece whose tiles cover the item's tile, so a cup on a table that stands
+ * in front of a desk belongs to the table. `undefined` means nothing was found: draw it where it is.
+ */
+export function restOn(
+  furniture: readonly FurniturePlacement[],
+  frames: Record<string, AssetFrame>,
+  item: FurniturePlacement,
+  tile: number,
+): { x: number; y: number; bottom: number } | undefined {
+  const itemFrame = frames[item.frame];
+  if (itemFrame === undefined) return undefined;
+  let support: FurniturePlacement | undefined;
+  let bottom = 0;
+  for (const other of furniture) {
+    if (other === item || other.surface === true) continue;
+    const frame = frames[other.frame];
+    if (frame === undefined) continue;
+    const covered =
+      item.x >= other.x &&
+      item.x < other.x + frame.w / tile &&
+      item.y >= other.y &&
+      item.y < other.y + frame.h / tile;
+    const otherBottom = other.y * tile + frame.h;
+    if (covered && otherBottom > bottom) {
+      support = other;
+      bottom = otherBottom;
+    }
+  }
+  const supportFrame = support === undefined ? undefined : frames[support.frame];
+  if (support === undefined || supportFrame === undefined) return undefined;
+  const itemArt = artOf(itemFrame);
+  const supportArt = artOf(supportFrame);
+  const left = support.x * tile + supportArt.x + (supportArt.w - itemArt.w) / 2;
+  const base = support.y * tile + supportArt.y + SURFACE_REST_PX;
+  return { x: Math.round(left - itemArt.x), y: base - itemArt.h - itemArt.y, bottom };
+}
+
+/** A tile's identity as a lookup key. */
+function tileKey(point: OfficePoint): string {
+  return `${point.x},${point.y}`;
+}
+
+/**
+ * The tiles an idle agent may wander to: every walkable tile that is not a desk seat and not a
+ * station. Seats and stations are left out because the agent that works there is the one that should
+ * stand on them — a wanderer parked on either would have to be walked through when its owner arrives.
+ * Row-major order, so the rotation over it is the same on every run.
+ */
+export function roamTiles(
+  grid: readonly (readonly boolean[])[],
+  stations: readonly (readonly OfficePoint[])[],
+): OfficePoint[] {
+  const reserved = new Set<string>();
+  for (const seat of OFFICE_DESKS) reserved.add(tileKey(seat));
+  for (const station of stations) for (const point of station) reserved.add(tileKey(point));
+  const tiles: OfficePoint[] = [];
+  grid.forEach((row, y) => {
+    row.forEach((walkable, x) => {
+      if (walkable && !reserved.has(tileKey({ x, y }))) tiles.push({ x, y });
+    });
+  });
+  return tiles;
 }
 
 /** Which clip an office action holds. Agents work and read at their station, and sit out a block. */
@@ -206,6 +296,8 @@ export function createOfficeScene(
   class OfficeScene extends Phaser.Scene {
     private assets: OfficeAssets | undefined;
     private grid: boolean[][] = [];
+    /** Where an idle agent may stand: every walkable tile that is not a seat or a station. */
+    private roam: OfficePoint[] = [];
     private readonly movers = new Map<string, Mover>();
     private selectedId: string | undefined;
     private reducedMotion = false;
@@ -226,6 +318,7 @@ export function createOfficeScene(
         if (this.disposed) return;
         this.assets = assets;
         this.grid = assets.map.collision.map((row) => [...row].map((cell) => cell !== "#"));
+        this.roam = roamTiles(this.grid, [assets.map.zones.shelf, assets.map.zones.rack]);
         await this.queueImages(assets.manifest);
         if (this.disposed) return;
         this.drawMap(assets);
@@ -301,28 +394,15 @@ export function createOfficeScene(
       }
       // Furniture sorts by the bottom of its art, so an agent standing on the row below a desk draws
       // in front of it — the rule the reference office uses. A surface item then sorts half a pixel
-      // in front of the piece whose tiles it covers, and the character in front of both.
-      const bottoms = map.furniture.map(
-        (item) => item.y * tile + (assets.manifest.frames[item.frame]?.h ?? tile),
-      );
+      // in front of the piece it rests on, and the character in front of both.
+      const frames = assets.manifest.frames;
+      const bottoms = map.furniture.map((item) => item.y * tile + (frames[item.frame]?.h ?? tile));
       map.furniture.forEach((item, index) => {
-        let depth = bottoms[index] ?? 0;
-        if (item.surface === true) {
-          let support = 0;
-          map.furniture.forEach((other, otherIndex) => {
-            if (otherIndex === index || other.surface === true) return;
-            const frame = assets.manifest.frames[other.frame];
-            const covers =
-              item.x >= other.x &&
-              item.x < other.x + (frame?.w ?? tile) / tile &&
-              item.y >= other.y &&
-              item.y < other.y + (frame?.h ?? tile) / tile;
-            const bottom = bottoms[otherIndex] ?? 0;
-            if (covers && bottom > support) support = bottom;
-          });
-          if (support > 0) depth = support + 0.5;
-        }
-        this.addFrame(assets, item.frame, item.x * tile, item.y * tile, depth);
+        const rest = item.surface === true ? restOn(map.furniture, frames, item, tile) : undefined;
+        const x = rest?.x ?? item.x * tile;
+        const y = rest?.y ?? item.y * tile;
+        const depth = rest === undefined ? bottoms[index] ?? 0 : rest.bottom + 0.5;
+        this.addFrame(assets, item.frame, x, y, depth);
       });
     }
 
@@ -496,7 +576,7 @@ export function createOfficeScene(
         carry: 0,
         step: 0,
         arrivedAt: 0,
-        atLounge: false,
+        wander: 0,
         character,
         direction: "down",
         flipX: false,
@@ -550,7 +630,8 @@ export function createOfficeScene(
       }
       mover.path = path;
       mover.carry = 0;
-      mover.atLounge = false;
+      // An agent given an action forgets where it was strolling and starts its rotation over.
+      mover.wander = 0;
       if (path.length === 0) this.startAction(mover);
       else this.startWalk(mover);
     }
@@ -566,15 +647,12 @@ export function createOfficeScene(
     }
 
     private maybeWander(mover: Mover, time: number): void {
-      const zones = this.assets?.map.zones;
-      if (zones === undefined || mover.state.action !== "idle" || zones.lounge.length === 0) return;
+      if (mover.state.action !== "idle" || this.roam.length === 0) return;
       // `time` is the game clock, not zero-based per spawn: adopt it on the first idle frame so a new
       // agent idles for the full window instead of wandering the moment it appears.
       if (mover.arrivedAt === 0) mover.arrivedAt = time;
       if (time - mover.arrivedAt < IDLE_WANDER_MS) return;
-      const target = mover.atLounge
-        ? mover.state.desk
-        : zones.lounge[hashAgentId(mover.state.agentId) % zones.lounge.length];
+      const target = this.freeRoamTile(mover);
       if (target === undefined) return;
       const path = findPath(this.grid, mover.tile, target);
       if (path === null || path.length === 0) {
@@ -583,8 +661,31 @@ export function createOfficeScene(
       }
       mover.path = path;
       mover.carry = 0;
-      mover.atLounge = !mover.atLounge;
+      mover.wander += 1;
       this.startWalk(mover);
+    }
+
+    /**
+     * The tile this agent walks to next: its place in the roam rotation, stepped by one per wander,
+     * then the first free tile after it. A tile is taken while another agent stands on it or is
+     * already walking to it, so idle agents spread over the room instead of stacking on one spot.
+     */
+    private freeRoamTile(mover: Mover): OfficePoint | undefined {
+      const taken = new Set<string>();
+      for (const other of this.movers.values()) {
+        if (other === mover) continue;
+        taken.add(tileKey(other.tile));
+        const destination = other.path.at(-1);
+        if (destination !== undefined) taken.add(tileKey(destination));
+      }
+      const start = (hashAgentId(mover.state.agentId) + mover.wander) % this.roam.length;
+      for (let probe = 0; probe < this.roam.length; probe += 1) {
+        const tile = this.roam[(start + probe) % this.roam.length];
+        if (tile === undefined || taken.has(tileKey(tile))) continue;
+        if (tile.x === mover.tile.x && tile.y === mover.tile.y) continue;
+        return tile;
+      }
+      return undefined;
     }
 
     private snap(mover: Mover, tile: OfficePoint): void {

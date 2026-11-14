@@ -388,8 +388,9 @@ cannot land on top of a newer refresh.
 
 The **Office** pane renders a Phaser pixel office from the same roster data: each agent gets a stable
 desk derived from its id, walks there in a direction-aware gait, works through a typing clip with its
-monitor lit and flickering, reads at the shelves, sits out an approval, and wanders to the lounge past
-the plants, coffee table and bins after an idle spell. Every working agent says one word over its head
+monitor lit and flickering, reads at the shelves, sits out an approval, and roams the open floor past
+the plants, coffee table and bins after an idle spell — a fresh tile each time, never one another's.
+Every working agent says one word over its head
 — `Working`, `Reading`, `Shell` — and an agent waiting on a permission says the request's title
 instead; idle agents say nothing. The agent behind the open chat is ringed, named and tinted, so the
 character is findable in a room of twelve. It appears in two
