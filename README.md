@@ -480,10 +480,10 @@ disappears behind one marker row.
 
 - Build outputs, `node_modules`, and the directories in the store's own ignore file are never
   captured or moved. Anything your `.gitignore` hides stays on disk untouched.
-- The state you are about to lose is snapshotted first, as a `pre-restore` checkpoint, and the
-  rewind is refused outright if that snapshot cannot be taken. Nothing moves when it refuses. The
-  row is listed by `checkpoint.list`; the transcript has no prompt to hang an action on, so the
-  undo is reachable through `checkpoint.restore` rather than through a second click in the UI.
+- The state you are about to lose is snapshotted first, and the rewind is refused outright if that
+  snapshot cannot be taken; nothing moves when it refuses. The marker left behind carries
+  **Undo this rewind**, which restores that snapshot — files and conversation both — so a mistaken
+  rewind is a click away rather than an RPC.
 - `session.rewound` is appended, never inserted: the log stays append-only and every seq keeps
   its meaning.
 - The native engine is disposed and its history is rebuilt from the visible log. An ACP engine
