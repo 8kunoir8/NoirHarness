@@ -309,6 +309,9 @@ export class CheckpointService {
   private async ensureStore(workspaceId: string, root: string): Promise<void> {
     const store = this.storeDir(workspaceId);
     const nested = relative(root, this.opts.dataDir);
+    // `refresh` reaches here without passing `refusal`, and a store whose work tree is the data dir
+    // would index the live database; the one case no exclude can express is refused outright.
+    if (nested === "") throw new RpcFault(ErrorCodes.conflict, "The workspace root is the checkpoint data directory");
     const ignore = join(store, "ignore");
     const fingerprint = `${root}\u0000${nested}\u0000${this.gitCommand}`;
     if (this.configured.get(workspaceId) === fingerprint) return;
@@ -322,9 +325,9 @@ export class CheckpointService {
     await mkdir(hooks, { recursive: true });
     // The store must never capture its own database or objects. `dataDir` is normally outside every
     // workspace, but a portable install can put it inside one, and then the first snapshot would
-    // index the snapshot. `nested` is work-tree-relative, so `..` and `../x` are outside; `""` means
-    // the data dir *is* the root, which no exclude can express and which `refusal` refuses.
-    const self = nested === "" || nested === ".." || nested.startsWith(`..${sep}`) || isAbsolute(nested)
+    // index the snapshot. `nested` is work-tree-relative, so `..` and `../x` are outside and an
+    // absolute path is on another drive; the data dir *being* the root was refused above.
+    const self = nested === ".." || nested.startsWith(`..${sep}`) || isAbsolute(nested)
       ? []
       : [`/${nested.split(sep).join("/")}/`];
     await writeFile(ignore, `${[...FORCED_EXCLUDES, ...self].join("\n")}\n`, "utf8");

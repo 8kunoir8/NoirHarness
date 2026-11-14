@@ -130,6 +130,8 @@ describe("checkpoint capture", () => {
     expect(row.error).toBe("The workspace root is the checkpoint data directory");
     expect(row.treeSha).toBeNull();
     expect(existsSync(join(root, "checkpoints", "w-1"))).toBe(false);
+    // `plan` refreshes before it checks for a tree, so the store guard is what has to stop it.
+    await expect(service.plan("s-1", row.id)).rejects.toThrow(/checkpoint data directory/);
   });
 
   it("lists accepted checkpoints and hides the abandoned ones", async () => {
