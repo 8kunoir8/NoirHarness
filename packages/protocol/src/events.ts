@@ -41,7 +41,7 @@ export const PermissionOption = z.object({
 export type PermissionOption = z.infer<typeof PermissionOption>;
 
 export const EventType = z.enum([
-  "session.created", "session.updated", "session.status", "session.closed",
+  "session.created", "session.updated", "session.status", "session.closed", "session.rewound",
   "turn.started", "turn.completed", "turn.failed",
   "message.delta", "message.completed",
   "tool.started", "tool.output", "tool.completed", "tool.failed",
@@ -58,6 +58,23 @@ export const PayloadSchemas = {
   "session.updated": z.object({ title: z.string() }),
   "session.status": z.object({ status: SessionStatus, reason: z.string().min(1).optional() }),
   "session.closed": z.object({ reason: z.string().optional() }),
+  /**
+   * A rewind hides `[cutSeq, this event's seq)` from every projection. `promptSeq` is the user
+   * message the cut removed, so the marker can put it back in the composer; null when the cut
+   * started at a turn whose prompt event is gone.
+   */
+  "session.rewound": z.object({
+    cutSeq: z.number().int().nonnegative(),
+    checkpointId: z.string(),
+    promptSeq: z.number().int().nonnegative().nullable(),
+    restored: z.number().int().nonnegative(),
+    deleted: z.number().int().nonnegative(),
+    removed: z.number().int().nonnegative(),
+    failed: z.number().int().nonnegative(),
+    notCaptured: z.number().int().nonnegative(),
+    engine: EngineKind,
+    engineNotRewound: z.boolean(),
+  }),
   "turn.started": z.object({ turnId: z.string(), index: z.number().int().nonnegative() }),
   "turn.completed": z.object({
     turnId: z.string(),

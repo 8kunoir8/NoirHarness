@@ -32,6 +32,10 @@ export const Methods = {
   sessionClose: "session.close",
   sessionDelete: "session.delete",
   sessionFork: "session.fork",
+  checkpointList: "checkpoint.list",
+  checkpointPlan: "checkpoint.plan",
+  checkpointRestore: "checkpoint.restore",
+  sessionEvent: "session.event",
   sessionSetModel: "session.setModel",
   approvalRespond: "approval.respond",
   providerCreate: "provider.create",
@@ -78,6 +82,9 @@ export const SystemHealthResult = z.object({
   status: z.literal("ok"),
   pid: z.number().int(),
   engineDir: z.string(),
+  /** `unavailable` disables every rewind affordance; the reason is shown instead. */
+  checkpoints: z.enum(["ok", "unavailable"]).optional(),
+  checkpointReason: z.string().optional(),
 });
 export type SystemHealthResult = z.infer<typeof SystemHealthResult>;
 
@@ -187,6 +194,54 @@ export const SessionForkResult = z.object({
   copiedEvents: z.number().int().nonnegative(),
 });
 export type SessionForkResult = z.infer<typeof SessionForkResult>;
+
+/** One captured workspace tree. Counts are not here: they are the prediction `checkpoint.plan` makes. */
+export const CheckpointView = z.object({
+  id: z.string(),
+  turnId: z.string().nullable(),
+  /** Seq the rewind returns to: everything from here on is the turn this checkpoint precedes. */
+  seq: z.number().int().nonnegative(),
+  createdAt: z.number().int(),
+  notCaptured: z.number().int().nonnegative(),
+  label: z.enum(["turn", "pre-restore"]),
+  /** Why this row has no tree; null on a usable checkpoint. */
+  error: z.string().nullable(),
+});
+export type CheckpointView = z.infer<typeof CheckpointView>;
+
+export const CheckpointListParams = z.object({ sessionId: z.string().min(1) });
+export const CheckpointListResult = z.object({
+  checkpoints: z.array(CheckpointView),
+  /** False when `git` is missing, the workspace is an LFS work tree, or the store is unusable. */
+  available: z.boolean(),
+  reason: z.string().optional(),
+});
+export type CheckpointListResult = z.infer<typeof CheckpointListResult>;
+
+export const CheckpointPlanParams = z.object({ sessionId: z.string().min(1), checkpointId: z.string().min(1) });
+/** What a restore would do to the work tree right now. */
+export const CheckpointPlanResult = z.object({
+  restored: z.number().int().nonnegative(),
+  deleted: z.number().int().nonnegative(),
+  removed: z.number().int().nonnegative(),
+  failed: z.array(z.string()),
+});
+export type CheckpointPlanResult = z.infer<typeof CheckpointPlanResult>;
+
+export const CheckpointRestoreParams = CheckpointPlanParams;
+export const CheckpointRestoreResult = CheckpointPlanResult.extend({
+  ok: z.literal(true),
+  /** Seq of the `session.rewound` event, so a caller can replay from here. */
+  eventSeq: z.number().int().nonnegative(),
+});
+export type CheckpointRestoreResult = z.infer<typeof CheckpointRestoreResult>;
+
+/** Reads one event, including one a rewind abandoned; the marker uses it to restore the prompt. */
+export const SessionEventParams = z.object({
+  sessionId: z.string().min(1),
+  seq: z.number().int().positive(),
+});
+export const SessionEventResult = z.object({ event: AgentEvent });
 
 export const SessionSetModelParams = z.object({ sessionId: z.string().min(1), modelId: z.string().min(1) });
 export type SessionSetModelParams = z.infer<typeof SessionSetModelParams>;
