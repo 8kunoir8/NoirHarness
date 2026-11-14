@@ -486,6 +486,7 @@ describe("office scene", () => {
       loop: { sleep: () => void; wake: () => void };
     };
     sprites: FakeGameObject[];
+    screens: FakeGameObject[];
     texts: FakeGameObject[];
     createScene: (
       reducedMotion: boolean,
@@ -494,6 +495,7 @@ describe("office scene", () => {
     ) => Promise<{ scene: SceneLike }>;
   } {
     const sprites: FakeGameObject[] = [];
+    const screens: FakeGameObject[] = [];
     const texts: FakeGameObject[] = [];
     const registry = new Map<string, unknown>();
     const game = {
@@ -582,6 +584,7 @@ describe("office scene", () => {
         image: (x: number, y: number, file: string, frame: string): FakeGameObject => {
           const object = new GameObject(x, y, frame);
           if (frame.startsWith("char-")) sprites.push(object);
+          if (frame.startsWith("pc-")) screens.push(object);
           return object;
         },
         text: (x: number, y: number, text: string): FakeGameObject => {
@@ -609,6 +612,7 @@ describe("office scene", () => {
     return {
       game,
       sprites,
+      screens,
       texts,
       createScene: async (
         reducedMotion: boolean,
@@ -643,7 +647,7 @@ describe("office scene", () => {
         name: "Scout",
         status: "working",
         action: "reading",
-        desk: { x: 2, y: 4 },
+        desk: { x: 2, y: 5 },
       }),
     ]);
 
@@ -666,26 +670,26 @@ describe("office scene", () => {
   it("maps each action onto its own clip frame", async () => {
     const harnessed = harness();
     await harnessed.createScene(true, [
-      officeState({ agentId: "a-work", status: "working", action: "working", desk: { x: 2, y: 4 } }),
+      officeState({ agentId: "a-work", status: "working", action: "working", desk: { x: 2, y: 5 } }),
       officeState({
         agentId: "a-read",
         status: "working",
         action: "reading",
-        desk: { x: 5, y: 4 },
+        desk: { x: 5, y: 5 },
         deskIndex: 1,
       }),
       officeState({
         agentId: "a-block",
         status: "needs_you",
         action: "blocked",
-        desk: { x: 8, y: 4 },
+        desk: { x: 8, y: 5 },
         deskIndex: 2,
       }),
       officeState({
         agentId: "a-idle",
         status: "idle",
         action: "idle",
-        desk: { x: 11, y: 4 },
+        desk: { x: 11, y: 5 },
         deskIndex: 3,
       }),
     ]);
@@ -704,7 +708,7 @@ describe("office scene", () => {
   it("advances the working clip on the game clock", async () => {
     const harnessed = harness();
     const { scene } = await harnessed.createScene(false, [
-      officeState({ agentId: "a-1", status: "working", action: "working", desk: { x: 2, y: 4 } }),
+      officeState({ agentId: "a-1", status: "working", action: "working", desk: { x: 2, y: 5 } }),
     ]);
     const character = hashAgentId("a-1") % manifest.characters.count;
     const sprite = harnessed.sprites[0];
@@ -716,6 +720,37 @@ describe("office scene", () => {
     expect(sprite?.frame).toBe(`char-${character}-up-3`);
   });
 
+  it("lights the agent's monitor only while it works", async () => {
+    const harnessed = harness();
+    const { scene } = await harnessed.createScene(false, [
+      officeState({ agentId: "a-1", status: "working", action: "working", desk: { x: 2, y: 5 } }),
+      officeState({
+        agentId: "a-2",
+        status: "working",
+        action: "reading",
+        desk: { x: 5, y: 5 },
+        deskIndex: 1,
+      }),
+    ]);
+
+    const [working, reading] = harnessed.screens;
+    // The desk's art covers the two rows above the seat, so the monitor stands on the desk's own row
+    // and sorts half a pixel in front of the desk but behind the agent, whose depth is its feet.
+    expect(working?.x).toBe(2 * 16 + 8);
+    expect(working?.y).toBe(3 * 16);
+    expect(working?.depth).toBe(3 * 16 + 32 + 0.5);
+    expect(working?.frame).toBe("pc-on-1");
+    expect(reading?.frame).toBe("pc-off");
+
+    scene.update(0, 300);
+    expect(working?.frame).toBe("pc-on-2");
+    scene.update(300, 300);
+    expect(working?.frame).toBe("pc-on-3");
+    scene.update(600, 300);
+    expect(working?.frame).toBe("pc-on-1");
+    expect(reading?.frame).toBe("pc-off");
+  });
+
   it("does not restart the action animation for an unchanged snapshot", async () => {
     const harnessed = harness();
     const state: AgentOfficeState = officeState({
@@ -723,7 +758,7 @@ describe("office scene", () => {
       name: "Scout",
       status: "working",
       action: "working",
-      desk: { x: 2, y: 4 },
+      desk: { x: 2, y: 5 },
     });
     const { scene } = await harnessed.createScene(false, [state]);
     const sprite = harnessed.sprites[0];
@@ -742,14 +777,14 @@ describe("office scene", () => {
         name: "Scout",
         status: "working",
         action: "reading",
-        desk: { x: 2, y: 4 },
+        desk: { x: 2, y: 5 },
       }),
     ]);
     const sprite = harnessed.sprites[0];
     expect(sprite?.x).toBe(2 * 16 + 8);
-    expect(sprite?.y).toBe(5 * 16);
+    expect(sprite?.y).toBe(6 * 16);
     scene.update(0, 120);
-    expect(sprite?.x === 2 * 16 + 8 && sprite?.y === 5 * 16).toBe(false);
+    expect(sprite?.x === 2 * 16 + 8 && sprite?.y === 6 * 16).toBe(false);
   });
 
   it("picks the atlas row from the step and mirrors leftwards", () => {
@@ -776,7 +811,7 @@ describe("office scene", () => {
     const harnessed = harness();
     await harnessed.createScene(false, [
       officeState({ agentId: "a-1", status: "needs_you", action: "blocked", bubble: "Run rm -rf build" }),
-      officeState({ agentId: "a-2", status: "error", action: "error", desk: { x: 3, y: 4 }, deskIndex: 1 }),
+      officeState({ agentId: "a-2", status: "error", action: "error", desk: { x: 3, y: 5 }, deskIndex: 1 }),
     ]);
 
     const visible = harnessed.texts.filter((text) => text.visible).map((text) => text.text);
@@ -794,7 +829,7 @@ describe("office scene", () => {
         name: "Scout",
         status: "working",
         action: "working",
-        desk: { x: 2, y: 4 },
+        desk: { x: 2, y: 5 },
       }),
     ]);
 
@@ -842,18 +877,18 @@ describe("office scene", () => {
         name: "Scout",
         status: "idle",
         action: "idle",
-        desk: { x: 2, y: 4 },
+        desk: { x: 2, y: 5 },
       }),
     ]);
     const sprite = harnessed.sprites[0];
     // The game clock is already far past the wander window when this snapshot spawns the agent.
     scene.update(60_000, 16);
     expect(sprite?.x).toBe(2 * 16 + 8);
-    expect(sprite?.y).toBe(5 * 16);
+    expect(sprite?.y).toBe(6 * 16);
 
     scene.update(68_001, 16);
     scene.update(68_017, 200);
-    expect(sprite?.x === 2 * 16 + 8 && sprite?.y === 5 * 16).toBe(false);
+    expect(sprite?.x === 2 * 16 + 8 && sprite?.y === 6 * 16).toBe(false);
   });
 
   it("destroys a removed agent's objects and stops painting it", async () => {
@@ -864,7 +899,7 @@ describe("office scene", () => {
         name: "Scout",
         status: "working",
         action: "working",
-        desk: { x: 2, y: 4 },
+        desk: { x: 2, y: 5 },
       }),
     ]);
     const sprite = harnessed.sprites[0];

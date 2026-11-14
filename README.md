@@ -373,8 +373,9 @@ share one subscription — the ticket is read before the request, so a batch loa
 cannot land on top of a newer refresh.
 
 The **Office** pane renders a Phaser pixel office from the same roster data: each agent gets a stable
-desk derived from its id, walks there in a direction-aware gait, works through a typing clip, reads at
-the shelves, sits out an approval, and wanders to the lounge after an idle spell. It appears in two
+desk derived from its id, walks there in a direction-aware gait, works through a typing clip with its
+monitor lit and flickering, reads at the shelves, sits out an approval, and wanders to the lounge past
+the plants, coffee table and bins after an idle spell. It appears in two
 places: full width on the Agents view, and permanently in the chat shell's live sidebar, which
 highlights the agent behind the open chat. Only one of the two is mounted at a time, so the window
 never runs two Phaser render loops. The canvas is `aria-hidden` and publishes `data-office-ready`,

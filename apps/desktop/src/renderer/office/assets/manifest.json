@@ -1,15 +1,165 @@
 {
   "tile": 16,
-  "files": ["tiles.png", "room.png", "characters.png"],
+  "files": [
+    "tiles.png",
+    "room.png",
+    "characters.png"
+  ],
   "frames": {
-    "floor": { "file": "tiles.png", "x": 17, "y": 442, "w": 16, "h": 16 },
-    "floor-alt": { "file": "tiles.png", "x": 68, "y": 442, "w": 16, "h": 16 },
-    "wall": { "file": "tiles.png", "x": 289, "y": 255, "w": 16, "h": 16 },
-    "window": { "file": "tiles.png", "x": 680, "y": 17, "w": 16, "h": 16 },
-    "desk": { "file": "room.png", "x": 0, "y": 0, "w": 48, "h": 32 },
-    "shelf": { "file": "room.png", "x": 48, "y": 0, "w": 32, "h": 32 },
-    "table": { "file": "room.png", "x": 80, "y": 0, "w": 32, "h": 32 },
-    "plant": { "file": "room.png", "x": 112, "y": 0, "w": 16, "h": 32 }
+    "floor": {
+      "file": "tiles.png",
+      "x": 17,
+      "y": 442,
+      "w": 16,
+      "h": 16
+    },
+    "wall": {
+      "file": "tiles.png",
+      "x": 289,
+      "y": 255,
+      "w": 16,
+      "h": 16
+    },
+    "window": {
+      "file": "tiles.png",
+      "x": 680,
+      "y": 17,
+      "w": 16,
+      "h": 16
+    },
+    "desk": {
+      "file": "room.png",
+      "x": 0,
+      "y": 0,
+      "w": 48,
+      "h": 32
+    },
+    "shelf": {
+      "file": "room.png",
+      "x": 48,
+      "y": 0,
+      "w": 32,
+      "h": 32
+    },
+    "table": {
+      "file": "room.png",
+      "x": 80,
+      "y": 0,
+      "w": 32,
+      "h": 32
+    },
+    "pc-off": {
+      "file": "room.png",
+      "x": 112,
+      "y": 0,
+      "w": 16,
+      "h": 32
+    },
+    "pc-on-1": {
+      "file": "room.png",
+      "x": 128,
+      "y": 0,
+      "w": 16,
+      "h": 32
+    },
+    "pc-on-2": {
+      "file": "room.png",
+      "x": 144,
+      "y": 0,
+      "w": 16,
+      "h": 32
+    },
+    "pc-on-3": {
+      "file": "room.png",
+      "x": 160,
+      "y": 0,
+      "w": 16,
+      "h": 32
+    },
+    "whiteboard": {
+      "file": "room.png",
+      "x": 176,
+      "y": 0,
+      "w": 32,
+      "h": 32
+    },
+    "large-painting": {
+      "file": "room.png",
+      "x": 208,
+      "y": 0,
+      "w": 32,
+      "h": 32
+    },
+    "clock": {
+      "file": "room.png",
+      "x": 240,
+      "y": 0,
+      "w": 16,
+      "h": 32
+    },
+    "painting": {
+      "file": "room.png",
+      "x": 256,
+      "y": 0,
+      "w": 16,
+      "h": 32
+    },
+    "painting-2": {
+      "file": "room.png",
+      "x": 272,
+      "y": 0,
+      "w": 16,
+      "h": 32
+    },
+    "hanging-plant": {
+      "file": "room.png",
+      "x": 288,
+      "y": 0,
+      "w": 16,
+      "h": 32
+    },
+    "plant": {
+      "file": "room.png",
+      "x": 304,
+      "y": 0,
+      "w": 16,
+      "h": 32
+    },
+    "plant-2": {
+      "file": "room.png",
+      "x": 320,
+      "y": 0,
+      "w": 16,
+      "h": 32
+    },
+    "cactus": {
+      "file": "room.png",
+      "x": 336,
+      "y": 0,
+      "w": 16,
+      "h": 32
+    },
+    "pot": {
+      "file": "room.png",
+      "x": 352,
+      "y": 0,
+      "w": 16,
+      "h": 16
+    },
+    "bin": {
+      "file": "room.png",
+      "x": 368,
+      "y": 0,
+      "w": 16,
+      "h": 16
+    },
+    "coffee": {
+      "file": "room.png",
+      "x": 0,
+      "y": 32,
+      "w": 16,
+      "h": 16
+    }
   },
   "characters": {
     "file": "characters.png",
@@ -17,12 +167,29 @@
     "frameHeight": 32,
     "columns": 8,
     "count": 6,
-    "directions": ["down", "up", "right"],
+    "directions": [
+      "down",
+      "up",
+      "right"
+    ],
     "clips": {
-      "walk": [0, 1, 2, 1],
-      "type": [3, 4],
-      "read": [5, 6],
-      "seated": [7]
+      "walk": [
+        0,
+        1,
+        2,
+        1
+      ],
+      "type": [
+        3,
+        4
+      ],
+      "read": [
+        5,
+        6
+      ],
+      "seated": [
+        7
+      ]
     }
   }
 }

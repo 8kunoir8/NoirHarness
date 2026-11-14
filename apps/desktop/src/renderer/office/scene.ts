@@ -55,18 +55,18 @@ interface FurniturePlacement {
   x: number;
   y: number;
   /**
-   * Pixels below the tile's top edge. The cast's seated frames sit five pixels lower in the sheet
-   * than its standing ones, and their typing hands move on sprite rows 21-24, so the art hangs far
-   * enough down for its top edge to land below those hands: a tile-aligned desk hides the one part
-   * of the sprite that animates.
+   * Rests on top of whatever furniture it overlaps (a monitor on a desk, a coffee machine on a
+   * table) instead of on the floor, so it sorts half a pixel in front of that piece.
    */
-  dy?: number;
+  surface?: boolean;
 }
 
 export interface OfficeMap {
   width: number;
   height: number;
   tile: number;
+  /** Rows of wall at the top of the map; wall art hangs across them. */
+  wallRows: number;
   wallFrame: string;
   windowFrame: string;
   windows: number[];
@@ -151,6 +151,9 @@ interface Mover {
   pose: Pose | undefined;
   poseElapsed: number;
   poseFrame: number;
+  /** The agent's monitor on its desk: lit while it works, dark otherwise. */
+  screen: Phaser.GameObjects.Image;
+  screenFrame: number;
 }
 
 /**
@@ -282,19 +285,37 @@ export function createOfficeScene(
       }
       for (let y = 0; y < map.height; y += 1) {
         for (let x = 0; x < map.width; x += 1) {
-          const border = x === 0 || y === 0 || x === map.width - 1 || y === map.height - 1;
-          if (!border) continue;
+          const edge = x === 0 || x === map.width - 1 || y === map.height - 1;
+          if (!edge && y >= map.wallRows) continue;
           const frame = y === 0 && map.windows.includes(x) ? map.windowFrame : map.wallFrame;
           this.addFrame(assets, frame, x * tile, y * tile, 1);
         }
       }
-      for (const item of map.furniture) {
-        // Sorting furniture by the bottom of its art puts a desk in front of the agent seated at it,
-        // and behind the agents walking on the rows below. The half pixel wins the tie with a seat.
-        const height = assets.manifest.frames[item.frame]?.h ?? tile;
-        const top = item.y * tile + (item.dy ?? 0);
-        this.addFrame(assets, item.frame, item.x * tile, top, top + height + 0.5);
-      }
+      // Furniture sorts by the bottom of its art, so an agent standing on the row below a desk draws
+      // in front of it — the rule the reference office uses. A surface item then sorts half a pixel
+      // in front of the piece whose tiles it covers, and the character in front of both.
+      const bottoms = map.furniture.map(
+        (item) => item.y * tile + (assets.manifest.frames[item.frame]?.h ?? tile),
+      );
+      map.furniture.forEach((item, index) => {
+        let depth = bottoms[index] ?? 0;
+        if (item.surface === true) {
+          let support = 0;
+          map.furniture.forEach((other, otherIndex) => {
+            if (otherIndex === index || other.surface === true) return;
+            const frame = assets.manifest.frames[other.frame];
+            const covers =
+              item.x >= other.x &&
+              item.x < other.x + (frame?.w ?? tile) / tile &&
+              item.y >= other.y &&
+              item.y < other.y + (frame?.h ?? tile) / tile;
+            const bottom = bottoms[otherIndex] ?? 0;
+            if (covers && bottom > support) support = bottom;
+          });
+          if (support > 0) depth = support + 0.5;
+        }
+        this.addFrame(assets, item.frame, item.x * tile, item.y * tile, depth);
+      });
     }
 
     private addFrame(assets: OfficeAssets, frame: string, x: number, y: number, depth: number): void {
@@ -371,10 +392,25 @@ export function createOfficeScene(
         mover.sprite.destroy();
         mover.marker.destroy();
         mover.bubble.destroy();
+        mover.screen.destroy();
         this.movers.delete(agentId);
       }
       for (const mover of this.movers.values()) this.applySelection(mover);
     };
+
+    /**
+     * Stands an agent's monitor on the desk above its seat. The desk's art covers the two rows above
+     * the seat and its surface starts eleven pixels into that box; a half pixel puts the monitor in
+     * front of the desk and behind the agent, whose depth is its feet.
+     */
+    private standMonitor(mover: Mover): void {
+      const assets = this.assets;
+      if (assets === undefined) return;
+      const { tile } = assets.map;
+      const top = (mover.state.desk.y - 2) * tile;
+      const left = mover.state.desk.x * tile + tile / 2;
+      mover.screen.setPosition(left, top).setDepth(top + tile * 2 + 0.5);
+    }
 
     private spawn(state: AgentOfficeState): void {
       const assets = this.assets;
@@ -414,6 +450,8 @@ export function createOfficeScene(
         .setDepth(BUBBLE_DEPTH)
         .setVisible(state.bubble !== null);
 
+      const screen = this.add.image(0, 0, "room.png", "pc-off").setOrigin(0.5, 0);
+
       sprite.setInteractive();
       sprite.on("pointerdown", () => {
         this.game.events.emit(OFFICE_SELECT_EVENT, state.agentId);
@@ -436,8 +474,11 @@ export function createOfficeScene(
         pose: undefined,
         poseElapsed: 0,
         poseFrame: 0,
+        screen,
+        screenFrame: 0,
       };
       this.movers.set(state.agentId, mover);
+      this.standMonitor(mover);
       this.applyState(mover, state, true);
     }
 
@@ -448,7 +489,10 @@ export function createOfficeScene(
         previous.action !== state.action ||
         previous.desk.x !== state.desk.x ||
         previous.desk.y !== state.desk.y;
+      const moved = previous.desk.x !== state.desk.x || previous.desk.y !== state.desk.y;
       mover.state = state;
+      // A desk can be re-assigned when two agents collide, and the monitor belongs to the desk.
+      if (moved) this.standMonitor(mover);
       mover.marker.setText(this.markerFor(state.action));
       mover.bubble.setText(state.bubble ?? "");
       mover.bubble.setVisible(state.bubble !== null);
@@ -546,6 +590,10 @@ export function createOfficeScene(
       const column = frames[mover.poseFrame % frames.length] ?? 0;
       mover.sprite.setFrame(`char-${mover.character}-${mover.direction}-${column}`);
       mover.sprite.setFlipX(mover.flipX);
+      // A working agent's screen flickers; every other pose leaves it dark.
+      mover.screen.setFrame(
+        mover.pose === "type" ? `pc-on-${1 + (mover.screenFrame % 3)}` : "pc-off",
+      );
     }
 
     /** Advances a looping clip on the game clock; walk is excluded because tile steps drive it. */
@@ -558,6 +606,7 @@ export function createOfficeScene(
       if (mover.poseElapsed < interval) return;
       mover.poseElapsed -= interval;
       mover.poseFrame = (mover.poseFrame + 1) % frames.length;
+      mover.screenFrame += 1;
       this.paint(mover);
     }
 
@@ -572,6 +621,7 @@ export function createOfficeScene(
       if (mover.pose !== pose) {
         mover.poseElapsed = 0;
         mover.poseFrame = 0;
+        mover.screenFrame = 0;
       }
       mover.pose = pose;
       mover.direction = "up";

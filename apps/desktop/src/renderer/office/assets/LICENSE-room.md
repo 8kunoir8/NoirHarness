@@ -6,10 +6,12 @@
 
 			------------------------------
 
-	DESK_FRONT, DOUBLE_BOOKSHELF, SMALL_TABLE_FRONT and PLANT from
-	webview-ui/public/assets/furniture/, packed side by side into one 128x32
-	atlas with no recolouring. The upstream repository is MIT licensed, and that
-	licence follows the furniture art.
+	DESK_FRONT, DOUBLE_BOOKSHELF, SMALL_TABLE_FRONT, PC_FRONT_OFF,
+	PC_FRONT_ON_1, PC_FRONT_ON_2, PC_FRONT_ON_3, WHITEBOARD, LARGE_PAINTING,
+	CLOCK, SMALL_PAINTING, SMALL_PAINTING_2, HANGING_PLANT, PLANT, PLANT_2,
+	CACTUS, POT, BIN and COFFEE from webview-ui/public/assets/furniture/, packed
+	side by side into one 384x48 atlas with no recolouring. The upstream
+	repository is MIT licensed, and that licence follows the furniture art.
 
 			------------------------------
 
