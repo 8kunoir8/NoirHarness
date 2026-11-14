@@ -275,6 +275,28 @@ describe("checkpoint plan and restore", () => {
     expect(r.checkpoints.entries(r.sessionId).map((entry) => entry.id)).toContain(row.id);
   });
 
+  it("keeps the pre-restore checkpoint listed when the queue drop lands before the marker", async () => {
+    const r = rig();
+    writeFileSync(join(r.root, "a.txt"), "one\n");
+    const row = await r.capture("t-1", 1);
+    writeFileSync(join(r.root, "a.txt"), "two\n");
+
+    const prepared = await r.checkpoints.prepareRestore(r.sessionId, row.id);
+    // What `afterRewind` emits between the two steps: a dropped queued turn's failure, which takes a
+    // seq above the safety row's capture and below the marker's.
+    r.events.append({
+      sessionId: r.sessionId, agentId: "a-1", type: "turn.failed", turnId: null,
+      payload: { turnId: "t-2", message: "The turn was abandoned by a rewind" },
+      provenance: { engine: "native", engineName: "native", adapterVersion: "1" },
+    });
+    const result = await r.checkpoints.applyRestore(r.sessionId, prepared);
+
+    // The row must sit at the range's `to`, or `entries()` hides the one snapshot that undoes it.
+    const safety = r.checkpoints.entries(r.sessionId).find((entry) => entry.label === "pre-restore");
+    expect(safety?.seq).toBe(result.eventSeq);
+    expect(r.events.at(r.sessionId, result.eventSeq)?.type).toBe("session.rewound");
+  });
+
   it("refuses to restore when the current state cannot be captured", async () => {
     const r = rig();
     writeFileSync(join(r.root, "a.txt"), "one\n");

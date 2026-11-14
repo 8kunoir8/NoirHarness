@@ -272,6 +272,14 @@ export class CheckpointService {
       )
       .get(sessionId, row.seq) as { seq: number } | undefined;
 
+    // The safety row belongs at the marker, not at the seq its capture took: the queue's
+    // `turn.failed` events sit between the two, and `entries()` hides a checkpoint inside an
+    // abandoned range. Written before the marker exists, because `nextSeq` is exact under the
+    // rewind reservation and a crash between the two writes would otherwise strand the row inside
+    // the range it created — unlisted, and no restart repairs it.
+    const markerSeq = this.events.nextSeq(sessionId);
+    this.db.prepare("UPDATE checkpoints SET seq = ? WHERE id = ?").run(markerSeq, safetyId);
+
     const event = this.events.append({
       sessionId,
       agentId: session.agent_id,
@@ -291,10 +299,6 @@ export class CheckpointService {
       },
       provenance: provenanceFor(session.engine),
     });
-    // The safety row belongs at the marker, not at the seq its capture took. The queue's
-    // `turn.failed` events now sit between the two, and `entries()` hides a checkpoint inside an
-    // abandoned range; placing the row at `to` keeps the undo one rewind away and listed.
-    this.db.prepare("UPDATE checkpoints SET seq = ? WHERE id = ?").run(event.seq, safetyId);
     return { ...plan, failed, ok: true, eventSeq: event.seq };
   }
 
