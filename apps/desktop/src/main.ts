@@ -17,6 +17,12 @@ const rendererRoot = packaged ? packagedRendererRoot(process.resourcesPath) : jo
 const nodeBin = process.env.NOIR_NODE_BIN
   ?? (packaged ? packagedNodeBinary(process.resourcesPath) : process.env.npm_node_execpath ?? "node");
 
+// Windows groups a window, its taskbar entry and its notifications by AppUserModelID, and
+// electron-builder stamps the Start-menu shortcut with `appId` (electron-builder.yml). The running
+// process has to claim the same id: without it the shell finds no entry to borrow the app's name and
+// icon from and shows the generic Electron identity instead.
+app.setAppUserModelId("dev.noirharness.app");
+
 let hosted: HostedKernel | undefined;
 let mainWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
