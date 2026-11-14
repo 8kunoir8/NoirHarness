@@ -50,6 +50,46 @@ export function isStaleSibling(name: string): boolean {
 /** Code-unit order, so output does not move with the machine's locale. */
 const compareCodeUnits = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
+/**
+ * The two keys this scanner needs, read without YAML. A skill is hand-written prose and plenty of
+ * them carry an unquoted `description: … phases: design, routine …` — valid markdown frontmatter to
+ * the tools that write it, invalid YAML because a bare scalar may not contain `: `. Those files are
+ * otherwise usable, so a rejected document falls back to a first-level `key: value` scan rather
+ * than dropping the skill: only `name` and `description` are ever read, and neither is nested.
+ */
+function scalarKeys(yaml: string): { name?: string; description?: string } {
+  const lines = yaml.split("\n");
+  const read = (key: string): string | undefined => {
+    const index = lines.findIndex((line) => line.startsWith(`${key}:`));
+    if (index === -1) return undefined;
+    const value = (lines[index] ?? "").slice(key.length + 1).trim();
+    // A quoted scalar keeps its text; the quotes are not part of the value.
+    const quoted = /^("(.*)"|'(.*)')$/.exec(value);
+    if (quoted !== null) return quoted[2] ?? quoted[3] ?? "";
+    if (/^[>|][-+]?$/.test(value)) {
+      // A block scalar: every following indented line belongs to it, up to the first that is not.
+      const block: string[] = [];
+      for (const line of lines.slice(index + 1)) {
+        if (line.trim() === "" || /^\s/.test(line)) block.push(line);
+        else break;
+      }
+      // Its indentation is the block's own, not the value's: strip the first line's and reuse it.
+      const indent = /^\s*/.exec(block.find((line) => line.trim() !== "") ?? "")?.[0] ?? "";
+      return block
+        .map((line) => (line.startsWith(indent) ? line.slice(indent.length) : line.trim()))
+        .join("\n")
+        .trim();
+    }
+    return value === "" ? undefined : value;
+  };
+  const name = read("name");
+  const description = read("description");
+  return {
+    ...(name === undefined || name === "" ? {} : { name }),
+    ...(description === undefined || description.trim() === "" ? {} : { description }),
+  };
+}
+
 export function parseSkillFrontmatter(text: string): { name?: string; description?: string } {
   // A skill file written on Windows ends its lines with CRLF, and the fence is searched as `\n---`:
   // slicing there leaves the preceding `\r` on the last line, where YAML reads it as a break that
@@ -65,7 +105,7 @@ export function parseSkillFrontmatter(text: string): { name?: string; descriptio
   try {
     doc = parseYaml(yaml);
   } catch {
-    return {};
+    return scalarKeys(yaml);
   }
   if (typeof doc !== "object" || doc === null || Array.isArray(doc)) return {};
   const record = doc as Record<string, unknown>;

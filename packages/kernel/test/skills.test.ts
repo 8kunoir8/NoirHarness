@@ -38,6 +38,20 @@ describe("skill discovery", () => {
     expect(parseSkillFrontmatter(text.replace(/\r\n/g, "\n"))).toEqual(parseSkillFrontmatter(text));
   });
 
+  it("reads the two keys it needs from frontmatter a YAML parser rejects", () => {
+    // A bare scalar may not hold `: `, and hand-written skills routinely do. Dropping the whole
+    // skill over an unused key would lose 2 of this machine's 432.
+    const text = "---\nname: fan-out\ndescription: Builds agents through 5 phases: design, routine.\nsurface: [claude]\n---\nbody";
+    expect(parseSkillFrontmatter(text)).toEqual({ name: "fan-out", description: "Builds agents through 5 phases: design, routine." });
+  });
+
+  it("reads a block scalar from a document YAML rejects for another key", () => {
+    // The reason to fall back is a key this scanner never reads; the description must still arrive
+    // whole, with its indented lines joined and the marker itself dropped.
+    const text = "---\nname: demo\ndescription: >\n  two\n  lines\nbad: a: b\n---\nbody";
+    expect(parseSkillFrontmatter(text)).toEqual({ name: "demo", description: "two\nlines" });
+  });
+
   it("lists project and global skills, project wins a name collision", async () => {
     const global = root();
     const project = root();
