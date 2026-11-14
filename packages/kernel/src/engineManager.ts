@@ -89,7 +89,11 @@ interface QueuedTurn {
   turnId: string;
   idx: number;
   content: PromptContent;
-  /** The seq the prompt's own event takes, so a rewind here hides the prompt and everything after. */
+  /**
+   * The head of the log when the prompt was taken, so a rewind here hides the prompt and everything
+   * after. A queued prompt's `cutSeq` is its arrival head, not its boundary: the turn starts later,
+   * and `startTurn` cuts at `nextSeq` of that moment instead (`queued` is what selects the two).
+   */
   cutSeq: number;
   /** True when the prompt was emitted while another turn ran, so its seq is not this turn's boundary. */
   queued: boolean;
