@@ -125,9 +125,11 @@ async function harness(server: FakeOpenAiServer, policy: PermissionPolicy, pidFi
   const mcp = new McpService(db);
   const mcpServer = mcp.create({
     name: "calc",
+    transport: "stdio",
     command: process.execPath,
     args: ["-e", CALC_SERVER],
     env: pidFile === undefined ? {} : { NOIR_MCP_PID_FILE: pidFile },
+    headers: {},
     enabled: true,
   });
 

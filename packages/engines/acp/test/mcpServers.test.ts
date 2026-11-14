@@ -52,7 +52,7 @@ describe("ACP engine MCP forwarding", () => {
       history: [],
       skills: [],
       turnTimeoutMs: 10_000,
-      mcpServers: [{ name: "calc", command: "/opt/calc", args: ["--stdio"], env: { CALC_MODE: "fast" } }],
+      mcpServers: [{ transport: "stdio", name: "calc", command: "/opt/calc", args: ["--stdio"], env: { CALC_MODE: "fast" } }],
     });
     cleanups.push(() => session.dispose());
 
@@ -68,6 +68,47 @@ describe("ACP engine MCP forwarding", () => {
         command: "/opt/calc",
         args: ["--stdio"],
         env: [{ name: "CALC_MODE", value: "fast" }],
+      },
+    ]);
+  });
+
+  it("sends an http server as a url with headers, not as a command", async () => {
+    const root = workspace();
+    const logPath = join(root, "wire.log");
+    const engine = createAcpEngine({
+      command: process.execPath,
+      args: [FAKE_SERVER, "--omp", "--profile", "fake", "--model", "fake/fake-1"],
+      cwd: root,
+      env: { FAKE_ACP_LOG: logPath },
+    });
+    const session = await engine.start({
+      sessionId: "sess-http-mcp",
+      cwd: root,
+      model: { providerName: "fake", modelId: "fake-1", contextWindow: 200_000, maxTokens: null },
+      baseUrl: "",
+      apiKey: "",
+      history: [],
+      skills: [],
+      turnTimeoutMs: 10_000,
+      mcpServers: [
+        { transport: "http", name: "docs", url: "https://example.com/mcp", headers: { Authorization: "Bearer t" } },
+      ],
+    });
+    cleanups.push(() => session.dispose());
+
+    const wire = readFileSync(logPath, "utf8");
+    const line = wire.split("\n").find((entry) => entry.includes('"method":"session/new"'));
+    expect(line).toBeDefined();
+    const params = JSON.parse((line as string).slice((line as string).indexOf("{"))) as {
+      params: { mcpServers: unknown };
+    };
+    // Without `type` an agent would read this entry as a stdio server with a missing command.
+    expect(params.params.mcpServers).toEqual([
+      {
+        type: "http",
+        name: "docs",
+        url: "https://example.com/mcp",
+        headers: [{ name: "Authorization", value: "Bearer t" }],
       },
     ]);
   });

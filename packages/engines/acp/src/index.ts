@@ -518,13 +518,26 @@ class AcpRuntime implements AcpClient {
   async newSession(cwd: string, mcpServers: ReadonlyArray<EngineMcpServer> = []): Promise<AcpSession> {
     if (!isAbsolute(cwd)) throw new Error(`ACP session cwd must be absolute: ${cwd}`);
     const absolute = resolve(cwd);
-    // ACP spells stdio servers with `env` as `{name, value}[]`; the kernel stores a plain record.
-    const wireServers = mcpServers.map((server) => ({
-      name: server.name,
-      command: server.command,
-      args: server.args,
-      env: Object.entries(server.env).map(([name, value]) => ({ name, value })),
-    }));
+    // ACP spells servers by transport: stdio carries `env` as `{name, value}[]` and HTTP carries
+    // `headers` the same way. The stdio entry is left exactly as it was, with no `type`, because
+    // every agent Noir already drives accepts that shape and the tag would be a wire change for
+    // them. An HTTP entry cannot follow that lead: without `type` it reads as a stdio server whose
+    // command is missing.
+    const wireServers = mcpServers.map((server) =>
+      server.transport === "http"
+        ? {
+            type: "http",
+            name: server.name,
+            url: server.url,
+            headers: Object.entries(server.headers).map(([name, value]) => ({ name, value })),
+          }
+        : {
+            name: server.name,
+            command: server.command,
+            args: server.args,
+            env: Object.entries(server.env).map(([name, value]) => ({ name, value })),
+          },
+    );
     const response = await this.client.request("session/new", { cwd: absolute, mcpServers: wireServers });
     const record = asObject(response);
     const sessionId = record?.sessionId;

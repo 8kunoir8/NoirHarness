@@ -75,9 +75,11 @@ async function harness(policy: PermissionPolicy) {
 
   const server = mcp.create({
     name: "calc",
+    transport: "stdio",
     command: process.execPath,
     args: ["-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "spawned")`],
     env: {},
+    headers: {},
     enabled: true,
   });
   const project = projects.add(workspaceDir);

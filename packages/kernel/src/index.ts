@@ -394,7 +394,11 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; o
         [Methods.mcpDelete]: async (params) => ({ deleted: mcp.delete(McpServerDeleteParams.parse(params).id) }),
         [Methods.mcpTest]: async (params) => {
           const probe = McpTestParams.parse(params);
-          const client = new McpClient({ command: probe.command, args: probe.args, env: probe.env });
+          const client = new McpClient(
+            probe.transport === "http"
+              ? { url: probe.url ?? "", headers: probe.headers, args: [], env: {} }
+              : { command: probe.command ?? "", args: probe.args, env: probe.env },
+          );
           try {
             await client.start();
             return { ok: true, tools: (await client.listTools()).map((tool) => ({

@@ -81,13 +81,23 @@ export class SessionMcpManager {
   }
 
   async #startServer(server: McpServerView): Promise<void> {
-    const client = new McpClient({
-      command: server.command,
-      args: server.args,
-      env: server.env,
-      cwd: this.workspacePath,
-      ...(this.callTimeoutMs === undefined ? {} : { callTimeoutMs: this.callTimeoutMs }),
-    });
+    const client = new McpClient(
+      server.transport === "http"
+        ? {
+            url: server.url,
+            headers: server.headers,
+            args: [],
+            env: {},
+            ...(this.callTimeoutMs === undefined ? {} : { callTimeoutMs: this.callTimeoutMs }),
+          }
+        : {
+            command: server.command,
+            args: server.args,
+            env: server.env,
+            cwd: this.workspacePath,
+            ...(this.callTimeoutMs === undefined ? {} : { callTimeoutMs: this.callTimeoutMs }),
+          },
+    );
     this.#clients.set(server.name, client);
     try {
       await client.start();

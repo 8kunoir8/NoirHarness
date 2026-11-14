@@ -69,13 +69,14 @@ export interface EngineMcpTool {
   parameters: Record<string, unknown>;
 }
 
-/** One MCP server a session may use. The ACP engine hands these to `session/new` as `mcpServers`. */
-export interface EngineMcpServer {
-  name: string;
-  command: string;
-  args: string[];
-  env: Record<string, string>;
-}
+/**
+ * One MCP server a session may use. The ACP engine hands these to `session/new` as `mcpServers`,
+ * which is why the shape carries the transport: an agent spawns a stdio server itself and reaches
+ * an HTTP one directly, and it cannot infer which from an absent command.
+ */
+export type EngineMcpServer =
+  | { transport: "stdio"; name: string; command: string; args: string[]; env: Record<string, string> }
+  | { transport: "http"; name: string; url: string; headers: Record<string, string> };
 
 export interface EngineStartOptions {
   sessionId: string;

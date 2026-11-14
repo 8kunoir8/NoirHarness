@@ -51,9 +51,12 @@ function server(name: string, script: string): McpServerView {
   return {
     id: `mcp-${name}`,
     name,
+    transport: "stdio",
     command: process.execPath,
     args: ["-e", script],
     env: {},
+    url: "",
+    headers: {},
     enabled: true,
     createdAt: 0,
     updatedAt: 0,

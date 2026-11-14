@@ -26,9 +26,12 @@ beforeEach(async () => {
 const CALC: McpServerView = {
   id: "mcp-1",
   name: "calc",
+  transport: "stdio",
   command: "node",
   args: ["server.js"],
   env: { MODE: "fast" },
+  url: "",
+  headers: {},
   enabled: true,
   createdAt: 1,
   updatedAt: 1,
@@ -92,9 +95,12 @@ describe("Setup MCP panel", () => {
       "mcp.create": (params) => {
         expect(params).toEqual({
           name: "calc",
+          transport: "stdio",
           command: "node",
           args: ["server.js", "--stdio"],
           env: { MODE: "fast", EMPTY: "" },
+          // Parsed defaults: the kernel receives them already applied, so they are in the payload.
+          headers: {},
           enabled: true,
         });
         return CALC;
@@ -120,11 +126,55 @@ describe("Setup MCP panel", () => {
     const testButton = await within(panel).findByRole("button", { name: "Test calc" });
     await userEvent.click(testButton);
     expect(calls(request, "mcp.test")[0]?.[1]).toEqual({
+      transport: "stdio",
       command: "node",
       args: ["server.js"],
       env: { MODE: "fast" },
+      headers: {},
     });
     expect(await within(panel).findByText("2 tools")).toBeTruthy();
+  });
+
+  it("adds a remote server by url and sends only the fields HTTP uses", async () => {
+    const request = setupRequest({
+      "mcp.list": () => ({ servers: [] }),
+      "mcp.create": () => ({ ...CALC, id: "mcp-2", name: "docs", transport: "http", command: "", url: "https://example.com/mcp" }),
+    });
+    render(<Setup request={request as unknown as RequestFn} onOpenChat={() => undefined} />);
+
+    const panel = await screen.findByRole("region", { name: "MCP Servers" });
+    await userEvent.type(within(panel).getByLabelText("Server name"), "docs");
+    await userEvent.selectOptions(within(panel).getByLabelText("Transport"), "http");
+    // The stdio fields leave the form with the transport, so a stale command cannot be submitted.
+    expect(within(panel).queryByLabelText("Server command")).toBeNull();
+    await userEvent.type(within(panel).getByLabelText("Server URL"), "https://example.com/mcp");
+    await userEvent.type(within(panel).getByLabelText("Headers"), "Authorization=Bearer t");
+    await userEvent.click(within(panel).getByRole("button", { name: "Add MCP server" }));
+
+    await waitFor(() => expect(calls(request, "mcp.create")).toHaveLength(1));
+    expect(calls(request, "mcp.create")[0]?.[1]).toEqual({
+      name: "docs",
+      transport: "http",
+      url: "https://example.com/mcp",
+      headers: { Authorization: "Bearer t" },
+      // The schema's defaults arrive applied, as they always have.
+      args: [],
+      env: {},
+      enabled: true,
+    });
+  });
+
+  it("refuses to save a remote server with no url", async () => {
+    const request = setupRequest({ "mcp.list": () => ({ servers: [] }) });
+    render(<Setup request={request as unknown as RequestFn} onOpenChat={() => undefined} />);
+
+    const panel = await screen.findByRole("region", { name: "MCP Servers" });
+    await userEvent.type(within(panel).getByLabelText("Server name"), "docs");
+    await userEvent.selectOptions(within(panel).getByLabelText("Transport"), "http");
+    await userEvent.click(within(panel).getByRole("button", { name: "Add MCP server" }));
+
+    expect(await within(panel).findByText("URL is required for an HTTP server")).toBeTruthy();
+    expect(calls(request, "mcp.create")).toHaveLength(0);
   });
 
   it("shows the probe failure instead of a tool count and keeps the row", async () => {
@@ -200,6 +250,7 @@ describe("Setup MCP panel", () => {
     expect(calls(request, "mcp.update")[0]?.[1]).toEqual({
       id: "mcp-1",
       name: "calc",
+      transport: "stdio",
       command: "node",
       // One argument per line: an argument with a space survives the round trip.
       args: ["server.js", "--path", "C:\\Program Files\\x"],

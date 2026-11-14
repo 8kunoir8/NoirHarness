@@ -805,12 +805,17 @@ export class EngineManager {
         ...(bound.length === 0
           ? {}
           : {
-              mcpServers: bound.map((server) => ({
-                name: server.name,
-                command: server.command,
-                args: server.args,
-                env: server.env,
-              })),
+              mcpServers: bound.map((server) =>
+                server.transport === "http"
+                  ? { transport: "http" as const, name: server.name, url: server.url, headers: server.headers }
+                  : {
+                      transport: "stdio" as const,
+                      name: server.name,
+                      command: server.command,
+                      args: server.args,
+                      env: server.env,
+                    },
+              ),
             }),
         ...(sessionMcp === undefined
           ? {}

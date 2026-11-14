@@ -210,6 +210,32 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
       CREATE INDEX idx_checkpoints_session ON checkpoints (session_id, seq);
     `,
   },
+  {
+    id: 12,
+    sql: `
+      -- SQLite cannot drop a NOT NULL constraint in place, and command must become optional:
+      -- an HTTP server has no command, and a stdio server has no url. Both live in one table
+      -- because the rest of the row -- name, enabled, the agent's selection -- is transport-agnostic.
+      CREATE TABLE mcp_servers_next (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        transport TEXT NOT NULL DEFAULT 'stdio' CHECK (transport IN ('stdio', 'http')),
+        command TEXT,
+        url TEXT,
+        args_json TEXT NOT NULL,
+        env_json TEXT NOT NULL,
+        headers_json TEXT NOT NULL DEFAULT '{}',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      INSERT INTO mcp_servers_next (id, name, transport, command, url, args_json, env_json, headers_json, enabled, created_at, updated_at)
+        SELECT id, name, 'stdio', command, NULL, args_json, env_json, '{}', enabled, created_at, updated_at
+        FROM mcp_servers;
+      DROP TABLE mcp_servers;
+      ALTER TABLE mcp_servers_next RENAME TO mcp_servers;
+    `,
+  },
 ];
 
 export function migrate(db: Database.Database): void {

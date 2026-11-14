@@ -14,6 +14,7 @@ import {
   type ApiKind,
   type EngineKind,
   type McpServerView,
+  type McpTransport,
   type ModelCreateParams,
   type ModelView,
   type ProviderCreateParams,
@@ -88,9 +89,12 @@ export function Setup({ request, onOpenChat }: SetupProps) {
   /** The server id the form is editing, or `undefined` when it is creating a new one. */
   const [mcpEditing, setMcpEditing] = useState<string | undefined>(undefined);
   const [mcpName, setMcpName] = useState("");
+  const [mcpTransport, setMcpTransport] = useState<McpTransport>("stdio");
   const [mcpCommand, setMcpCommand] = useState("");
   const [mcpArgs, setMcpArgs] = useState("");
   const [mcpEnv, setMcpEnv] = useState("");
+  const [mcpUrl, setMcpUrl] = useState("");
+  const [mcpHeaders, setMcpHeaders] = useState("");
   const [mcpError, setMcpError] = useState<string | undefined>(undefined);
   /** Probe outcome per server id; a successful probe reports the discovered tool count. */
   const [mcpProbes, setMcpProbes] = useState<Record<string, McpTestResult>>({});
@@ -218,21 +222,30 @@ export function Setup({ request, onOpenChat }: SetupProps) {
       setMcpError(MCP_NAME_HINT);
       return;
     }
-    if (mcpCommand.trim() === "") {
-      setMcpError("Command is required");
-      return;
-    }
     const env = parseEnv(mcpEnv);
     if (env === undefined) {
       setMcpError("Each environment line must be KEY=value");
       return;
     }
-    const definition = {
-      name: trimmed,
-      command: mcpCommand.trim(),
-      args: parseArgs(mcpArgs),
-      env,
-    };
+    const headers = parseEnv(mcpHeaders);
+    if (headers === undefined) {
+      setMcpError("Each header line must be KEY=value");
+      return;
+    }
+    if (mcpTransport === "http" && mcpUrl.trim() === "") {
+      setMcpError("URL is required for an HTTP server");
+      return;
+    }
+    if (mcpTransport === "stdio" && mcpCommand.trim() === "") {
+      setMcpError("Command is required");
+      return;
+    }
+    // Only the chosen transport's fields are sent, so switching a saved server cannot leave the
+    // other transport's address behind for the kernel to validate against the new tag.
+    const definition =
+      mcpTransport === "http"
+        ? { name: trimmed, transport: mcpTransport, url: mcpUrl.trim(), headers }
+        : { name: trimmed, transport: mcpTransport, command: mcpCommand.trim(), args: parseArgs(mcpArgs), env };
     setBusy(true);
     try {
       if (mcpEditing === undefined) {
@@ -289,14 +302,18 @@ export function Setup({ request, onOpenChat }: SetupProps) {
     }
   }
 
-  /** Probes the saved settings: starting the real process is the only honest test of a server. */
+  /** Probes the saved settings: starting the real server is the only honest test of it. */
   async function testMcpServer(server: McpServerView): Promise<void> {
     setBusy(true);
     try {
       const result = McpTestResult.parse(
         await request(
           "mcp.test",
-          McpTestParams.parse({ command: server.command, args: server.args, env: server.env }),
+          McpTestParams.parse(
+            server.transport === "http"
+              ? { transport: "http", url: server.url, headers: server.headers }
+              : { transport: "stdio", command: server.command, args: server.args, env: server.env },
+          ),
         ),
       );
       setMcpProbes((current) => ({ ...current, [server.id]: result }));
@@ -315,18 +332,24 @@ export function Setup({ request, onOpenChat }: SetupProps) {
   function editMcpServer(server: McpServerView): void {
     setMcpEditing(server.id);
     setMcpName(server.name);
+    setMcpTransport(server.transport);
     setMcpCommand(server.command);
     setMcpArgs(argsText(server.args));
     setMcpEnv(envText(server.env));
+    setMcpUrl(server.url);
+    setMcpHeaders(envText(server.headers));
     setMcpError(undefined);
   }
 
   function resetMcpForm(): void {
     setMcpEditing(undefined);
     setMcpName("");
+    setMcpTransport("stdio");
     setMcpCommand("");
     setMcpArgs("");
     setMcpEnv("");
+    setMcpUrl("");
+    setMcpHeaders("");
     setMcpError(undefined);
   }
 
@@ -468,8 +491,9 @@ export function Setup({ request, onOpenChat }: SetupProps) {
       <section aria-label="MCP Servers">
         <h3>MCP servers</h3>
         <p className="hint">
-          Model Context Protocol servers run as local processes. An agent runs only the servers its
-          profile selects, and every MCP call passes through that agent&apos;s permission policy.
+          Model Context Protocol servers are either a local process NoirHarness starts or a remote
+          HTTP endpoint it calls. An agent runs only the servers its profile selects, and every MCP
+          call passes through that agent&apos;s permission policy.
         </p>
         {mcpError === undefined ? null : <p role="alert">{mcpError}</p>}
         <ul className="setup-list">
@@ -478,7 +502,7 @@ export function Setup({ request, onOpenChat }: SetupProps) {
             return (
               <li key={server.id}>
                 <strong>{server.name}</strong>
-                <span>{[server.command, ...server.args].join(" ")}</span>
+                <span>{server.transport === "http" ? server.url : [server.command, ...server.args].join(" ")}</span>
                 <label className="setup-inline">
                   <input
                     type="checkbox"
@@ -517,32 +541,67 @@ export function Setup({ request, onOpenChat }: SetupProps) {
             />
           </label>
           <label>
-            Server command
-            <input
-              placeholder="node"
-              value={mcpCommand}
-              onChange={(event) => setMcpCommand(event.target.value)}
-            />
+            Transport
+            <select
+              value={mcpTransport}
+              onChange={(event) => setMcpTransport(event.target.value === "http" ? "http" : "stdio")}
+            >
+              <option value="stdio">Local process (stdio)</option>
+              <option value="http">Remote server (HTTP)</option>
+            </select>
           </label>
-          <label>
-            Arguments
-            <textarea
-              rows={2}
-              placeholder="server.js"
-              value={mcpArgs}
-              onChange={(event) => setMcpArgs(event.target.value)}
-            />
-          </label>
-          <p className="hint">One argument per line, so an argument may contain spaces.</p>
-          <label>
-            Environment
-            <textarea
-              rows={3}
-              placeholder="KEY=value"
-              value={mcpEnv}
-              onChange={(event) => setMcpEnv(event.target.value)}
-            />
-          </label>
+          {mcpTransport === "http" ? (
+            <>
+              <label>
+                Server URL
+                <input
+                  placeholder="https://example.com/mcp"
+                  value={mcpUrl}
+                  onChange={(event) => setMcpUrl(event.target.value)}
+                />
+              </label>
+              <label>
+                Headers
+                <textarea
+                  rows={2}
+                  placeholder="Authorization=Bearer …"
+                  value={mcpHeaders}
+                  onChange={(event) => setMcpHeaders(event.target.value)}
+                />
+              </label>
+              <p className="hint">One KEY=value per line, sent with every request.</p>
+            </>
+          ) : (
+            <>
+              <label>
+                Server command
+                <input
+                  placeholder="node"
+                  value={mcpCommand}
+                  onChange={(event) => setMcpCommand(event.target.value)}
+                />
+              </label>
+              <label>
+                Arguments
+                <textarea
+                  rows={2}
+                  placeholder="server.js"
+                  value={mcpArgs}
+                  onChange={(event) => setMcpArgs(event.target.value)}
+                />
+              </label>
+              <p className="hint">One argument per line, so an argument may contain spaces.</p>
+              <label>
+                Environment
+                <textarea
+                  rows={3}
+                  placeholder="KEY=value"
+                  value={mcpEnv}
+                  onChange={(event) => setMcpEnv(event.target.value)}
+                />
+              </label>
+            </>
+          )}
           <button type="submit" disabled={busy}>
             {mcpEditing === undefined ? "Add MCP server" : "Save MCP server"}
           </button>

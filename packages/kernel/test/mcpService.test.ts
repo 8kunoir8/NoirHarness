@@ -127,6 +127,37 @@ describe("McpService", () => {
     mcp.update({ id: git.id, enabled: false });
     expect(mcp.forAgent(agent.mcpServerIds).map((server) => server.name)).toEqual(["sqlite"]);
   });
+
+  it("stores an http server with a url and no command", () => {
+    const { mcp } = setup();
+    const created = mcp.create(
+      serverInput({ name: "remote", transport: "http", url: "https://example.com/mcp", headers: { Authorization: "Bearer t" } }),
+    );
+    expect(created.transport).toBe("http");
+    expect(created.url).toBe("https://example.com/mcp");
+    expect(created.headers).toEqual({ Authorization: "Bearer t" });
+    // The view keeps `command` as text so a renderer need not narrow; an http row has none.
+    expect(created.command).toBe("");
+    expect(mcp.get(created.id)?.url).toBe("https://example.com/mcp");
+  });
+
+  it("refuses a row whose transport has no address, before it is stored", () => {
+    const { mcp } = setup();
+    expect(() => mcp.create(serverInput({ name: "nourl", transport: "http" }))).toThrow(/needs a url/);
+    expect(() => mcp.create(serverInput({ name: "bad", transport: "http", url: "not a url" }))).toThrow(/Not a URL/);
+    // A stdio server parses fine without a command too; the service is what refuses it.
+    expect(() => mcp.create(serverInput({ name: "nocmd", command: "" }))).toThrow(/needs a command/);
+    expect(mcp.list()).toEqual([]);
+  });
+
+  it("switches a saved server between transports only when the new one is complete", () => {
+    const { mcp } = setup();
+    const server = mcp.create(serverInput());
+    expect(() => mcp.update({ id: server.id, transport: "http" })).toThrow(/needs a url/);
+    const updated = mcp.update({ id: server.id, transport: "http", url: "https://example.com/mcp" });
+    expect(updated.transport).toBe("http");
+    expect(mcp.get(server.id)?.url).toBe("https://example.com/mcp");
+  });
 });
 
 describe("agent MCP bindings", () => {

@@ -9,9 +9,16 @@ export interface McpToolSpec {
 }
 
 export interface McpClientOptions {
-  command: string;
+  /**
+   * `stdio` spawns `command` and speaks newline JSON-RPC on its pipes; `http` POSTs to `url`.
+   * Exactly one of the two is set: `start` picks the transport by which one is present rather than
+   * by a separate tag that could disagree with them.
+   */
+  command?: string | null;
+  url?: string | null;
   args: string[];
   env: Record<string, string>;
+  headers?: Record<string, string>;
   /** The session workspace, so a server resolves relative paths the way the agent does. */
   cwd?: string;
   startupTimeoutMs?: number;
@@ -111,11 +118,14 @@ function contentText(result: z.infer<typeof ToolCallResult>): string {
 }
 
 /**
- * One MCP server over stdio: newline-delimited JSON-RPC 2.0 on the child's stdin/stdout.
+ * One MCP server. Two transports, chosen by which address the row carries:
  *
- * The kernel owns the process: a session spawns it on its first MCP turn and kills it when the
- * session ends. Lines that are not JSON-RPC (a server's banner or debug logging) are recorded on
- * `stderr` and skipped, because plenty of servers print to stdout before they are ready.
+ * - `command` — stdio: newline-delimited JSON-RPC 2.0 on the child's stdin/stdout. The kernel owns
+ *   the process: a session spawns it on its first MCP turn and kills it when the session ends.
+ *   Lines that are not JSON-RPC (a server's banner or debug logging) are recorded on `stderr` and
+ *   skipped, because plenty of servers print to stdout before they are ready.
+ * - `url` — Streamable HTTP: one POST per message, answered as JSON or as an SSE stream. There is
+ *   no process to own; `stop` only ends the requests in flight.
  */
 export class McpClient {
   #child: ChildProcessWithoutNullStreams | undefined;
@@ -124,8 +134,15 @@ export class McpClient {
   #stdoutBuffer = "";
   #stderr = "";
   #stopping = false;
+  /** The `Mcp-Session-Id` an HTTP server handed back at initialize, when it keeps one. */
+  #sessionId: string | undefined;
+  readonly #command: string | null;
+  readonly #url: string | null;
 
-  constructor(private readonly options: McpClientOptions) {}
+  constructor(private readonly options: McpClientOptions) {
+    this.#command = options.command ?? null;
+    this.#url = options.url ?? null;
+  }
 
   get pid(): number | undefined {
     return this.#child?.pid;
@@ -136,12 +153,30 @@ export class McpClient {
     return this.#stderr;
   }
 
+  /** How this client is named in an error: the url for HTTP, the program for stdio. */
+  get #label(): string {
+    return this.#url ?? this.#command ?? "MCP server";
+  }
+
   async start(): Promise<void> {
+    const startupTimeoutMs = this.options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
+    if (this.#url !== null) {
+      await this.#httpRequest(
+        "initialize",
+        { protocolVersion: PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: "NoirHarness", version: "0.1.0" } },
+        startupTimeoutMs,
+        "initialize",
+      );
+      await this.#httpNotify("notifications/initialized", {});
+      return;
+    }
+    const command = this.#command;
+    if (command === null) throw new Error("MCP client has neither a command nor a url");
     if (this.#child !== undefined) return;
     const env = { ...process.env, ...this.options.env };
-    const shim = isWindowsShim(this.options.command);
+    const shim = isWindowsShim(command);
     const child = shim
-      ? spawn(process.env["ComSpec"] ?? "cmd.exe", ["/d", "/s", "/c", `"${windowsCommandLine(this.options.command, this.options.args, env)}"`], {
+      ? spawn(process.env["ComSpec"] ?? "cmd.exe", ["/d", "/s", "/c", `"${windowsCommandLine(command, this.options.args, env)}"`], {
           ...(this.options.cwd === undefined ? {} : { cwd: this.options.cwd }),
           env,
           stdio: ["pipe", "pipe", "pipe"],
@@ -149,7 +184,7 @@ export class McpClient {
           // The line is already quoted for cmd; Node must not quote it again.
           windowsVerbatimArguments: true,
         })
-      : spawn(this.options.command, this.options.args, {
+      : spawn(command, this.options.args, {
           ...(this.options.cwd === undefined ? {} : { cwd: this.options.cwd }),
           env,
           stdio: ["pipe", "pipe", "pipe"],
@@ -163,13 +198,12 @@ export class McpClient {
     child.stderr.on("data", (chunk: string) => {
       this.#stderr = (this.#stderr + chunk).slice(-STDERR_LIMIT);
     });
-    child.on("error", (error) => this.#fail(`MCP server "${this.options.command}" failed: ${error.message}`));
+    child.on("error", (error) => this.#fail(`MCP server "${command}" failed: ${error.message}`));
     child.on("exit", (code, signal) => {
       if (this.#stopping) return;
-      this.#fail(`MCP server "${this.options.command}" exited (${signal ?? `code ${code ?? "unknown"}`})`);
+      this.#fail(`MCP server "${command}" exited (${signal ?? `code ${code ?? "unknown"}`})`);
     });
 
-    const startupTimeoutMs = this.options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
     await this.#request(
       "initialize",
       {
@@ -220,13 +254,14 @@ export class McpClient {
 
   /** SIGTERM, then SIGKILL after a grace period. Safe to call more than once. */
   async stop(): Promise<void> {
-    const child = this.#child;
-    if (child === undefined) return;
     this.#stopping = true;
-    this.#child = undefined;
     this.#rejectAll("MCP client stopped");
+    const child = this.#child;
+    this.#child = undefined;
+    // An HTTP server owns no process here; abandoning the requests in flight is the whole stop.
+    if (child === undefined) return;
     if (child.exitCode !== null || child.signalCode !== null) return;
-    if (isWindowsShim(this.options.command) && child.pid !== undefined) {
+    if (isWindowsShim(this.#command ?? "") && child.pid !== undefined) {
       // The server is a grandchild of cmd.exe; killing the wrapper alone would orphan it.
       await new Promise<void>((resolve) => {
         const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
@@ -254,12 +289,13 @@ export class McpClient {
   #write(message: Record<string, unknown>): void {
     const stdin = this.#child?.stdin;
     if (stdin === undefined || !stdin.writable) {
-      throw new Error(`MCP server "${this.options.command}" is not running`);
+      throw new Error(`MCP server "${this.#label}" is not running`);
     }
     stdin.write(`${JSON.stringify(message)}\n`);
   }
 
   #request(method: string, params: Record<string, unknown>, timeoutMs: number, label: string): Promise<unknown> {
+    if (this.#url !== null) return this.#httpRequest(method, params, timeoutMs, label);
     const id = this.#nextId++;
     return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -275,6 +311,120 @@ export class McpClient {
         reject(error instanceof Error ? error : new Error(String(error)));
       }
     });
+  }
+
+  /**
+   * One JSON-RPC message over Streamable HTTP. The reply may be a single JSON body or a
+   * `text/event-stream` whose frames each hold one message; the answer to this id ends the wait,
+   * whatever else the stream carries.
+   */
+  async #httpRequest(
+    method: string,
+    params: Record<string, unknown>,
+    timeoutMs: number,
+    label: string,
+  ): Promise<unknown> {
+    const id = this.#nextId++;
+    let response: Response;
+    try {
+      response = await this.#httpPost({ jsonrpc: "2.0", id, method, params }, timeoutMs);
+    } catch (error) {
+      // `AbortSignal.timeout` surfaces as a bare DOMException; name the server and the budget.
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(`MCP ${label} failed after ${timeoutMs} ms: ${reason}`);
+    }
+    if (!response.ok) {
+      const body = (await response.text().catch(() => "")).slice(0, 500);
+      throw new Error(`MCP ${label} rejected: HTTP ${response.status}${body === "" ? "" : ` ${body}`}`);
+    }
+    const kind = response.headers.get("content-type") ?? "";
+    let settled: Incoming;
+    if (kind.includes("text/event-stream")) {
+      const streamed = await this.#readStream(response, id, label);
+      if (streamed instanceof Error) throw streamed;
+      settled = streamed;
+    } else {
+      const parsed = IncomingMessage.safeParse(await response.json().catch(() => undefined));
+      if (!parsed.success) throw new Error(`MCP ${label} returned a malformed message`);
+      settled = parsed.data;
+    }
+    if (settled.error !== undefined) {
+      const { code, message } = settled.error;
+      throw new Error(`MCP error ${code ?? ""}: ${message ?? "unknown error"}`.trim());
+    }
+    return settled.result;
+  }
+
+  async #httpNotify(method: string, params: Record<string, unknown>): Promise<void> {
+    const response = await this.#httpPost({ jsonrpc: "2.0", method, params }, DEFAULT_STARTUP_TIMEOUT_MS);
+    // A notification has no reply to read; some servers answer 202 with no body at all.
+    await response.body?.cancel().catch(() => undefined);
+    if (!response.ok) throw new Error(`MCP ${method} rejected: HTTP ${response.status}`);
+  }
+
+  #httpPost(body: Record<string, unknown>, timeoutMs: number): Promise<Response> {
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      // Either answer is legal; naming both is what lets the server pick.
+      accept: "application/json, text/event-stream",
+      "mcp-protocol-version": PROTOCOL_VERSION,
+      ...this.options.headers,
+    };
+    if (this.#sessionId !== undefined) headers["mcp-session-id"] = this.#sessionId;
+    return fetch(this.#url ?? "", {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    }).then((response) => {
+      // The session id arrives on the initialize reply; every later request has to echo it.
+      const session = response.headers.get("mcp-session-id");
+      if (this.#sessionId === undefined && session !== null && session !== "") this.#sessionId = session;
+      return response;
+    });
+  }
+
+  /**
+   * Reads SSE frames until the one answering `id` arrives, then abandons the stream. A frame may
+   * carry any number of `data:` lines, but a single JSON-RPC message is the only shape that matters.
+   */
+  async #readStream(response: Response, id: number, label: string): Promise<Incoming | Error> {
+    if (response.body === null) return new Error(`MCP ${label} sent an empty event stream`);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // Frames end at a blank line; `\r\n\r\n` is what a stricter server sends.
+        for (let at = buffer.search(/\r?\n\r?\n/); at !== -1; at = buffer.search(/\r?\n\r?\n/)) {
+          const separator = /\r?\n\r?\n/.exec(buffer)?.[0] ?? "\n\n";
+          const frame = buffer.slice(0, at);
+          buffer = buffer.slice(at + separator.length);
+          const data = frame
+            .split(/\r?\n/)
+            .filter((line) => line.startsWith("data:"))
+            .map((line) => line.slice(5).replace(/^ /, ""))
+            .join("\n");
+          if (data === "") continue;
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(data);
+          } catch {
+            continue;
+          }
+          const message = IncomingMessage.safeParse(parsed);
+          if (message.success && message.data.id === id) return message.data;
+        }
+      }
+      return new Error(`MCP ${label} stream ended without an answer to ${id}`);
+    } catch (error) {
+      return error instanceof Error ? error : new Error(String(error));
+    } finally {
+      await reader.cancel().catch(() => undefined);
+    }
   }
 
   #consume(chunk: string): void {

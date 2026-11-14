@@ -1,4 +1,5 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer as createHttpServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -36,6 +37,7 @@ process.stdin.on("data", (chunk) => {
 
 const clients: McpClient[] = [];
 const dirs: string[] = [];
+const cleanups: (() => Promise<void>)[] = [];
 
 function clientFor(script: string, overrides: { callTimeoutMs?: number; startupTimeoutMs?: number } = {}): McpClient {
   const client = new McpClient({
@@ -60,6 +62,7 @@ function isAlive(pid: number): boolean {
 
 afterEach(async () => {
   for (const client of clients.splice(0)) await client.stop();
+  for (const cleanup of cleanups.splice(0)) await cleanup();
   for (const dir of dirs.splice(0)) {
     try {
       rmSync(dir, { recursive: true, force: true });
@@ -177,5 +180,102 @@ fs.writeFileSync(${JSON.stringify(argvFile)}, JSON.stringify(process.argv.slice(
     // Stopping the wrapper must take the server itself down, not orphan it.
     await client.stop();
     expect(isAlive(serverPid)).toBe(false);
+  });
+
+  it("speaks Streamable HTTP, answering as JSON", async () => {
+    const requests: { method: string; session: string | undefined }[] = [];
+    const server = createHttpServer((request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk: string) => (body += chunk));
+      request.on("end", () => {
+        const message = JSON.parse(body) as { id?: number; method: string };
+        requests.push({ method: message.method, session: request.headers["mcp-session-id"] as string | undefined });
+        if (message.id === undefined) {
+          // A notification: the spec's answer is 202 with no body.
+          response.writeHead(202).end();
+          return;
+        }
+        const result =
+          message.method === "initialize"
+            ? { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "http", version: "1" } }
+            : message.method === "tools/list"
+              ? { tools: [{ name: "echo", description: "Echo", inputSchema: { type: "object" } }] }
+              : { content: [{ type: "text", text: "over http" }] };
+        // The session id the client must echo on every later request arrives with this reply.
+        response.writeHead(200, { "content-type": "application/json", "mcp-session-id": "sess-1" });
+        response.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("no port");
+
+    const client = new McpClient({ url: `http://127.0.0.1:${address.port}/mcp`, args: [], env: {} });
+    clients.push(client);
+    await client.start();
+    expect(await client.listTools()).toEqual([
+      { name: "echo", description: "Echo", inputSchema: { type: "object" } },
+    ]);
+    expect(await client.callTool("echo", { text: "hi" })).toBe("over http");
+    expect(requests.map((entry) => entry.method)).toEqual([
+      "initialize",
+      "notifications/initialized",
+      "tools/list",
+      "tools/call",
+    ]);
+    // The first request has no session yet; every one after the reply carries it.
+    expect(requests.map((entry) => entry.session)).toEqual([undefined, "sess-1", "sess-1", "sess-1"]);
+    // No process was ever spawned, so stopping is only bookkeeping.
+    expect(client.pid).toBeUndefined();
+  });
+
+  it("reads an SSE reply and ignores the frames that are not the answer", async () => {
+    const server = createHttpServer((request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk: string) => (body += chunk));
+      request.on("end", () => {
+        const message = JSON.parse(body) as { id?: number; method: string };
+        if (message.id === undefined) {
+          response.writeHead(202).end();
+          return;
+        }
+        const result =
+          message.method === "initialize"
+            ? { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "sse", version: "1" } }
+            : { tools: [{ name: "echo", inputSchema: { type: "object" } }] };
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        // A progress notification first, then the answer: the reader must skip the one without
+        // this id rather than treat the first frame as the reply.
+        response.write(`data: ${JSON.stringify({ jsonrpc: "2.0", method: "notifications/message" })}\n\n`);
+        response.write(`data: ${JSON.stringify({ jsonrpc: "2.0", id: message.id, result })}\n\n`);
+        response.end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("no port");
+
+    const client = new McpClient({ url: `http://127.0.0.1:${address.port}/mcp`, args: [], env: {} });
+    clients.push(client);
+    await client.start();
+    expect(await client.listTools()).toEqual([{ name: "echo", inputSchema: { type: "object" } }]);
+  });
+
+  it("reports an HTTP status as the server's failure, not a hung request", async () => {
+    const server = createHttpServer((_request, response) => {
+      response.writeHead(401, { "content-type": "text/plain" }).end("no token");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("no port");
+
+    const client = new McpClient({ url: `http://127.0.0.1:${address.port}/mcp`, args: [], env: {} });
+    clients.push(client);
+    await expect(client.start()).rejects.toThrow(/401 no token/);
   });
 });

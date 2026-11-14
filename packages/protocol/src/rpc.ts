@@ -535,13 +535,29 @@ export type SkillRemoveParams = z.infer<typeof SkillRemoveParams>;
  */
 export const SkillRemoveResult = SkillListResult.extend({ ok: z.literal(true) });
 export type SkillRemoveResult = z.infer<typeof SkillRemoveResult>;
-/** A configured MCP server. `args` and `env` are decoded from the row's JSON columns. */
+/**
+ * How the kernel reaches a server. `stdio` spawns `command` and speaks JSON-RPC on its pipes;
+ * `http` POSTs to `url` and reads the answer as JSON or as an SSE stream.
+ */
+export const McpTransport = z.enum(["stdio", "http"]);
+export type McpTransport = z.infer<typeof McpTransport>;
+
+/**
+ * A configured MCP server. `args` and `env` are decoded from the row's JSON columns.
+ *
+ * The two transports do not share fields, but the view stays flat so a renderer can list every
+ * server without narrowing: the field the chosen transport does not use is `""`. `McpService`
+ * enforces which one is required on write, so a stored row is never ambiguous.
+ */
 export const McpServerView = z.object({
   id: z.string(),
   name: z.string(),
+  transport: McpTransport,
   command: z.string(),
   args: z.array(z.string()),
   env: z.record(z.string()),
+  url: z.string(),
+  headers: z.record(z.string()),
   enabled: z.boolean(),
   createdAt: z.number().int(),
   updatedAt: z.number().int(),
@@ -554,11 +570,19 @@ export type McpServerView = z.infer<typeof McpServerView>;
  */
 export const McpServerName = z.string().regex(/^(?!.*__)[a-z0-9_-]{1,40}$/);
 
+/**
+ * `transport` defaults so a caller written before HTTP existed keeps its meaning. `command` and
+ * `url` are both optional here only because which one is required depends on the transport; the
+ * service rejects a combination that names neither.
+ */
 export const McpServerCreateParams = z.object({
   name: McpServerName,
-  command: z.string().trim().min(1),
+  transport: McpTransport.default("stdio"),
+  command: z.string().trim().optional(),
   args: z.array(z.string()).default([]),
   env: z.record(z.string()).default({}),
+  url: z.string().trim().optional(),
+  headers: z.record(z.string()).default({}),
   enabled: z.boolean().default(true),
 });
 export type McpServerCreateParams = z.infer<typeof McpServerCreateParams>;
@@ -573,9 +597,12 @@ export type McpServerDeleteResult = z.infer<typeof McpServerDeleteResult>;
 
 /** A probe runs one server with these settings without saving it. */
 export const McpTestParams = z.object({
-  command: z.string().trim().min(1),
+  transport: McpTransport.default("stdio"),
+  command: z.string().trim().optional(),
   args: z.array(z.string()).default([]),
   env: z.record(z.string()).default({}),
+  url: z.string().trim().optional(),
+  headers: z.record(z.string()).default({}),
 });
 export type McpTestParams = z.infer<typeof McpTestParams>;
 export const McpDiscoveredTool = z.object({ name: z.string(), description: z.string().optional() });
