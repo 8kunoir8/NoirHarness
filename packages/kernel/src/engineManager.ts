@@ -91,6 +91,8 @@ interface QueuedTurn {
   content: PromptContent;
   /** The seq the prompt's own event takes, so a rewind here hides the prompt and everything after. */
   cutSeq: number;
+  /** True when the prompt was emitted while another turn ran, so its seq is not this turn's boundary. */
+  queued: boolean;
 }
 
 interface TurnContext extends QueuedTurn {
@@ -387,7 +389,8 @@ export class EngineManager {
     );
     this.emit(state, "message.completed", { messageId: params.requestId, status: "done" }, turnId);
 
-    const turn: QueuedTurn = { turnId, idx, content, cutSeq };
+    // A queued turn's prompt is emitted mid-turn, so its seq is not where its own stream begins.
+    const turn: QueuedTurn = { turnId, idx, content, cutSeq, queued: !immediate };
     if (!immediate) {
       state.queue.push(turn);
       return { turnId, queued: true };
@@ -537,6 +540,8 @@ export class EngineManager {
   async afterRewind(sessionId: string): Promise<void> {
     const state = this.states.get(sessionId);
     if (state === undefined) return;
+    // The handler's gate runs before two awaits; a turn that started since must not lose its engine.
+    if (state.turn !== undefined) throw new RpcFault(ErrorCodes.conflict, "A turn is running in this session");
     this.dropQueue(state, "rewound");
     state.usage = undefined;
     if (state.engineKind === "native") await this.disposeEngine(state);
@@ -786,7 +791,10 @@ export class EngineManager {
           workspaceId: state.workspaceId,
           workspaceRoot: state.workspaceRoot,
           turnId: turn.turnId,
-          seq: turn.cutSeq,
+          // The prompt of a queued turn predates the running turn's tail; cutting there would hide
+          // a finished turn. This turn's own stream starts at the current head, which is exactly the
+          // seq `turn.started` takes — the capture runs before that emit.
+          seq: turn.queued ? this.deps.events.nextSeq(state.sessionId) : turn.cutSeq,
         })
         .catch(() => undefined);
       const engineSession = await this.ensureEngine(state, context.turnId);

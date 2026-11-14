@@ -1338,6 +1338,49 @@ describe("EngineManager over the fake ACP server", () => {
   );
 
   it(
+    "cuts a queued turn at its own start, not at its enqueue",
+    async () => {
+      const rig = setup();
+      const first = await rig.manager.prompt({ sessionId: rig.session.id, requestId: "req-1", content: [{ type: "text", text: "one" }] });
+      const second = await rig.manager.prompt({ sessionId: rig.session.id, requestId: "req-2", content: [{ type: "text", text: "two" }] });
+      expect(second.queued).toBe(true);
+      await waitForEvent(
+        rig.events,
+        rig.session.id,
+        (event) => event.type === "turn.completed" && eventPayload(event, "turn.completed").turnId === first.turnId,
+      );
+      await waitForEvent(
+        rig.events,
+        rig.session.id,
+        (event) => event.type === "turn.completed" && eventPayload(event, "turn.completed").turnId === second.turnId,
+      );
+
+      // Cutting at the enqueue-time prompt would hide the tail of the turn that ran before this one.
+      const firstDone = rig.events
+        .list(rig.session.id)
+        .find((event) => event.type === "turn.completed" && eventPayload(event, "turn.completed").turnId === first.turnId)?.seq;
+      const enqueuedPrompt = rig.events
+        .list(rig.session.id)
+        .find((event) => event.type === "message.delta" && eventPayload(event, "message.delta").messageId === "req-2")?.seq;
+      const started = rig.events
+        .list(rig.session.id)
+        .find((event) => event.type === "turn.started" && eventPayload(event, "turn.started").turnId === second.turnId)?.seq;
+      const row = rig.db
+        .prepare("SELECT seq FROM checkpoints WHERE turn_id = ?")
+        .get(second.turnId) as { seq: number } | undefined;
+      if (firstDone === undefined || enqueuedPrompt === undefined || started === undefined) {
+        throw new Error("the queue test is missing an event boundary");
+      }
+      // The queued prompt was emitted mid-turn, before the first turn finished.
+      expect(enqueuedPrompt).toBeLessThan(firstDone);
+      // So the cut had to move to this turn's own start, just before `turn.started`.
+      expect(row?.seq).toBeGreaterThan(firstDone);
+      expect(row?.seq).toBeLessThanOrEqual(started);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
     "reports the workspace busy until the last approval settles",
     async () => {
       const rig = setup({ acpPermissionTitle: "Run the thing", acpPermissionKind: "execute" });
@@ -1357,21 +1400,38 @@ describe("EngineManager over the fake ACP server", () => {
   );
 
   it(
-    "takes another turn after a rewind",
+    "rebuilds a native engine from the visible log after a rewind",
     async () => {
-      const rig = setup();
-      await rig.manager.prompt({ sessionId: rig.session.id, requestId: "req-1", content: [{ type: "text", text: "one" }] });
-      await waitForEvent(rig.events, rig.session.id, (event) => event.type === "turn.completed" || event.type === "turn.failed");
+      const server = await startFakeOpenAiServer([{ text: "beta-one" }, { text: "beta-two" }]);
+      try {
+        const rig = setup({ baseUrl: server.baseUrl, engine: "native" });
+        await rig.manager.prompt({ sessionId: rig.session.id, requestId: "req-1", content: [{ type: "text", text: "alpha" }] });
+        await waitForEvent(rig.events, rig.session.id, (event) => event.type === "turn.completed");
 
-      // Disposing the engine is the thing under test: the next turn has to spawn a fresh one.
-      await rig.manager.afterRewind(rig.session.id);
-      const baseline = rig.events.list(rig.session.id).at(-1)?.seq ?? 0;
-      await rig.manager.prompt({ sessionId: rig.session.id, requestId: "req-2", content: [{ type: "text", text: "two" }] });
-      await waitForEvent(rig.events, rig.session.id, (event) => event.type === "turn.completed" && event.seq > baseline);
+        const cut = rig.events
+          .list(rig.session.id)
+          .find((event) => event.type === "message.delta" && eventPayload(event, "message.delta").role === "user")?.seq;
+        if (cut === undefined) throw new Error("the first turn's prompt event is missing");
+        rig.events.append({
+          sessionId: rig.session.id, agentId: rig.session.agentId, type: "session.rewound", turnId: null,
+          payload: {
+            cutSeq: cut, checkpointId: "c-1", promptSeq: cut, restored: 0, deleted: 0,
+            removed: 0, failed: 0, notCaptured: 0, engine: "native", engineNotRewound: false,
+          },
+          provenance: { engine: "native", engineName: "native", adapterVersion: "0" },
+        });
+        await rig.manager.afterRewind(rig.session.id);
+        const baseline = rig.events.list(rig.session.id).at(-1)?.seq ?? 0;
+        await rig.manager.prompt({ sessionId: rig.session.id, requestId: "req-2", content: [{ type: "text", text: "gamma" }] });
+        await waitForEvent(rig.events, rig.session.id, (event) => event.type === "turn.completed" && event.seq > baseline);
 
-      // Two prompts, two snapshots — the second taken by the turn that followed the rewind.
-      const rows = rig.db.prepare("SELECT COUNT(*) AS n FROM checkpoints WHERE session_id = ?").get(rig.session.id) as { n: number };
-      expect(rows.n).toBe(2);
+        // The disposed engine was rebuilt from the visible log: the abandoned turn is not resent.
+        const resent = JSON.stringify(server.requests.at(-1) ?? {});
+        expect(resent).toContain("gamma");
+        expect(resent).not.toContain("alpha");
+      } finally {
+        await server.close();
+      }
     },
     TEST_TIMEOUT_MS,
   );
