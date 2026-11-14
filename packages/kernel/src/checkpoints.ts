@@ -66,6 +66,8 @@ interface Row {
 export class CheckpointService {
   private readonly gitCommand: string;
   private healthCache: { checkpoints: "ok" | "unavailable"; checkpointReason?: string } | undefined;
+  /** When a failed probe stops being trusted: a spawn can lose to a loaded machine, not to git. */
+  private healthRetryAt = 0;
   /** A store's config is written once per process: seven `git config` spawns per turn start is not free. */
   private readonly configured = new Map<string, string>();
 
@@ -111,15 +113,37 @@ export class CheckpointService {
     return refusal === undefined ? { available: true } : { available: false, reason: refusal };
   }
 
-  /** Cached: `system.health` is polled, and a missing binary does not appear mid-run. */
+  /**
+   * Cached: `system.health` is polled, and a missing binary does not appear mid-run. A failure is
+   * retried once immediately — a spawn can lose to a loaded machine rather than to a missing git —
+   * and then only after a delay, so one unlucky probe cannot disable checkpoints for the process.
+   */
   async health(): Promise<{ checkpoints: "ok" | "unavailable"; checkpointReason?: string }> {
-    if (this.healthCache !== undefined) return this.healthCache;
-    try {
-      await run(this.gitCommand, ["--version"], { timeout: 10_000, windowsHide: true });
+    const cached = this.healthCache;
+    if (cached !== undefined && (cached.checkpoints === "ok" || Date.now() < this.healthRetryAt)) return cached;
+    return await this.probeHealth();
+  }
+
+  private async probeHealth(): Promise<{ checkpoints: "ok" | "unavailable"; checkpointReason?: string }> {
+    const probe = async (): Promise<boolean> => {
+      try {
+        await run(this.gitCommand, ["--version"], { timeout: 10_000, windowsHide: true });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    if (await probe()) {
       this.healthCache = { checkpoints: "ok" };
-    } catch {
-      this.healthCache = { checkpoints: "unavailable", checkpointReason: "git is not available" };
+      return this.healthCache;
     }
+    const retry = Promise.withResolvers<void>();
+    setTimeout(retry.resolve, 250);
+    await retry.promise;
+    this.healthCache = (await probe())
+      ? { checkpoints: "ok" }
+      : { checkpoints: "unavailable", checkpointReason: "git is not available" };
+    this.healthRetryAt = Date.now() + 30_000;
     return this.healthCache;
   }
 
