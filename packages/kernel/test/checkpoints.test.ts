@@ -233,14 +233,40 @@ describe("checkpoint plan and restore", () => {
     const r = rig();
     writeFileSync(join(r.root, "a.txt"), "one\n");
     const row = await r.capture("t-1", 1);
+    // The turn the checkpoint precedes: the first rewind abandons it, and undoing that rewind has to
+    // bring it back — files and conversation both.
+    r.events.append({
+      sessionId: r.sessionId, agentId: "a-1", type: "message.delta", turnId: "t-1",
+      payload: { messageId: "m-1", role: "user", block: { type: "text", text: "one" } },
+      provenance: { engine: "native", engineName: "native", adapterVersion: "1" },
+    });
+    r.events.append({
+      sessionId: r.sessionId, agentId: "a-1", type: "message.delta", turnId: "t-1",
+      payload: { messageId: "m-2", role: "assistant", block: { type: "text", text: "done" } },
+      provenance: { engine: "native", engineName: "native", adapterVersion: "1" },
+    });
     writeFileSync(join(r.root, "a.txt"), "two\n");
     await r.checkpoints.restore(r.sessionId, row.id);
 
     const safety = r.checkpoints.entries(r.sessionId).find((entry) => entry.label === "pre-restore");
     expect(safety).toBeDefined();
+    // The marker waited at the seq the safety checkpoint recorded, so it is that seq an undo cuts at.
+    const firstMarkerSeq = safety!.seq;
+    expect(r.events.at(r.sessionId, firstMarkerSeq)?.type).toBe("session.rewound");
+    expect(r.events.visible(r.sessionId).filter((event) => event.type === "message.delta")).toHaveLength(0);
+
     writeFileSync(join(r.root, "a.txt"), "three\n");
     await r.checkpoints.restore(r.sessionId, safety!.id);
     expect(readFileSync(join(r.root, "a.txt"), "utf8")).toBe("two\n");
+
+    // The conversation came back with the files: the undone marker is hidden, only the undo's own
+    // marker remains, and the checkpoint that started it is offered again.
+    const visible = r.events.visible(r.sessionId);
+    const markers = visible.filter((event) => event.type === "session.rewound");
+    expect(markers.map((event) => event.seq)).not.toContain(firstMarkerSeq);
+    expect(markers).toHaveLength(1);
+    expect(visible.filter((event) => event.type === "message.delta")).toHaveLength(2);
+    expect(r.checkpoints.entries(r.sessionId).map((entry) => entry.id)).toContain(row.id);
   });
 
   it("refuses to restore when the current state cannot be captured", async () => {

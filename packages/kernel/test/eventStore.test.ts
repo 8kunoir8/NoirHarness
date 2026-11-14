@@ -123,6 +123,31 @@ describe("rewound ranges", () => {
     expect(visible.filter((event) => event.type === "session.rewound")).toHaveLength(2);
   });
 
+  it("brings an abandoned turn back when the rewind is undone", () => {
+    const store = makeStore();
+    store.append({ sessionId: "s1", agentId: "a1", type: "message.delta", payload: { messageId: "m1", role: "user", block: { type: "text", text: "one" } }, provenance });
+    store.append({ sessionId: "s1", agentId: "a1", type: "message.delta", payload: { messageId: "m2", role: "assistant", block: { type: "text", text: "reply" } }, provenance });
+    store.append({ sessionId: "s1", agentId: "a1", type: "message.delta", payload: { messageId: "m3", role: "user", block: { type: "text", text: "two" } }, provenance });
+    store.append({ sessionId: "s1", agentId: "a1", type: "message.delta", payload: { messageId: "m4", role: "assistant", block: { type: "text", text: "reply two" } }, provenance });
+    const rewind = (cutSeq: number, promptSeq: number | null) =>
+      store.append({
+        sessionId: "s1", agentId: "a1", type: "session.rewound", turnId: null,
+        payload: { cutSeq, checkpointId: "c", promptSeq, restored: 0, deleted: 0, removed: 0, failed: 0, notCaptured: 0, engine: "native", engineNotRewound: false },
+        provenance,
+      });
+    // Cut at 3: the second turn is abandoned and its marker (5) divides the transcript.
+    rewind(3, 3);
+    expect(store.visible("s1").map((event) => event.seq)).toEqual([1, 2, 5]);
+
+    // A pre-restore row sits at seq 5, so undoing it cuts at 5: the turn comes back, marker gone.
+    rewind(5, 3);
+    expect(store.visible("s1").map((event) => event.seq)).toEqual([1, 2, 3, 4, 6]);
+
+    // A third restore cuts at 6, the seq the second marker took: that marker goes, the first stands.
+    rewind(6, null);
+    expect(store.visible("s1").map((event) => event.seq)).toEqual([1, 2, 5, 7]);
+  });
+
   it("reports meta from the visible log only", () => {
     const store = makeStore();
     store.append({ sessionId: "s1", agentId: "a1", type: "permission.requested", payload: { approvalId: "p-1", toolCallId: "c-1", title: "Run", category: "shell", options: [{ optionId: "once", name: "Allow once", kind: "allow_once" }] }, provenance });

@@ -50,11 +50,22 @@ export class EventStore {
     const rows = this.db
       .prepare("SELECT seq, payload_json FROM events WHERE session_id = ? AND type = 'session.rewound' ORDER BY seq ASC")
       .all(sessionId) as Array<{ seq: number; payload_json: string }>;
-    return rows.flatMap((row) => {
+    const ranges = rows.flatMap((row) => {
       const payload: unknown = JSON.parse(row.payload_json);
       const cut = typeof payload === "object" && payload !== null && "cutSeq" in payload ? payload.cutSeq : undefined;
       return typeof cut === "number" ? [{ from: cut, to: row.seq }] : [];
     });
+    // A rewind of a `pre-restore` row cuts at the seq its marker took, so that marker lands inside
+    // the new range: the rewind it made is being undone and it hides nothing any more. Latest-first,
+    // because only a range that still stands can undo one — a chain of three restores keeps the
+    // oldest range when the middle one is itself undone.
+    const kept: Array<{ from: number; to: number }> = [];
+    for (let index = ranges.length - 1; index >= 0; index -= 1) {
+      const range = ranges[index];
+      if (range === undefined) continue;
+      if (!kept.some((other) => range.to >= other.from && range.to < other.to)) kept.push(range);
+    }
+    return kept.reverse();
   }
 
   /** Everything a reader may see: the log minus the abandoned ranges. */

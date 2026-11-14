@@ -18,6 +18,7 @@ import { provenanceFor } from "./provenance.js";
 
 const run = promisify(execFile);
 const GIT_TIMEOUT_MS = 120_000;
+const MAX_BUFFER_BYTES = 32 * 1024 * 1024;
 const MIN_FREE_BYTES = 500 * 1024 * 1024;
 const MAX_NOT_CAPTURED = 5_000;
 const IDENTITY = ["-c", "user.name=NoirHarness", "-c", "user.email=checkpoints@noir.local"];
@@ -284,7 +285,7 @@ export class CheckpointService {
       const result = await run(this.gitCommand, argv, {
         timeout: GIT_TIMEOUT_MS,
         windowsHide: true,
-        maxBuffer: 32 * 1024 * 1024,
+        maxBuffer: MAX_BUFFER_BYTES,
         encoding: "utf8",
       });
       return result.stdout;
@@ -294,11 +295,24 @@ export class CheckpointService {
     const { promise, resolve, reject } = Promise.withResolvers<string>();
     const child = spawn(this.gitCommand, argv, { timeout: GIT_TIMEOUT_MS, windowsHide: true });
     const out: Buffer[] = [];
-    child.stdout.on("data", (chunk: Buffer) => out.push(chunk));
+    const err: Buffer[] = [];
+    let size = 0;
+    child.stdout.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > MAX_BUFFER_BYTES) {
+        // A truncated path list would write the wrong bytes; refuse instead. `execFile` capped
+        // itself at the same size.
+        child.kill();
+        reject(new Error(`git ${args[0] ?? ""} produced too much output`));
+        return;
+      }
+      out.push(chunk);
+    });
+    child.stderr.on("data", (chunk: Buffer) => err.push(chunk));
     child.on("error", reject);
     child.on("close", (code) => {
       if (code === 0) resolve(Buffer.concat(out).toString("utf8"));
-      else reject(new Error(`git ${args[0] ?? ""} exited with code ${code ?? "signal"}`));
+      else reject(new Error(`git ${args[0] ?? ""} exited with code ${code ?? "signal"}: ${Buffer.concat(err).toString("utf8").trim()}`));
     });
     child.stdin.on("error", reject);
     child.stdin.end(`${stdin.join("\u0000")}\u0000`);
