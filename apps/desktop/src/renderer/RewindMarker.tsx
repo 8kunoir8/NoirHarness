@@ -3,9 +3,12 @@ import type { ChatRewind } from "./events.js";
 export function RewindMarker({
   rewind,
   onLoadPrompt,
+  onUndo,
 }: {
   rewind: ChatRewind;
   onLoadPrompt?: ((seq: number) => void) | undefined;
+  /** Restores the safety checkpoint this rewind took, putting back what it removed. */
+  onUndo?: (() => void) | undefined;
 }) {
   const promptSeq = rewind.promptSeq;
   return (
@@ -29,6 +32,11 @@ export function RewindMarker({
       {promptSeq === null || onLoadPrompt === undefined ? null : (
         <button type="button" className="link" onClick={() => onLoadPrompt(promptSeq)}>
           Load the prompt again
+        </button>
+      )}
+      {onUndo === undefined ? null : (
+        <button type="button" className="link" onClick={onUndo}>
+          Undo this rewind
         </button>
       )}
     </li>

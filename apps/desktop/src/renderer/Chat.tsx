@@ -56,7 +56,13 @@ export function Chat({
     request,
     `${state.activeTurnId ?? "idle"}:${String(state.rewinds.length)}`,
   );
-  const [rewind, setRewind] = useState<{ checkpointId: string; notCaptured: number } | undefined>(undefined);
+  /**
+   * The open confirmation. `mode` lives here rather than in a sibling state so the copy and the
+   * checkpoint it describes can never disagree: one state, one transition.
+   */
+  const [rewind, setRewind] = useState<
+    { checkpointId: string; notCaptured: number; mode: "rewind" | "undo" } | undefined
+  >(undefined);
   const [rewindPhase, setRewindPhase] = useState<"planning" | "ready" | "applying" | "failed">("planning");
   const [rewindPlan, setRewindPlan] = useState<CheckpointPlanResult | undefined>(undefined);
   const [rewindError, setRewindError] = useState<string | undefined>(undefined);
@@ -140,24 +146,34 @@ export function Chat({
     }
   }
 
-  async function beginRewind(turnId: string): Promise<void> {
-    const entry = checkpoints.byTurn.get(turnId);
-    if (entry === undefined) return;
+  /**
+   * Opens the confirmation for one checkpoint. A rewind and its undo are the same state machine —
+   * same plan, same guard, same restore — and differ only in the words the dialog shows.
+   */
+  function openCheckpoint(entry: { id: string; notCaptured: number }, mode: "rewind" | "undo"): void {
     planTarget.current = entry.id;
-    setRewind({ checkpointId: entry.id, notCaptured: entry.notCaptured });
+    setRewind({ checkpointId: entry.id, notCaptured: entry.notCaptured, mode });
     setRewindPhase("planning");
     setRewindPlan(undefined);
     setRewindError(undefined);
-    try {
-      const plan = await checkpoints.plan(entry.id);
-      if (planTarget.current !== entry.id) return;
-      setRewindPlan(plan);
-      setRewindPhase("ready");
-    } catch (failure) {
-      if (planTarget.current !== entry.id) return;
-      setRewindError(errorMessage(failure));
-      setRewindPhase("failed");
-    }
+    void (async () => {
+      try {
+        const plan = await checkpoints.plan(entry.id);
+        if (planTarget.current !== entry.id) return;
+        setRewindPlan(plan);
+        setRewindPhase("ready");
+      } catch (failure) {
+        if (planTarget.current !== entry.id) return;
+        setRewindError(errorMessage(failure));
+        setRewindPhase("failed");
+      }
+    })();
+  }
+
+  function beginRewind(turnId: string): void {
+    const entry = checkpoints.byTurn.get(turnId);
+    if (entry === undefined) return;
+    openCheckpoint(entry, "rewind");
   }
 
   function closeRewind(): void {
@@ -282,11 +298,15 @@ export function Chat({
       <ol className="messages">
         {transcriptRows(state).map((row) => {
           if (row.rewind !== undefined) {
+            // The safety checkpoint of this rewind sits at the marker's own seq, and unlike every
+            // turn checkpoint it has no turn to reach it by.
+            const safety = checkpoints.preRestore.get(row.rewind.seq);
             return (
               <RewindMarker
                 key={`rewind-${String(row.rewind.seq)}`}
                 rewind={row.rewind}
                 onLoadPrompt={(seq) => void loadPrompt(seq)}
+                onUndo={safety === undefined ? undefined : () => openCheckpoint(safety, "undo")}
               />
             );
           }
@@ -302,7 +322,7 @@ export function Chat({
             >
               <strong>{message.role === "user" ? "You" : "Assistant"}</strong>
               {canRewind ? (
-                <button type="button" className="link rewind-action" onClick={() => void beginRewind(turnId)}>
+                <button type="button" className="link rewind-action" onClick={() => beginRewind(turnId)}>
                   Rewind to before this prompt
                 </button>
               ) : null}
@@ -349,6 +369,13 @@ export function Chat({
             plan={rewindPlan}
             notCaptured={rewind.notCaptured}
             error={rewindError}
+            title={rewind.mode === "undo" ? "Undo this rewind" : "Rewind to before this prompt"}
+            hint={
+              rewind.mode === "undo"
+                ? "The files this rewind took away come back, and the conversation returns to what it was."
+                : "The files this turn changed go back; the conversation after it goes away."
+            }
+            confirmLabel={rewind.mode === "undo" ? "Undo" : "Rewind"}
             onConfirm={() => void confirmRewind()}
             onCancel={closeRewind}
           />

@@ -11,6 +11,11 @@ export interface CheckpointEntry {
 
 export interface CheckpointsApi {
   byTurn: ReadonlyMap<string, CheckpointEntry>;
+  /**
+   * The safety checkpoints, keyed by the seq of the rewind they guard. One has no turn, so its
+   * marker is the only address it has: the kernel captures it at the seq that marker takes.
+   */
+  preRestore: ReadonlyMap<number, CheckpointEntry>;
   available: boolean;
   reason: string | undefined;
   plan: (checkpointId: string) => Promise<CheckpointPlanResult>;
@@ -58,14 +63,21 @@ export function useCheckpoints(sessionId: string, request: RequestFn, refreshKey
   );
 
   const byTurn = new Map<string, CheckpointEntry>();
+  const preRestore = new Map<number, CheckpointEntry>();
   for (const entry of list?.checkpoints ?? []) {
     if (entry.turnId !== null && entry.error === null) {
       byTurn.set(entry.turnId, { id: entry.id, notCaptured: entry.notCaptured, error: entry.error });
+    }
+    // A `pre-restore` row sits at the rewind marker's own seq, which is what lets the marker find
+    // the checkpoint that undoes it.
+    if (entry.turnId === null && entry.label === "pre-restore" && entry.error === null) {
+      preRestore.set(entry.seq, { id: entry.id, notCaptured: entry.notCaptured, error: entry.error });
     }
   }
 
   return {
     byTurn,
+    preRestore,
     available: list?.available === true && error === undefined,
     reason: list?.reason ?? error,
     plan,

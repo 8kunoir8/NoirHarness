@@ -35,6 +35,55 @@ describe("RewindDialog", () => {
     expect(onConfirm).toHaveBeenCalledOnce();
   });
 
+  it("shows its own words when it confirms an undo", async () => {
+    const onConfirm = vi.fn();
+    render(
+      <RewindDialog
+        phase="ready"
+        plan={plan}
+        notCaptured={0}
+        error={undefined}
+        title="Undo this rewind"
+        hint="The files this rewind took away come back, and the conversation returns to what it was."
+        confirmLabel="Undo"
+        onConfirm={onConfirm}
+        onCancel={vi.fn()}
+      />,
+    );
+    const dialog = screen.getByRole("dialog", { name: "Undo this rewind" });
+    expect(dialog.querySelector("h2")?.textContent).toBe("Undo this rewind");
+    expect(dialog.textContent).toContain("The files this rewind took away come back");
+    await userEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(onConfirm).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("button", { name: "Rewind" })).toBeNull();
+  });
+
+  it("spells the applying label from the confirm label", () => {
+    render(
+      <RewindDialog
+        phase="applying"
+        plan={plan}
+        notCaptured={0}
+        error={undefined}
+        title="Undo this rewind"
+        confirmLabel="Undo"
+        onConfirm={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "Undo…" }).disabled).toBe(true);
+  });
+
+  it("keeps the rewind's own words as the defaults", () => {
+    render(
+      <RewindDialog phase="ready" plan={plan} notCaptured={0} error={undefined} onConfirm={vi.fn()} onCancel={vi.fn()} />,
+    );
+    const dialog = screen.getByRole("dialog", { name: "Rewind to before this prompt" });
+    expect(dialog.querySelector("h2")?.textContent).toBe("Rewind to before this prompt");
+    expect(dialog.textContent).toContain("The files this turn changed go back; the conversation after it goes away.");
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "Rewind" }).disabled).toBe(false);
+  });
+
   it("refuses to confirm while the plan is still being computed", () => {
     render(
       <RewindDialog phase="planning" plan={undefined} notCaptured={0} error={undefined} onConfirm={vi.fn()} onCancel={vi.fn()} />,
@@ -92,6 +141,18 @@ describe("RewindMarker", () => {
   it("speaks of one uncaptured item in the singular", () => {
     render(<RewindMarker rewind={rewind({ notCaptured: 1 })} />);
     expect(screen.getByText(/1 item was not captured/)).not.toBeNull();
+  });
+
+  it("offers the undo only when it has somewhere to go", () => {
+    render(<RewindMarker rewind={rewind()} onLoadPrompt={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: "Undo this rewind" })).toBeNull();
+  });
+
+  it("undoes the rewind when handed a checkpoint", async () => {
+    const onUndo = vi.fn();
+    render(<RewindMarker rewind={rewind()} onUndo={onUndo} />);
+    await userEvent.click(screen.getByRole("button", { name: "Undo this rewind" }));
+    expect(onUndo).toHaveBeenCalledOnce();
   });
 
   it("has no prompt button when the prompt is gone", () => {

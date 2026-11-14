@@ -6,6 +6,10 @@ export interface RewindDialogProps {
   plan: CheckpointPlanResult | undefined;
   notCaptured: number;
   error: string | undefined;
+  /** The same dialog confirms an undo, so its words travel with the call. */
+  title?: string | undefined;
+  hint?: string | undefined;
+  confirmLabel?: string | undefined;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -15,7 +19,17 @@ function count(value: number, noun: string): string {
 }
 
 /** The confirmation step. It never starts work: a rewind is only ever a click on `Rewind`. */
-export function RewindDialog({ phase, plan, notCaptured, error, onConfirm, onCancel }: RewindDialogProps) {
+export function RewindDialog({
+  phase,
+  plan,
+  notCaptured,
+  error,
+  title = "Rewind to before this prompt",
+  hint = "The files this turn changed go back; the conversation after it goes away.",
+  confirmLabel = "Rewind",
+  onConfirm,
+  onCancel,
+}: RewindDialogProps) {
   const cancel = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     // Focus lands inside the dialog on open, so Escape reaches the container in every phase, and
@@ -26,7 +40,7 @@ export function RewindDialog({ phase, plan, notCaptured, error, onConfirm, onCan
   return (
     <div
       role="dialog"
-      aria-label="Rewind to before this prompt"
+      aria-label={title}
       aria-modal="true"
       className="rewind-dialog"
       data-testid="rewind-dialog"
@@ -34,8 +48,8 @@ export function RewindDialog({ phase, plan, notCaptured, error, onConfirm, onCan
         if (event.key === "Escape") onCancel();
       }}
     >
-      <h2>Rewind to before this prompt</h2>
-      <p className="rewind-hint">The files this turn changed go back; the conversation after it goes away.</p>
+      <h2>{title}</h2>
+      <p className="rewind-hint">{hint}</p>
       {phase === "planning" ? <p>Checking what would change…</p> : null}
       {phase === "failed" ? <p role="alert">{error ?? "The rewind failed."}</p> : null}
       {plan === undefined ? null : (
@@ -63,7 +77,7 @@ export function RewindDialog({ phase, plan, notCaptured, error, onConfirm, onCan
           Cancel
         </button>
         <button type="button" className="primary" disabled={phase !== "ready"} onClick={onConfirm}>
-          {phase === "applying" ? "Rewinding…" : "Rewind"}
+          {phase === "applying" ? `${confirmLabel}…` : confirmLabel}
         </button>
       </div>
     </div>

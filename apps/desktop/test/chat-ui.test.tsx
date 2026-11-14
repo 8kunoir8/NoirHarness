@@ -391,6 +391,82 @@ describe("Chat", () => {
     expect(screen.getAllByTestId("message-assistant")).toHaveLength(2);
   });
 
+  it("undoes a rewind from its marker", async () => {
+    const turn = (event: AgentEvent, turnId: string): AgentEvent => ({ ...event, turnId });
+    const plans = new Map<string, PromiseWithResolvers<unknown>>();
+    const planId = (params: unknown): string => {
+      if (params !== null && typeof params === "object" && "checkpointId" in params && typeof params.checkpointId === "string") {
+        return params.checkpointId;
+      }
+      throw new Error("checkpoint.plan without a checkpointId");
+    };
+    const request = vi.fn((method: string, params?: unknown): Promise<unknown> => {
+      if (method === "session.subscribe") {
+        return Promise.resolve({
+          events: [
+            turn(makeEvent(1, "message.delta", { messageId: "u-1", role: "user", block: { type: "text", text: "first" } }), "t-1"),
+            turn(makeEvent(2, "message.delta", { messageId: "a-1", role: "assistant", block: { type: "text", text: "done" } }), "t-1"),
+            // The marker takes seq 3, and the safety checkpoint is captured at that same seq.
+            makeEvent(3, "session.rewound", {
+              cutSeq: 1,
+              checkpointId: "c-1",
+              promptSeq: 1,
+              restored: 1,
+              deleted: 0,
+              removed: 0,
+              failed: 0,
+              notCaptured: 0,
+              engine: "acp",
+              engineNotRewound: false,
+            }),
+          ],
+          lastSeq: 3,
+        });
+      }
+      if (method === "checkpoint.list") {
+        return Promise.resolve({
+          available: true,
+          checkpoints: [
+            { id: "c-1", turnId: "t-1", seq: 1, createdAt: 1, notCaptured: 0, label: "turn", error: null },
+            { id: "safety-3", turnId: null, seq: 3, createdAt: 3, notCaptured: 0, label: "pre-restore", error: null },
+          ],
+        });
+      }
+      if (method === "checkpoint.plan") {
+        const pending = Promise.withResolvers<unknown>();
+        plans.set(planId(params), pending);
+        return pending.promise;
+      }
+      if (method === "checkpoint.restore") {
+        return Promise.resolve({ ok: true, restored: 2, deleted: 1, removed: 0, failed: [], eventSeq: 4 });
+      }
+      throw new Error(method);
+    });
+
+    render(<ChatHarness request={request as unknown as RequestFn} />);
+    const undo = await screen.findByRole("button", { name: "Undo this rewind" });
+    await userEvent.click(undo);
+
+    // The same dialog, in the words of an undo: nothing is confirmed until its plan lands.
+    const dialog = screen.getByRole("dialog", { name: "Undo this rewind" });
+    expect(dialog.textContent).toContain("The files this rewind took away come back");
+    const confirm = screen.getByRole<HTMLButtonElement>("button", { name: "Undo" });
+    expect(confirm.disabled).toBe(true);
+
+    const pending = plans.get("safety-3");
+    expect(pending).toBeDefined();
+    await act(async () => {
+      pending!.resolve({ restored: 2, deleted: 1, removed: 0, failed: [] });
+      await pending!.promise;
+    });
+    await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Undo" }).disabled).toBe(false));
+    await userEvent.click(screen.getByRole("button", { name: "Undo" }));
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith("checkpoint.restore", { sessionId: "s1", checkpointId: "safety-3" }),
+    );
+  });
+
   it("ignores a plan whose dialog was dismissed", async () => {
     const turn = (event: AgentEvent, turnId: string): AgentEvent => ({ ...event, turnId });
     const planId = (params: unknown): string => {
