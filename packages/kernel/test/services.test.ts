@@ -46,7 +46,7 @@ function setup() {
   const providers = new ProviderService(db, memorySecrets());
   const models = new ModelService(db);
   const sessions = new SessionService(db, events, models);
-  const agents = new AgentService(db, models, sessions);
+  const agents = new AgentService(db, models, sessions, events);
   return { db, events, projects, workspaces, sessions, providers, models, agents };
 }
 

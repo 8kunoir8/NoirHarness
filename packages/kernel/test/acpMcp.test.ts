@@ -68,7 +68,7 @@ async function harness(policy: PermissionPolicy) {
   const workspaces = new WorkspaceService(db, projects);
   const models = new ModelService(db);
   const sessions = new SessionService(db, events, models);
-  const agents = new AgentService(db, models, sessions);
+  const agents = new AgentService(db, models, sessions, events);
   const providers = new ProviderService(db, memorySecrets());
   const skills = new SkillService(db, dataDir);
   const mcp = new McpService(db);

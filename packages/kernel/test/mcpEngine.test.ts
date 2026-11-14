@@ -120,7 +120,7 @@ async function harness(server: FakeOpenAiServer, policy: PermissionPolicy, pidFi
   const models = new ModelService(db);
   const sessions = new SessionService(db, events, models);
   const providers = new ProviderService(db, memorySecrets());
-  const agents = new AgentService(db, models, sessions);
+  const agents = new AgentService(db, models, sessions, events);
   const skills = new SkillService(db, dataDir);
   const mcp = new McpService(db);
   const mcpServer = mcp.create({

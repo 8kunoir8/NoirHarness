@@ -31,12 +31,13 @@ function setup(): Setup {
   const db = openDb(join(dir, "noir.db"));
   dbs.push(db);
   const models = new ModelService(db);
-  const sessions = new SessionService(db, new EventStore(db), models);
+  const events = new EventStore(db);
+  const sessions = new SessionService(db, events, models);
   const clock = { now: 1_000 };
   return {
     db,
     mcp: new McpService(db, () => clock.now),
-    agents: new AgentService(db, models, sessions),
+    agents: new AgentService(db, models, sessions, events),
     clock,
   };
 }
