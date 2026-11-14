@@ -18,8 +18,10 @@ import { useSessionEvents } from "../src/renderer/events.js";
 describe("useSessionEvents after a rewind", () => {
   it("replays from zero so the abandoned turns disappear", async () => {
     let replay = 0;
-    const request = <T,>(method: string): Promise<T> => {
+    const request = <T,>(method: string, params?: unknown): Promise<T> => {
       if (method !== "session.subscribe") return Promise.reject(new Error(`unexpected ${method}`));
+      // A rebuild must ask for the whole log, including the range a rewind abandoned locally.
+      expect(params).toMatchObject({ sessionId: "s-1", sinceSeq: 0 });
       replay += 1;
       // The first replay still holds the message; after the rewind the kernel answers without it.
       const messages = replay === 1

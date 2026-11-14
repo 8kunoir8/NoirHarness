@@ -284,7 +284,19 @@ export function reduceChat(state: ChatState, event: AgentEvent): ChatState {
       const index = next.messages.findIndex((message) => message.id === messageId);
       // The sender renders its own prompt before the kernel's echo arrives; the echo must not
       // append a second bubble for a message the transcript already holds.
-      if (role === "user" && index !== -1) return next;
+      if (role === "user" && index !== -1) {
+        // The echo is what names the optimistic bubble's turn and seq; it was created before this
+        // event arrived, so dropping the event here would leave the prompt unaddressable.
+        const existing = next.messages[index]!;
+        if (existing.seq !== undefined) return next;
+        const named = [...next.messages];
+        named[index] = {
+          ...existing,
+          seq: event.seq,
+          ...(event.turnId === null || event.turnId === undefined ? {} : { turnId: event.turnId }),
+        };
+        return { ...next, messages: named };
+      }
       const messages = [...next.messages];
       if (index === -1) {
         messages.push({

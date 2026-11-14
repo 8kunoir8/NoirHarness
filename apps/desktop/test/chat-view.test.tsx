@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentEvent, ModelView } from "@noir/protocol";
 import { ChatHeader } from "../src/renderer/ChatHeader.js";
-import { emptyChatState, reduceChat, type ChatState } from "../src/renderer/events.js";
+import { appendUserMessage, emptyChatState, reduceChat, type ChatState } from "../src/renderer/events.js";
 import { formatDuration, formatTokens } from "../src/renderer/format.js";
 import { ToolCard } from "../src/renderer/ToolCard.js";
 
@@ -110,6 +110,17 @@ describe("reduceChat projections", () => {
     expect(state.rewinds).toEqual([
       { seq: 1, cutSeq: 1, promptSeq: 1, restored: 7, deleted: 1, removed: 2, failed: 0, notCaptured: 3, engineNotRewound: true },
     ]);
+  });
+
+  it("names the optimistic prompt with the echo's turn and seq", () => {
+    const sent = appendUserMessage(emptyChatState("s1"), "go", "u-1");
+    const state = reduceChat(
+      sent,
+      event(4, 1_000, "message.delta", { messageId: "u-1", role: "user", block: { type: "text", text: "go" } }, "t-4"),
+    );
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]?.seq).toBe(4);
+    expect(state.messages[0]?.turnId).toBe("t-4");
   });
 });
 
