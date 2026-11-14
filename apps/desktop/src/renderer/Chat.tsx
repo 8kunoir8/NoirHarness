@@ -170,12 +170,13 @@ export function Chat({
 
   async function confirmRewind(): Promise<void> {
     if (rewind === undefined) return;
+    const target = rewind.checkpointId;
     setRewindPhase("applying");
     try {
-      await checkpoints.restore(rewind.checkpointId);
-      closeRewind();
+      await checkpoints.restore(target);
+      if (planTarget.current === target) closeRewind();
     } catch (failure) {
-      // `conflict` lands here when a turn started in this workspace meanwhile.
+      if (planTarget.current !== target) return;
       setRewindError(errorMessage(failure));
       setRewindPhase("failed");
     }

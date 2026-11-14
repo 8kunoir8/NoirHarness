@@ -391,6 +391,81 @@ describe("Chat", () => {
     expect(screen.getAllByTestId("message-assistant")).toHaveLength(2);
   });
 
+  it("ignores a plan whose dialog was dismissed", async () => {
+    const turn = (event: AgentEvent, turnId: string): AgentEvent => ({ ...event, turnId });
+    const planId = (params: unknown): string => {
+      if (params !== null && typeof params === "object" && "checkpointId" in params && typeof params.checkpointId === "string") {
+        return params.checkpointId;
+      }
+      throw new Error("checkpoint.plan without a checkpointId");
+    };
+    const plans = new Map<string, PromiseWithResolvers<unknown>>();
+    const request = vi.fn((method: string, params?: unknown): Promise<unknown> => {
+      if (method === "session.subscribe") {
+        return Promise.resolve({
+          events: [
+            turn(makeEvent(1, "message.delta", { messageId: "u-1", role: "user", block: { type: "text", text: "first" } }), "t-1"),
+            turn(makeEvent(2, "message.delta", { messageId: "u-2", role: "user", block: { type: "text", text: "second" } }), "t-2"),
+          ],
+          lastSeq: 2,
+        });
+      }
+      if (method === "checkpoint.list") {
+        return Promise.resolve({
+          available: true,
+          checkpoints: [
+            { id: "c-1", turnId: "t-1", seq: 1, createdAt: 1, notCaptured: 0, label: "turn", error: null },
+            { id: "c-2", turnId: "t-2", seq: 2, createdAt: 2, notCaptured: 0, label: "turn", error: null },
+          ],
+        });
+      }
+      if (method === "checkpoint.plan") {
+        // The test resolves each plan by checkpoint id, so the order of events is ours to choose.
+        const pending = Promise.withResolvers<unknown>();
+        plans.set(planId(params), pending);
+        return pending.promise;
+      }
+      throw new Error(method);
+    });
+
+    render(<ChatHarness request={request as unknown as RequestFn} />);
+    const actions = await screen.findAllByRole("button", { name: "Rewind to before this prompt" });
+    expect(actions).toHaveLength(2);
+
+    await userEvent.click(actions[0]!);
+    expect(screen.getByTestId("rewind-dialog")).toBeTruthy();
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByTestId("rewind-dialog")).toBeNull());
+
+    await userEvent.click(screen.getAllByRole("button", { name: "Rewind to before this prompt" })[1]!);
+    expect(screen.getByTestId("rewind-dialog")).toBeTruthy();
+    // Role queries return `HTMLElement`; this one is the dialog's confirm button.
+    const confirm = screen.getByRole("button", { name: "Rewind" }) as HTMLButtonElement;
+
+    // The first dialog's answer arrives now; the second dialog must not adopt it.
+    const first = plans.get("c-1")!;
+    await act(async () => {
+      first.resolve({ restored: 1, deleted: 0, removed: 0, failed: [] });
+      await first.promise;
+    });
+    expect(screen.getByTestId("rewind-dialog").textContent).not.toContain("1 file restored");
+    expect(screen.queryByTestId("rewind-counts")).toBeNull();
+    expect(confirm.disabled).toBe(true);
+
+    // The plan of the dialog on screen is the one that lands.
+    const second = plans.get("c-2")!;
+    await act(async () => {
+      second.resolve({ restored: 7, deleted: 1, removed: 0, failed: [] });
+      await second.promise;
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("rewind-counts").textContent).toBe(
+        "7 files restored · 1 deleted file · 0 created files removed",
+      ),
+    );
+    expect(confirm.disabled).toBe(false);
+  });
+
   it("shows a failed request and keeps the draft", async () => {
     const request = vi.fn(async (method: string): Promise<unknown> => {
       if (method === "session.subscribe") return { events: [], lastSeq: 0 };
