@@ -320,7 +320,18 @@ export class SessionService {
       stats.set(row.session_id, row);
     }
     const pending = new Set((this.db.prepare(PENDING_APPROVALS).all() as Array<{ session_id: string }>).map((row) => row.session_id));
-    return rows.map((row) => toView(row, metaFor(row.created_at as number, stats, pending, row.id as string)));
+    // A rewound session's newest events may be abandoned ones, so its meta is computed from the
+    // visible log; the grouped query above is still right for every other session.
+    const rewound = new Set(
+      this.db.prepare("SELECT DISTINCT session_id FROM events WHERE type = 'session.rewound'").pluck().all() as string[],
+    );
+    return rows.map((row) => {
+      const id = row.id as string;
+      const meta = rewound.has(id)
+        ? this.metaForOne(row)
+        : metaFor(row.created_at as number, stats, pending, id);
+      return toView(row, meta);
+    });
   }
 
   /** Reads the profile directly: `SessionService` must not depend on `AgentService`, which depends on it. */
@@ -352,15 +363,11 @@ export class SessionService {
   }
 
   private metaForOne(row: Record<string, unknown>): SessionMeta {
-    const stat = this.db.prepare("SELECT MAX(seq) AS last_seq, MAX(ts) AS last_ts FROM events WHERE session_id = ?")
-      .get(row.id as string) as { last_seq: number | null; last_ts: number | null };
-    const pending = this.db.prepare(
-      "SELECT type FROM events WHERE session_id = ? AND type IN ('permission.requested', 'permission.resolved') ORDER BY seq DESC LIMIT 1",
-    ).get(row.id as string) as { type: string } | undefined;
+    const meta = this.events.visibleMeta(row.id as string);
     return {
-      lastSeq: stat.last_seq ?? 0,
-      lastTs: stat.last_ts ?? (row.created_at as number),
-      pendingApproval: pending?.type === "permission.requested",
+      lastSeq: meta.lastSeq,
+      lastTs: meta.lastSeq === 0 ? (row.created_at as number) : meta.lastTs,
+      pendingApproval: meta.pendingApproval,
     };
   }
 }

@@ -551,7 +551,9 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; o
         [Methods.sessionSubscribe]: async (params) => {
           const { sessionId, sinceSeq } = SessionSubscribeParams.parse(params);
           engineManager.reconcileSession(sessionId);
-          const replay = events.list(sessionId, sinceSeq);
+          // A rewind rebuilds the transcript by replaying from 0, so this is the filter that makes
+          // the abandoned range disappear from the screen.
+          const replay = events.visible(sessionId, sinceSeq);
           return { events: replay, lastSeq: replay.at(-1)?.seq ?? sinceSeq };
         },
       };

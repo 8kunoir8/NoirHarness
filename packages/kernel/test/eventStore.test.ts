@@ -81,3 +81,73 @@ describe("EventStore", () => {
     ]);
   });
 });
+
+describe("rewound ranges", () => {
+  /** `makeStore` seeds `s1`; the rewind helper keeps the payload shape in one place. */
+  function rewind(store: EventStore, cutSeq: number): void {
+    store.append({
+      sessionId: "s1",
+      agentId: "a1",
+      type: "session.rewound",
+      payload: {
+        cutSeq, checkpointId: "c-1", promptSeq: cutSeq, restored: 0, deleted: 0, removed: 0,
+        failed: 0, notCaptured: 0, engine: "acp", engineNotRewound: true,
+      },
+      provenance,
+    });
+  }
+
+  it("hides the range and keeps the marker", () => {
+    const store = makeStore();
+    const kept = store.append({ sessionId: "s1", agentId: "a1", type: "message.delta", payload: { messageId: "m-1", role: "user", block: { type: "text", text: "first" } }, provenance });
+    store.append({ sessionId: "s1", agentId: "a1", type: "message.delta", payload: { messageId: "m-2", role: "assistant", block: { type: "text", text: "doomed" } }, provenance });
+    // `cutSeq` is the first seq the abandoned turn would have written (`nextSeq` at checkpoint
+    // time), so the prompt before it stays visible.
+    rewind(store, kept.seq + 1);
+
+    const visible = store.visible("s1");
+    expect(visible.map((event) => event.seq)).toEqual([kept.seq, kept.seq + 2]);
+    expect(visible.map((event) => event.type)).toEqual(["message.delta", "session.rewound"]);
+    expect(JSON.stringify(visible)).not.toContain("doomed");
+  });
+
+  it("resolves two rewinds independently", () => {
+    const store = makeStore();
+    const a = store.append({ sessionId: "s1", agentId: "a1", type: "message.delta", payload: { messageId: "a", role: "user", block: { type: "text", text: "a" } }, provenance });
+    rewind(store, a.seq);
+    const b = store.append({ sessionId: "s1", agentId: "a1", type: "message.delta", payload: { messageId: "b", role: "user", block: { type: "text", text: "b" } }, provenance });
+    rewind(store, b.seq);
+
+    const visible = store.visible("s1");
+    expect(visible.filter((event) => event.type === "message.delta")).toEqual([]);
+    expect(visible.filter((event) => event.type === "session.rewound")).toHaveLength(2);
+  });
+
+  it("reports meta from the visible log only", () => {
+    const store = makeStore();
+    store.append({ sessionId: "s1", agentId: "a1", type: "permission.requested", payload: { approvalId: "p-1", toolCallId: "c-1", title: "Run", category: "shell", options: [{ optionId: "once", name: "Allow once", kind: "allow_once" }] }, provenance });
+    rewind(store, 1);
+
+    const meta = store.visibleMeta("s1");
+    expect(meta.pendingApproval).toBe(false);
+    expect(meta.lastSeq).toBe(2);
+    // `at` still reaches the abandoned row; that is what `Load the prompt again` needs.
+    expect(store.at("s1", 1)?.type).toBe("permission.requested");
+  });
+
+  it("copies the visible prefix into a fork and leaves the marker behind", () => {
+    const store = makeStore();
+    store.append({ sessionId: "s1", agentId: "a1", type: "session.status", payload: { status: "running" }, provenance });
+    const prompt = store.append({ sessionId: "s1", agentId: "a1", type: "message.delta", payload: { messageId: "p", role: "user", block: { type: "text", text: "prompt" } }, provenance });
+    store.append({ sessionId: "s1", agentId: "a1", type: "message.delta", payload: { messageId: "x", role: "assistant", block: { type: "text", text: "discarded" } }, provenance });
+    rewind(store, prompt.seq + 1);
+
+    const { db } = store as unknown as StoreInternals;
+    db.prepare("INSERT INTO sessions (id, workspace_id, agent_id, engine, status, created_at) VALUES ('s2','w1','a1','acp','idle',1)").run();
+    // The abandoned assistant row and the marker both stay out: a fork is a fresh branch of the
+    // visible log, and a renumbered marker's cut would point at nothing.
+    expect(store.copyPrefix("s1", "s2")).toBe(2);
+    expect(store.list("s2").map((event) => event.type)).toEqual(["session.status", "message.delta"]);
+    expect(store.list("s2")[1]?.payload).toMatchObject({ messageId: "p" });
+  });
+});

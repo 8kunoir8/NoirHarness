@@ -251,6 +251,21 @@ describe("SessionService", () => {
     expect(sessions.all()[0]!.pendingApproval).toBe(false);
   });
 
+  it("takes session meta from the visible log after a rewind", () => {
+    const { projects, workspaces, sessions, events } = setup();
+    const s = sessions.create(workspaces.createLocal(projects.add(tempDir()).id).id);
+    const provenance = { engine: "acp", engineName: "fake", adapterVersion: "0" } as const;
+    events.append({ sessionId: s.id, agentId: s.agentId, type: "permission.requested", payload: { approvalId: "a1", category: "shell", title: "Run ls", options: [{ optionId: "once", name: "Allow once", kind: "allow_once" }] }, provenance });
+    const marker = events.append({
+      sessionId: s.id, agentId: s.agentId, type: "session.rewound",
+      payload: { cutSeq: 1, checkpointId: "c-1", promptSeq: 1, restored: 0, deleted: 0, removed: 0, failed: 0, notCaptured: 0, engine: "acp", engineNotRewound: true },
+      provenance,
+    });
+
+    // The abandoned approval must not keep the session flagged, and the marker counts as activity.
+    expect(sessions.view(s.id)).toMatchObject({ lastEventSeq: marker.seq, pendingApproval: false });
+  });
+
   it("switches the model and rejects unknown or disabled models", () => {
     const { db, projects, workspaces, sessions, providers, models } = setup();
     const provider = providers.create({ name: "P", baseUrl: "http://localhost:1/v1", apiKind: "openai-completions", apiKey: "k", enabled: true });

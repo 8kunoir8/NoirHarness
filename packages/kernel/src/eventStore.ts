@@ -43,6 +43,56 @@ export class EventStore {
   }
 
   /**
+   * The ranges a rewind abandoned, as `[from, to)`: `from` is the checkpoint's seq (the turn about
+   * to start) and `to` is the rewind event's own seq, which stays visible.
+   */
+  rewoundRanges(sessionId: string): Array<{ from: number; to: number }> {
+    const rows = this.db
+      .prepare("SELECT seq, payload_json FROM events WHERE session_id = ? AND type = 'session.rewound' ORDER BY seq ASC")
+      .all(sessionId) as Array<{ seq: number; payload_json: string }>;
+    return rows.flatMap((row) => {
+      const payload: unknown = JSON.parse(row.payload_json);
+      const cut = typeof payload === "object" && payload !== null && "cutSeq" in payload ? payload.cutSeq : undefined;
+      return typeof cut === "number" ? [{ from: cut, to: row.seq }] : [];
+    });
+  }
+
+  /** Everything a reader may see: the log minus the abandoned ranges. */
+  visible(sessionId: string, sinceSeq = 0): AgentEvent[] {
+    const ranges = this.rewoundRanges(sessionId);
+    return this.list(sessionId, sinceSeq).filter(
+      (event) => !ranges.some((range) => event.seq >= range.from && event.seq < range.to),
+    );
+  }
+
+  /** One event by seq, abandoned or not: the marker's `Load the prompt again` reads across the cut. */
+  at(sessionId: string, seq: number): AgentEvent | undefined {
+    return this.list(sessionId, seq - 1).find((event) => event.seq === seq);
+  }
+
+  /** The seq the next append will take, so a turn can name its cut before it writes anything. */
+  nextSeq(sessionId: string): number {
+    const row = this.db.prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM events WHERE session_id = ?").get(sessionId) as { next: number };
+    return row.next;
+  }
+
+  /** Newest visible event, without loading the log. Ranges are few, so the clauses are few. */
+  visibleMeta(sessionId: string): { lastSeq: number; lastTs: number; pendingApproval: boolean } {
+    const ranges = this.rewoundRanges(sessionId);
+    const exclusion = ranges.map(() => "AND NOT (seq >= ? AND seq < ?)").join(" ");
+    const args = ranges.flatMap((range) => [range.from, range.to]);
+    const stat = this.db
+      .prepare(`SELECT MAX(seq) AS last_seq, MAX(ts) AS last_ts FROM events WHERE session_id = ? ${exclusion}`)
+      .get(sessionId, ...args) as { last_seq: number | null; last_ts: number | null };
+    const pending = this.db
+      .prepare(
+        `SELECT type FROM events WHERE session_id = ? ${exclusion} AND type IN ('permission.requested', 'permission.resolved') ORDER BY seq DESC LIMIT 1`,
+      )
+      .get(sessionId, ...args) as { type: string } | undefined;
+    return { lastSeq: stat.last_seq ?? 0, lastTs: stat.last_ts ?? 0, pendingApproval: pending?.type === "permission.requested" };
+  }
+
+  /**
    * Copies one session's history into another, renumbered after whatever the target already has.
    *
    * Inserted rather than re-appended: these events already passed validation and redaction once,
@@ -50,7 +100,10 @@ export class EventStore {
    * fresh because an event id is unique, and the sequence is what replay reads.
    */
   copyPrefix(sourceSessionId: string, targetSessionId: string, opts: { upToSeq?: number; skip?: readonly EventType[] } = {}): number {
-    const skip = new Set<string>(opts.skip ?? []);
+    // A marker copied into another session would carry cut seqs that no longer mean anything there,
+    // so a fork receives the visible prefix and none of the rewinds that shaped it.
+    const skip = new Set<string>([...(opts.skip ?? []), "session.rewound"]);
+    const ranges = this.rewoundRanges(sourceSessionId);
     const rows = this.db
       .prepare(
         `SELECT seq, ts, type, agent_id, parent_agent_id, turn_id, payload_json, provenance_json
@@ -60,7 +113,9 @@ export class EventStore {
       seq: number; ts: number; type: string; agent_id: string; parent_agent_id: string | null;
       turn_id: string | null; payload_json: string; provenance_json: string;
     }>;
-    const kept = rows.filter((row) => !skip.has(row.type));
+    const kept = rows.filter(
+      (row) => !skip.has(row.type) && !ranges.some((range) => row.seq >= range.from && row.seq < range.to),
+    );
     if (kept.length === 0) return 0;
     const insert = this.db.prepare(
       "INSERT INTO events (id, session_id, seq, ts, type, agent_id, parent_agent_id, turn_id, payload_json, provenance_json) VALUES (?,?,?,?,?,?,?,?,?,?)",
