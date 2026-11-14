@@ -82,6 +82,11 @@ export function useRoster(request: RequestFn, { subscribe = false, initial = fal
   const refresh = useCallback(async (): Promise<void> => {
     const snapshot = nextSnapshot();
     try {
+      // The first read runs on mount, when the window may still be opening the socket: a request
+      // refused for that reason would be cached as "nobody in the roster" and nothing would read
+      // again until some unrelated event arrived. Waiting for the socket keeps the empty state
+      // meaning what it says.
+      await connect().catch(() => undefined);
       const result = await request<AgentRosterResult>("agent.roster", {});
       apply(snapshot, result.agents);
     } catch {

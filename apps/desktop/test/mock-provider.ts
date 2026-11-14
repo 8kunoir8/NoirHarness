@@ -12,8 +12,9 @@ import { setTimeout as delay } from "node:timers/promises";
  *
  * Prompt text selects the script: `tool` asks for a bash call, `ntool` asks for a `shell.exec`
  * call whose arguments arrive split across two frames (the native engine's reassembly path),
- * `slow` streams for ~6s so a spec can queue a second prompt and interrupt, and `queued`
- * answers with a distinct reply.
+ * `slow` streams for ~6s so a spec can queue a second prompt and interrupt, `queued`
+ * answers with a distinct reply, and `rich` answers with a GFM table and an image of the
+ * workspace file `chart.png`.
  */
 export interface MockProvider {
   /** `http://127.0.0.1:<port>/v1` — the base URL the provider form expects. */
@@ -241,6 +242,25 @@ export async function startMockProvider(): Promise<MockProvider> {
               "tool_calls",
             ),
           );
+          res.write("data: [DONE]\n\n");
+          res.end();
+          return;
+        }
+
+        if (prompt.includes("rich")) {
+          // Markdown the chat has to lay out: a table, an inline code span and a workspace image.
+          const rich = [
+            "Here is the report:",
+            "",
+            "| step | state |",
+            "| --- | --- |",
+            "| build | ok |",
+            "| test | `skipped` |",
+            "",
+            "![chart](chart.png)",
+          ].join("\n");
+          res.write(chunk({ role: "assistant", content: rich }, null));
+          res.write(chunk({}, "stop"));
           res.write("data: [DONE]\n\n");
           res.end();
           return;

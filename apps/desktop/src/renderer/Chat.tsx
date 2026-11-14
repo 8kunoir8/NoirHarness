@@ -4,6 +4,7 @@ import type { RequestFn } from "./api.js";
 import { ChatHeader, type DiffStats } from "./ChatHeader.js";
 import { Composer, type ComposerStatus } from "./Composer.js";
 import { errorMessage, type SessionEvents } from "./events.js";
+import { MarkdownContent } from "./MarkdownContent.js";
 import { previewKind } from "./preview/kind.js";
 import { ToolCard } from "./ToolCard.js";
 
@@ -229,7 +230,12 @@ export function Chat({
                 </div>
               ) : (
                 <div key={`${message.id}-${index}`} className="text">
-                  <p>{block.text}</p>
+                  <MarkdownContent
+                    content={block.text}
+                    variant="chat"
+                    images={{ workspaceId: session.workspaceId, request }}
+                    {...(onPreview === undefined ? {} : { onOpenPath: onPreview })}
+                  />
                 </div>
               ),
             )}

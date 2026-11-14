@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
 import type { AgentRosterEntry } from "@noir/protocol";
 import { LiveSidebar } from "../src/renderer/LiveSidebar.js";
 
@@ -28,6 +29,7 @@ function doing(overrides: Partial<AgentRosterEntry>, activity?: string): string 
       activity={activity}
       showOffice={false}
       onOpenAgents={() => undefined}
+      onOpenAgent={() => undefined}
     />,
   );
   return container.querySelector(".sidebar-doing")?.textContent ?? null;
@@ -49,8 +51,71 @@ describe("LiveSidebar", () => {
 
   it("says nothing about an agent that is not in the roster", () => {
     render(
-      <LiveSidebar roster={[]} agentId="a-9" activity={undefined} showOffice={false} onOpenAgents={() => undefined} />,
+      <LiveSidebar
+        roster={[]}
+        agentId="a-9"
+        activity={undefined}
+        showOffice={false}
+        onOpenAgents={() => undefined}
+        onOpenAgent={() => undefined}
+      />,
     );
     expect(screen.getByText("This chat has no agent in the roster.")).toBeTruthy();
+  });
+});
+
+describe("LiveSidebar roster", () => {
+  it("names every agent in the office, not only the one behind the open chat", () => {
+    render(
+      <LiveSidebar
+        roster={[entry({ agentId: "a-1", name: "Scout" }), entry({ agentId: "a-2", name: "Wren", status: "needs_you" })]}
+        agentId="a-1"
+        activity={undefined}
+        showOffice={false}
+        onOpenAgents={() => undefined}
+        onOpenAgent={() => undefined}
+      />,
+    );
+
+    const list = screen.getByRole("list", { name: "Office agents" });
+    expect(list.textContent).toContain("Scout");
+    expect(list.textContent).toContain("Wren");
+    // The status is the roster's own word, so "needs you" is never hidden by the canvas.
+    expect(list.textContent).toContain("Needs you");
+    expect(screen.getByRole("button", { name: "Open Wren" }).getAttribute("aria-current")).toBe("false");
+    expect(screen.getByRole("button", { name: "Open Scout" }).getAttribute("aria-current")).toBe("true");
+  });
+
+  it("opens the chat behind the agent that was clicked", async () => {
+    const user = userEvent.setup();
+    const opened: string[] = [];
+    render(
+      <LiveSidebar
+        roster={[entry({ agentId: "a-1", name: "Scout" }), entry({ agentId: "a-2", name: "Wren" })]}
+        agentId="a-1"
+        activity={undefined}
+        showOffice={false}
+        onOpenAgents={() => undefined}
+        onOpenAgent={(agentId) => opened.push(agentId)}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Open Wren" }));
+    expect(opened).toEqual(["a-2"]);
+  });
+
+  it("renders no list before the roster has been read", () => {
+    render(
+      <LiveSidebar
+        roster={undefined}
+        agentId={undefined}
+        activity={undefined}
+        showOffice={false}
+        onOpenAgents={() => undefined}
+        onOpenAgent={() => undefined}
+      />,
+    );
+    expect(screen.queryByRole("list", { name: "Office agents" })).toBeNull();
+    expect(screen.getByText("Reading the roster…")).toBeTruthy();
   });
 });

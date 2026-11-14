@@ -1,3 +1,5 @@
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import { bootstrap, closeWindow, createDirs, launchApp, type Harness } from "./app-harness.js";
 import { deleteProviderThroughKernel, removeDir, stopKernel } from "./helpers.js";
@@ -62,6 +64,31 @@ test("allows a tool once and streams the follow-up reply", async () => {
       timeout: 20_000,
     });
     expect(mock.toolMessageSeen()).toBe(true);
+  });
+});
+
+/** A one-pixel PNG: enough to prove the bytes reached an `<img>` and decoded. */
+const PNG_ONE_PIXEL =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+test("renders a markdown table and shows a workspace image in the reply", async () => {
+  await runChat(async (page, mock, harness) => {
+    writeFileSync(join(harness.workspacePath, "chart.png"), Buffer.from(PNG_ONE_PIXEL, "base64"));
+    await bootstrap(page, mock, harness.workspacePath);
+
+    await sendPrompt(page, "rich");
+    const message = page.getByTestId("message-assistant").filter({ hasText: "Here is the report:" });
+    // The table is laid out, not printed as pipes.
+    await expect(message.locator("table")).toBeVisible({ timeout: 20_000 });
+    await expect(message.locator("th").first()).toHaveText("step");
+    await expect(message.locator("td").filter({ hasText: "build" })).toBeVisible();
+
+    const image = message.locator("img");
+    await expect(image).toHaveAttribute("src", /^data:image\/png;base64,/, { timeout: 20_000 });
+    // The attribute alone would pass for a broken data URL; a decoded picture has a width.
+    await expect
+      .poll(async () => image.evaluate((node: HTMLImageElement) => node.naturalWidth), { timeout: 20_000 })
+      .toBeGreaterThan(0);
   });
 });
 

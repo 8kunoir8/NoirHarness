@@ -21,7 +21,23 @@ export interface LiveSidebarProps {
    */
   showOffice: boolean;
   onOpenAgents: () => void;
+  /** Opens the chat behind an agent, so a name or a character is enough to reach its session. */
+  onOpenAgent: (agentId: string) => void;
 }
+
+const STATUS_LABEL: Record<AgentRosterEntry["status"], string> = {
+  idle: "Idle",
+  working: "Working",
+  needs_you: "Needs you",
+  error: "Error",
+};
+
+const STATUS_TONE: Record<AgentRosterEntry["status"], string> = {
+  idle: "neutral",
+  working: "accent",
+  needs_you: "warn",
+  error: "danger",
+};
 
 /**
  * The permanent right column: the office canvas and the agent behind the open chat. It holds no
@@ -34,6 +50,7 @@ export function LiveSidebar({
   activity,
   showOffice,
   onOpenAgents,
+  onOpenAgent,
 }: LiveSidebarProps) {
   const [unavailable, setUnavailable] = useState(false);
   const reducedMotion = useReducedMotion();
@@ -84,8 +101,29 @@ export function LiveSidebar({
             states={states}
             selectedId={agentId}
             reducedMotion={reducedMotion}
+            onSelect={onOpenAgent}
             onUnavailable={() => setUnavailable(true)}
           />
+        )}
+        {entries === undefined || entries.length === 0 ? null : (
+          // The canvas shows where an agent stands, not who it is: the list names each one, and a
+          // click opens the chat the office has no room to describe.
+          <ul className="sidebar-roster" aria-label="Office agents">
+            {entries.map((entry) => (
+              <li key={entry.agentId}>
+                <button
+                  type="button"
+                  aria-current={entry.agentId === agentId}
+                  aria-label={`Open ${entry.name}`}
+                  onClick={() => onOpenAgent(entry.agentId)}
+                >
+                  <span className={`dot dot-${STATUS_TONE[entry.status]}`} aria-hidden="true" />
+                  <span className="sidebar-roster-name">{entry.name}</span>
+                  <span className="sidebar-roster-status">{STATUS_LABEL[entry.status]}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
         )}
       </section>
 

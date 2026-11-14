@@ -175,8 +175,9 @@ The window is one grid: a top bar, a horizontal nav strip, and four columns unde
   and sessions grouped by `Today` / `Yesterday` / `Earlier` from the last event time.
 - **Main pane** — tab strip, chat header (session status, model picker, token usage, `Interrupt`),
   transcript (assistant text, tool cards, permission cards, diffs), and the composer.
-- **Live sidebar** — the pixel office, the agent behind the open chat with what it is doing right
-  now (the running tool, named the way the chat names it), and, when asked for, the inspector:
+- **Live sidebar** — the pixel office, a list of every agent in it (name, status, click to open its
+  chat), the agent behind the open chat with what it is doing right now (the running tool, named the
+  way the chat names it), and, when asked for, the inspector:
   usage, the changed files (git's uncommitted changes plus the files the session reported), the
   plan, and pending approvals.
 - **Status bar** — kernel health, turns running, approvals waiting, and the engine directory in use.
@@ -285,7 +286,12 @@ text is capped at 2 MiB, PDF at 32 MiB, and the path is resolved inside the work
 
 - **Markdown** renders GFM tables and highlights code, and drops raw HTML (a `skipHtml` pass plus a
   sanitizing one), so a hostile `notes.md` shows its text and runs nothing. The static CSP in
-  `index.html` (`default-src 'self'`, no `unsafe-inline`) is the second line of defence.
+  `index.html` (`default-src 'self'`, no `unsafe-inline`) is the second line of defence. Chat
+  answers go through the same renderer (`MarkdownContent`): a table scrolls inside its bubble, a
+  `![alt](chart.png)` is read through `artifact.read` and drawn as a `data:` picture — PNG, JPEG,
+  GIF, WebP, SVG and AVIF, up to 32 MiB — and an `https:` image loads directly. Raw HTML stays out,
+  and a link that is neither `http(s)`/`mailto:` nor a workspace path keeps its text but loses its
+  navigation.
 - **CSV** is parsed with RFC 4180 quoting — quoted commas, embedded newlines, a UTF-8 BOM, CRLF — and
   is bounded at 5 000 rows, 100 columns, and 500 characters per cell. Everything past a bound is
   dropped and the viewer says so rather than rendering a partial table silently.

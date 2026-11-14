@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { once } from "node:events";
 import WebSocket from "ws";
 import { ErrorCodes } from "@noir/protocol";
-import { MAX_ARTIFACT_PDF_BYTES, MAX_ARTIFACT_TEXT_BYTES, readArtifact } from "../src/fsService.js";
+import { MAX_ARTIFACT_BINARY_BYTES, MAX_ARTIFACT_TEXT_BYTES, readArtifact } from "../src/fsService.js";
 import type { Kernel } from "../src/index.js";
 import { startKernel } from "./support.js";
 
@@ -195,11 +195,24 @@ describe("artifact.read", () => {
       content: "# hi",
       truncated: false,
     });
-    await expect(readArtifact(root, "image.png")).rejects.toThrow(/Unsupported artifact type/);
+    await expect(readArtifact(root, "dump.exe")).rejects.toThrow(/Unsupported artifact type/);
 
     // A binary file renamed to a text extension is refused instead of decoded as mojibake.
     writeFileSync(join(root, "data.csv"), Buffer.from([0x41, 0x00, 0x42]));
     await expect(readArtifact(root, "data.csv")).rejects.toThrow(/Not a UTF-8 text file/);
+  });
+
+  it("returns a PNG as base64, so a chat answer can show the picture", async () => {
+    const root = tempDir();
+    // The eight-byte PNG signature: enough to prove nothing decodes it as text.
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    writeFileSync(join(root, "chart.PNG"), png);
+    await expect(readArtifact(root, "chart.PNG")).resolves.toMatchObject({
+      encoding: "base64",
+      content: png.toString("base64"),
+      size: png.length,
+      truncated: false,
+    });
   });
 
   it("rejects a path outside the workspace", async () => {
@@ -230,7 +243,7 @@ describe("artifact.read", () => {
 
   it("refuses a PDF above the 32 MB cap instead of truncating it", async () => {
     const root = tempDir();
-    writeFileSync(join(root, "big.pdf"), Buffer.alloc(MAX_ARTIFACT_PDF_BYTES + 1));
+    writeFileSync(join(root, "big.pdf"), Buffer.alloc(MAX_ARTIFACT_BINARY_BYTES + 1));
     await expect(readArtifact(root, "big.pdf")).rejects.toThrow(/larger than 32 MB/);
   });
 

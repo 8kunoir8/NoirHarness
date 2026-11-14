@@ -612,6 +612,19 @@ export function App() {
     setTabState((current) => openTab(current, chatTab(session.id)));
   }
 
+  /**
+   * A character in the office and a name in the sidebar list both mean "this agent". An agent with
+   * no open session has no chat to show, so it lands on the Agents page where one can start.
+   */
+  function openAgent(agentId: string): void {
+    const entry = roster?.find((candidate) => candidate.agentId === agentId);
+    if (entry?.activeSessionId === null || entry?.activeSessionId === undefined) {
+      setView("agents");
+      return;
+    }
+    openSession({ id: entry.activeSessionId });
+  }
+
   function closeTabById(id: string): void {
     const tab = tabState.tabs.find((candidate) => candidate.id === id);
     // A dirty editor tab must not lose its edits to a stray ⌘W; saving or reloading comes first.
@@ -804,6 +817,7 @@ export function App() {
         activity={runningToolTitle(events.state)}
         showOffice={view !== "agents"}
         onOpenAgents={() => goTo("agents")}
+        onOpenAgent={openAgent}
       />
       {inspectorOpen ? (
         <Inspector

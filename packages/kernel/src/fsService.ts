@@ -9,7 +9,7 @@ export const MAX_LIST_ENTRIES = 2_000;
 export const MAX_READ_BYTES = 2 * 1024 * 1024;
 export const MAX_FIND_FILES = 5_000;
 export const MAX_ARTIFACT_TEXT_BYTES = 2 * 1024 * 1024;
-export const MAX_ARTIFACT_PDF_BYTES = 32 * 1024 * 1024;
+export const MAX_ARTIFACT_BINARY_BYTES = 32 * 1024 * 1024;
 const SKIP_DIRS = new Set([".git", "node_modules", ".noir"]);
 /** A surrogate outside a valid pair; such content cannot round-trip through UTF-8. */
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u;
@@ -121,16 +121,29 @@ const ARTIFACT_TEXT_EXTENSIONS: Record<string, true> = {
   ".tsv": true,
 };
 
+/** Bytes the renderer turns back into a picture: a chat answer that charts a file has to show it. */
+const ARTIFACT_IMAGE_EXTENSIONS: Record<string, true> = {
+  ".png": true,
+  ".jpg": true,
+  ".jpeg": true,
+  ".gif": true,
+  ".webp": true,
+  ".svg": true,
+  ".avif": true,
+};
+
+const ARTIFACT_BINARY_EXTENSIONS: Record<string, true> = { ".pdf": true, ...ARTIFACT_IMAGE_EXTENSIONS };
+
 /**
- * Reads a previewable artifact: UTF-8 text for Markdown/CSV/TSV, base64 for PDF.
- * Paths go through the workspace guard, and the extension decides the cap, so a PDF is
+ * Reads a previewable artifact: UTF-8 text for Markdown/CSV/TSV, base64 for PDF and images.
+ * Paths go through the workspace guard, and the extension decides the cap, so a binary artifact is
  * refused when it is too large while text is cut at the cap and flagged as truncated.
  */
 export async function readArtifact(root: string, value: string): Promise<ArtifactReadResult> {
   const rel = relativePath(value);
   const ext = extname(rel).toLowerCase();
-  const binary = ext === ".pdf";
-  if (!binary && !ARTIFACT_TEXT_EXTENSIONS[ext]) {
+  const binary = ARTIFACT_BINARY_EXTENSIONS[ext] === true;
+  if (!binary && ARTIFACT_TEXT_EXTENSIONS[ext] !== true) {
     throw new RpcFault(ErrorCodes.invalidParams, `Unsupported artifact type: ${rel}`);
   }
   const absolute = resolveInsideRoot(root, rel);
@@ -138,10 +151,10 @@ export async function readArtifact(root: string, value: string): Promise<Artifac
     throw new RpcFault(ErrorCodes.notFound, `File not found: ${rel}`);
   });
   if (!info.isFile()) throw new RpcFault(ErrorCodes.invalidParams, `Not a file: ${rel}`);
-  if (binary && info.size > MAX_ARTIFACT_PDF_BYTES) {
+  if (binary && info.size > MAX_ARTIFACT_BINARY_BYTES) {
     throw new RpcFault(ErrorCodes.conflict, "Artifact is larger than 32 MB");
   }
-  const cap = binary ? MAX_ARTIFACT_PDF_BYTES : MAX_ARTIFACT_TEXT_BYTES;
+  const cap = binary ? MAX_ARTIFACT_BINARY_BYTES : MAX_ARTIFACT_TEXT_BYTES;
   const truncated = info.size > cap;
   const bytes = await readHead(absolute, Math.min(info.size, cap));
   if (!binary && bytes.includes(0)) {
