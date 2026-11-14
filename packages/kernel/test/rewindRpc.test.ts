@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,6 +39,28 @@ async function startKernelWithManager(opts: { dataDir?: string } = {}): Promise<
     return { kernel, manager };
   } finally {
     EngineManager.prototype.reconcileAll = original;
+  }
+}
+
+/**
+ * No RPC creates a checkpoint, so a test that needs a real tree seeds the store and one row here,
+ * in the layout `CheckpointService` builds: a git dir whose work tree is the workspace.
+ */
+function seedCheckpoint(args: { dataDir: string; root: string; workspaceId: string; sessionId: string }): void {
+  const store = join(args.dataDir, "checkpoints", args.workspaceId);
+  execFileSync("git", ["init", "--quiet", store], { stdio: "ignore" });
+  execFileSync("git", ["-C", store, "config", "core.worktree", args.root]);
+  writeFileSync(join(args.root, "kept.txt"), "one\n");
+  execFileSync("git", ["-C", store, "add", "-A", "--", "."]);
+  const tree = execFileSync("git", ["-C", store, "write-tree"], { encoding: "utf8" }).trim();
+  const db = new Database(join(args.dataDir, "noir.db"));
+  try {
+    db.prepare(
+      `INSERT INTO checkpoints (id, workspace_id, session_id, turn_id, seq, tree_sha, commit_sha, label, created_at, not_captured, error)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+    ).run("c-1", args.workspaceId, args.sessionId, null, 1, tree, null, "turn", Date.now(), 0, null);
+  } finally {
+    db.close();
   }
 }
 
@@ -147,21 +169,7 @@ describe("rewind over RPC", () => {
 
     // No RPC creates a checkpoint, so the store and its row are seeded here with a real tree: the
     // same call must succeed once the reservation is gone.
-    const store = join(dataDir, "checkpoints", workspace.result.id);
-    execFileSync("git", ["init", "--quiet", store], { stdio: "ignore" });
-    execFileSync("git", ["-C", store, "config", "core.worktree", root]);
-    writeFileSync(join(root, "kept.txt"), "one\n");
-    execFileSync("git", ["-C", store, "add", "-A", "--", "."]);
-    const tree = execFileSync("git", ["-C", store, "write-tree"], { encoding: "utf8" }).trim();
-    const db = new Database(join(dataDir, "noir.db"));
-    try {
-      db.prepare(
-        `INSERT INTO checkpoints (id, workspace_id, session_id, turn_id, seq, tree_sha, commit_sha, label, created_at, not_captured, error)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-      ).run("c-1", workspace.result.id, session.result.id, null, 1, tree, null, "turn", Date.now(), 0, null);
-    } finally {
-      db.close();
-    }
+    seedCheckpoint({ dataDir, root, workspaceId: workspace.result.id, sessionId: session.result.id });
 
     manager.beginRewind(workspace.result.id);
     try {
@@ -170,7 +178,7 @@ describe("rewind over RPC", () => {
         (error: unknown) => error,
       );
       expect(failure).toBeInstanceOf(Error);
-      expect((failure as Error).message).toMatch(/A rewind is already running/);
+      expect((failure as Error).message).toMatch(/A checkpoint plan is already running/);
       expect(failure).toMatchObject({ code: -32009 });
     } finally {
       manager.endRewind(workspace.result.id);
@@ -178,6 +186,39 @@ describe("rewind over RPC", () => {
 
     const planned = await call(kernel, "checkpoint.plan", { sessionId: session.result.id, checkpointId: "c-1" });
     expect(planned.result).toEqual({ restored: 0, deleted: 0, removed: 0, failed: [] });
+  });
+
+  it("refuses a restore while a plan is in flight, and restores once it is gone", async () => {
+    const root = tempDir();
+    const dataDir = tempDir();
+    const { kernel, manager } = await startKernelWithManager({ dataDir });
+    kernels.push(kernel);
+    const project = await call(kernel, "project.add", { path: root });
+    const workspace = await call(kernel, "workspace.create", { projectId: project.result.id });
+    const session = await call(kernel, "session.create", { workspaceId: workspace.result.id });
+
+    seedCheckpoint({ dataDir, root, workspaceId: workspace.result.id, sessionId: session.result.id });
+    writeFileSync(join(root, "kept.txt"), "two\n");
+
+    manager.beginPlan(workspace.result.id);
+    try {
+      const failure: unknown = await call(kernel, "checkpoint.restore", { sessionId: session.result.id, checkpointId: "c-1" }).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toMatch(/A checkpoint plan is still running/);
+      expect(failure).toMatchObject({ code: -32009 });
+    } finally {
+      manager.endPlan(workspace.result.id);
+    }
+
+    // The refused restore reserved nothing: the checkpoint is still listed and still applies.
+    const listed = await call(kernel, "checkpoint.list", { sessionId: session.result.id });
+    expect(listed.result.checkpoints.map((row: { id: string }) => row.id)).toContain("c-1");
+    const restored = await call(kernel, "checkpoint.restore", { sessionId: session.result.id, checkpointId: "c-1" });
+    expect(restored.result).toMatchObject({ ok: true, restored: 1, deleted: 0, removed: 0, failed: [] });
+    expect(readFileSync(join(root, "kept.txt"), "utf8")).toBe("one\n");
   });
 
   it("names the running rewind when a second restore asks for the same workspace", async () => {

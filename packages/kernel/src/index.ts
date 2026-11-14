@@ -576,13 +576,14 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; o
         [Methods.checkpointPlan]: async (params) => {
           const { sessionId, checkpointId } = CheckpointPlanParams.parse(params);
           const view = sessions.view(sessionId);
-          // `plan` refreshes the store's index with `add -A`, the same index a restore has pointed at
-          // the snapshot and whose checkouts read it per path: from this workspace it would write
-          // post-turn bytes or fail while the marker still claims the predicted counts.
-          if (engineManager.inRewind(view.workspaceId)) {
-            throw new RpcFault(ErrorCodes.conflict, "A rewind is already running in this workspace");
+          // `plan` refreshes the store's index with `add -A`, the same index a restore points at the
+          // snapshot and whose checkouts read it per path: the handshake makes the two serialize.
+          engineManager.beginPlan(view.workspaceId);
+          try {
+            return await checkpoints.plan(sessionId, checkpointId);
+          } finally {
+            engineManager.endPlan(view.workspaceId);
           }
-          return checkpoints.plan(sessionId, checkpointId);
         },
         [Methods.checkpointRestore]: async (params) => {
           const { sessionId, checkpointId } = CheckpointRestoreParams.parse(params);

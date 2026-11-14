@@ -1381,7 +1381,7 @@ describe("EngineManager over the fake ACP server", () => {
   );
 
   it(
-    "reports the workspace busy until the last approval settles",
+    "keeps the rewind gate shut until the last approval settles",
     async () => {
       const rig = setup({ acpPermissionTitle: "Run the thing", acpPermissionKind: "execute" });
       await rig.manager.prompt({
@@ -1390,14 +1390,15 @@ describe("EngineManager over the fake ACP server", () => {
         content: [{ type: "text", text: "permission" }],
       });
       const requested = await waitForEvent(rig.events, rig.session.id, (event) => event.type === "permission.requested");
-      expect(rig.manager.busyWorkspace(rig.workspaceId)).toBe(true);
       // The reservation re-scans synchronously, so a turn that started while the handler was
       // awaiting availability is caught rather than raced.
       expect(() => rig.manager.beginRewind(rig.workspaceId)).toThrow(/A turn is running in this workspace/);
 
       await rig.manager.respond(eventPayload(requested, "permission.requested").approvalId, "reject");
       await waitForEvent(rig.events, rig.session.id, (event) => event.type === "turn.completed" || event.type === "turn.failed");
-      expect(rig.manager.busyWorkspace(rig.workspaceId)).toBe(false);
+      // The settled turn is gone, so the gate opens.
+      expect(() => rig.manager.beginRewind(rig.workspaceId)).not.toThrow();
+      rig.manager.endRewind(rig.workspaceId);
     },
     TEST_TIMEOUT_MS,
   );
@@ -1444,7 +1445,6 @@ describe("EngineManager rewind guard", () => {
   it("holds the workspace still while a rewind runs", async () => {
     const { manager, session, events, workspaceId } = setup();
     manager.beginRewind(workspaceId);
-    expect(manager.busyWorkspace(workspaceId)).toBe(true);
 
     await expect(
       manager.prompt({ sessionId: session.id, requestId: "held-1", content: [{ type: "text", text: "held" }] }),
@@ -1454,7 +1454,6 @@ describe("EngineManager rewind guard", () => {
 
     expect(() => manager.beginRewind(workspaceId)).toThrow(/A rewind is already running in this workspace/);
     manager.endRewind(workspaceId);
-    expect(manager.busyWorkspace(workspaceId)).toBe(false);
   });
 });
 

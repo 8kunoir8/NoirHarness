@@ -322,6 +322,8 @@ export class EngineManager {
   private readonly closing = new Set<string>();
   /** Workspaces whose work tree and log are being rewritten; no turn may start in one. */
   private readonly rewinding = new Set<string>();
+  /** Plans in flight per workspace: a plan's `add -A` and a restore's `read-tree` share one index. */
+  private readonly planning = new Set<string>();
   private shuttingDown = false;
 
   constructor(
@@ -529,20 +531,27 @@ export class EngineManager {
     this.reconcile({ sessionId: row.id, agentId: row.agent_id, engineKind: row.engine });
   }
 
-  /** True when any session in the workspace is mid-turn, or a restore is rewriting the workspace. */
-  busyWorkspace(workspaceId: string): boolean {
-    return this.inRewind(workspaceId) || this.turnIn(workspaceId);
+  /** One check-and-set, so a plan and a restore cannot both pass their guard on the same tick. */
+  beginPlan(workspaceId: string): void {
+    if (this.rewinding.has(workspaceId) || this.planning.has(workspaceId)) {
+      throw new RpcFault(ErrorCodes.conflict, "A checkpoint plan is already running in this workspace");
+    }
+    this.planning.add(workspaceId);
   }
 
-  /** True while this workspace's store and work tree are being rewritten by a restore. */
-  inRewind(workspaceId: string): boolean {
-    return this.rewinding.has(workspaceId);
+  endPlan(workspaceId: string): void {
+    this.planning.delete(workspaceId);
   }
 
   /** Held across the whole restore, so no turn starts while the shared work tree is rewritten. */
   beginRewind(workspaceId: string): void {
     if (this.rewinding.has(workspaceId)) {
       throw new RpcFault(ErrorCodes.conflict, "A rewind is already running in this workspace");
+    }
+    // A plan's `add -A` reads the work tree into the same store index this restore's `read-tree`
+    // replaces; whichever guard ran second must see the first.
+    if (this.planning.has(workspaceId)) {
+      throw new RpcFault(ErrorCodes.conflict, "A checkpoint plan is still running in this workspace");
     }
     // Synchronous with the reservation below: a turn either started before this scan (and is seen)
     // or is refused by `prompt` after it, so no turn is mid-flight while the work tree is rewritten.
