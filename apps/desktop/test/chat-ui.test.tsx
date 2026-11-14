@@ -467,6 +467,107 @@ describe("Chat", () => {
     );
   });
 
+  it("offers the undo of an undo from the marker that undo leaves behind", async () => {
+    const listeners: Array<(event: AgentEvent) => void> = [];
+    api.connect.mockImplementationOnce(async (listener?: unknown) => {
+      listeners.push(listener as (event: AgentEvent) => void);
+    });
+    const turn = (event: AgentEvent, turnId: string): AgentEvent => ({ ...event, turnId });
+    const history = [
+      turn(makeEvent(1, "message.delta", { messageId: "u-1", role: "user", block: { type: "text", text: "first" } }), "t-1"),
+      turn(makeEvent(2, "message.delta", { messageId: "a-1", role: "assistant", block: { type: "text", text: "done" } }), "t-1"),
+    ];
+    const rewound = (seq: number, cutSeq: number, counts: { restored: number; deleted: number; removed: number }): AgentEvent =>
+      makeEvent(seq, "session.rewound", {
+        cutSeq,
+        checkpointId: "c-1",
+        promptSeq: 1,
+        ...counts,
+        failed: 0,
+        notCaptured: 0,
+        engine: "acp",
+        engineNotRewound: false,
+      });
+    const plans = new Map<string, PromiseWithResolvers<unknown>>();
+    const planId = (params: unknown): string => {
+      if (params !== null && typeof params === "object" && "checkpointId" in params && typeof params.checkpointId === "string") {
+        return params.checkpointId;
+      }
+      throw new Error("checkpoint.plan without a checkpointId");
+    };
+    let subscribes = 0;
+    let restored = false;
+    const request = vi.fn((method: string, params?: unknown): Promise<unknown> => {
+      if (method === "session.subscribe") {
+        subscribes += 1;
+        // The kernel answers a replay without the abandoned range: the first rewind's marker at
+        // seq 3 is gone, and the undo's own marker takes seq 4.
+        return Promise.resolve(
+          subscribes === 1
+            ? { events: [...history, rewound(3, 1, { restored: 1, deleted: 0, removed: 0 })], lastSeq: 3 }
+            : { events: [...history, rewound(4, 3, { restored: 3, deleted: 2, removed: 5 })], lastSeq: 4 },
+        );
+      }
+      if (method === "checkpoint.list") {
+        // The new safety row sits at the new marker's seq; the old one is inside the range the undo
+        // hid, so the kernel stops listing it. Keyed off the restore rather than a call count, so a
+        // refetch that lands early cannot hand the marker a row it will not have.
+        const safety = restored
+          ? { id: "safety-4", turnId: null, seq: 4, createdAt: 4, notCaptured: 0, label: "pre-restore", error: null }
+          : { id: "safety-3", turnId: null, seq: 3, createdAt: 3, notCaptured: 0, label: "pre-restore", error: null };
+        return Promise.resolve({
+          available: true,
+          checkpoints: [
+            { id: "c-1", turnId: "t-1", seq: 1, createdAt: 1, notCaptured: 0, label: "turn", error: null },
+            safety,
+          ],
+        });
+      }
+      if (method === "checkpoint.plan") {
+        const pending = Promise.withResolvers<unknown>();
+        plans.set(planId(params), pending);
+        return pending.promise;
+      }
+      if (method === "checkpoint.restore") {
+        restored = true;
+        return Promise.resolve({ ok: true, restored: 1, deleted: 0, removed: 0, failed: [], eventSeq: 4 });
+      }
+      throw new Error(method);
+    });
+
+    render(<ChatHarness request={request as unknown as RequestFn} />);
+    await waitFor(() => expect(listeners).toHaveLength(1));
+
+    // Undo the first rewind, whose safety row sits at the marker's own seq.
+    await userEvent.click(await screen.findByRole("button", { name: "Undo this rewind" }));
+    const first = plans.get("safety-3");
+    expect(first).toBeDefined();
+    await act(async () => {
+      first!.resolve({ restored: 1, deleted: 0, removed: 0, failed: [] });
+      await first!.promise;
+    });
+    await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Undo" }).disabled).toBe(false));
+    await userEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith("checkpoint.restore", { sessionId: "s1", checkpointId: "safety-3" }),
+    );
+
+    // The kernel's answer to the undo: a new marker at seq 4, the old one hidden inside its range.
+    await act(async () => {
+      listeners[0]!(rewound(4, 3, { restored: 3, deleted: 2, removed: 5 }));
+    });
+
+    // Only the new marker is left, and it carries its own undo.
+    const marker = await screen.findByText("3 restored · 2 deleted · 5 removed");
+    expect(screen.getAllByTestId("rewind-marker")).toHaveLength(1);
+    expect(marker.closest("li")?.textContent).toContain("Undo this rewind");
+    await userEvent.click(screen.getByRole("button", { name: "Undo this rewind" }));
+
+    // The new marker plans the new safety row, which only the seq-keyed refetch could have found.
+    await waitFor(() => expect(plans.has("safety-4")).toBe(true));
+    expect(request).toHaveBeenCalledWith("checkpoint.plan", { sessionId: "s1", checkpointId: "safety-4" });
+  });
+
   it("ignores a plan whose dialog was dismissed", async () => {
     const turn = (event: AgentEvent, turnId: string): AgentEvent => ({ ...event, turnId });
     const planId = (params: unknown): string => {

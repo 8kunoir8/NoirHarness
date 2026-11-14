@@ -54,7 +54,9 @@ export function Chat({
   const checkpoints = useCheckpoints(
     session.id,
     request,
-    `${state.activeTurnId ?? "idle"}:${String(state.rewinds.length)}`,
+    // The newest marker's seq, not the count: an undo swaps one marker for another at a new seq,
+    // and the count alone would leave the refetch to the hook's own reset to empty.
+    `${state.activeTurnId ?? "idle"}:${String(state.rewinds.at(-1)?.seq ?? 0)}`,
   );
   /**
    * The open confirmation. `mode` lives here rather than in a sibling state so the copy and the
