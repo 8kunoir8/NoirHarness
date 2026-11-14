@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -156,5 +156,107 @@ describe("checkpoint capture", () => {
     // A pre-restore checkpoint records the seq the marker is about to take, so it must survive.
     const safety = await r.capture("safety", 2, "pre-restore");
     expect(r.checkpoints.entries(r.sessionId).map((entry) => entry.id)).toEqual([second.id, safety.id]);
+  });
+});
+
+describe("checkpoint plan and restore", () => {
+  it("puts modified, deleted and created files back where they were", async () => {
+    const r = rig();
+    writeFileSync(join(r.root, "keep.txt"), "original\n");
+    writeFileSync(join(r.root, "gone.txt"), "delete me\n");
+    const row = await r.capture("t-1", 1);
+
+    writeFileSync(join(r.root, "keep.txt"), "changed\n");
+    rmSync(join(r.root, "gone.txt"));
+    writeFileSync(join(r.root, "new.txt"), "created after\n");
+
+    const plan = await r.checkpoints.plan(r.sessionId, row.id);
+    expect(plan).toMatchObject({ restored: 1, deleted: 1, removed: 1, failed: [] });
+
+    const result = await r.checkpoints.restore(r.sessionId, row.id);
+    expect(result).toMatchObject({ ok: true, restored: 1, deleted: 1, removed: 1, failed: [] });
+    expect(readFileSync(join(r.root, "keep.txt"), "utf8")).toBe("original\n");
+    expect(readFileSync(join(r.root, "gone.txt"), "utf8")).toBe("delete me\n");
+    expect(() => readFileSync(join(r.root, "new.txt"))).toThrow();
+  });
+
+  it("keeps CRLF bytes byte-for-byte", async () => {
+    const r = rig();
+    writeFileSync(join(r.root, "win.txt"), "a\r\nb\r\n");
+    const row = await r.capture("t-1", 1);
+    writeFileSync(join(r.root, "win.txt"), "rewritten\n");
+    await r.checkpoints.restore(r.sessionId, row.id);
+    expect(readFileSync(join(r.root, "win.txt"), "utf8")).toBe("a\r\nb\r\n");
+  });
+
+  it("does not touch what it never captured", async () => {
+    const r = rig();
+    mkdirSync(join(r.root, "node_modules", "pkg"), { recursive: true });
+    writeFileSync(join(r.root, "node_modules", "pkg", "index.js"), "module\n");
+    writeFileSync(join(r.root, "a.txt"), "one\n");
+    const row = await r.capture("t-1", 1);
+    writeFileSync(join(r.root, "a.txt"), "two\n");
+    writeFileSync(join(r.root, "node_modules", "pkg", "later.js"), "later\n");
+    await r.checkpoints.restore(r.sessionId, row.id);
+    expect(readFileSync(join(r.root, "node_modules", "pkg", "index.js"), "utf8")).toBe("module\n");
+    expect(readFileSync(join(r.root, "node_modules", "pkg", "later.js"), "utf8")).toBe("later\n");
+  });
+
+  it("appends the rewind event and never deletes a row", async () => {
+    const r = rig();
+    writeFileSync(join(r.root, "a.txt"), "one\n");
+    const row = await r.capture("t-1", 1);
+    const promptSeq = r.events.append({
+      sessionId: r.sessionId, agentId: "a-1", type: "message.delta", turnId: "t-1",
+      payload: { messageId: "m-1", role: "user", block: { type: "text", text: "do the thing" } },
+      provenance: { engine: "native", engineName: "native", adapterVersion: "1" },
+    }).seq;
+
+    const count = (): number => {
+      const totals = r.db.prepare("SELECT COUNT(*) AS n FROM events WHERE session_id = ?").get(r.sessionId) as { n: number } | undefined;
+      return totals?.n ?? 0;
+    };
+    const before = count();
+    const result = await r.checkpoints.restore(r.sessionId, row.id);
+    expect(count()).toBe(before + 1);
+
+    const marker = r.events.at(r.sessionId, result.eventSeq);
+    expect(marker?.type).toBe("session.rewound");
+    expect(marker?.payload).toMatchObject({ cutSeq: 1, promptSeq, engine: "native", engineNotRewound: false });
+    expect(r.events.visible(r.sessionId).some((event) => event.seq === promptSeq)).toBe(false);
+    expect(r.events.visible(r.sessionId).some((event) => event.type === "session.rewound")).toBe(true);
+  });
+
+  it("captures a pre-restore checkpoint that can itself be rewound to", async () => {
+    const r = rig();
+    writeFileSync(join(r.root, "a.txt"), "one\n");
+    const row = await r.capture("t-1", 1);
+    writeFileSync(join(r.root, "a.txt"), "two\n");
+    await r.checkpoints.restore(r.sessionId, row.id);
+
+    const safety = r.checkpoints.entries(r.sessionId).find((entry) => entry.label === "pre-restore");
+    expect(safety).toBeDefined();
+    writeFileSync(join(r.root, "a.txt"), "three\n");
+    await r.checkpoints.restore(r.sessionId, safety!.id);
+    expect(readFileSync(join(r.root, "a.txt"), "utf8")).toBe("two\n");
+  });
+
+  it("refuses to restore when the current state cannot be captured", async () => {
+    const r = rig();
+    writeFileSync(join(r.root, "a.txt"), "one\n");
+    const row = await r.capture("t-1", 1);
+    writeFileSync(join(r.root, "a.txt"), "two\n");
+    // LFS attributes appear after the checkpoint, so the pre-restore capture is the one refused.
+    writeFileSync(join(r.root, ".gitattributes"), "*.bin filter=lfs\n");
+    await expect(r.checkpoints.restore(r.sessionId, row.id)).rejects.toThrow(/could not be captured/);
+    expect(readFileSync(join(r.root, "a.txt"), "utf8")).toBe("two\n");
+  });
+
+  it("refuses a checkpoint that never captured a tree", async () => {
+    const r = rig();
+    writeFileSync(join(r.root, ".gitattributes"), "*.bin filter=lfs\n");
+    const row = await r.capture("t-1", 1);
+    await expect(r.checkpoints.plan(r.sessionId, row.id)).rejects.toThrow(/LFS/);
+    await expect(r.checkpoints.restore(r.sessionId, row.id)).rejects.toThrow(/LFS/);
   });
 });

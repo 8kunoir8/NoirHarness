@@ -1,11 +1,20 @@
-import { execFile } from "node:child_process";
-import { mkdir, readFile, stat, statfs, writeFile } from "node:fs/promises";
+import { execFile, spawn } from "node:child_process";
+import { mkdir, readFile, rm, stat, statfs, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { promisify } from "node:util";
 import type Database from "better-sqlite3";
 import { v7 as uuidv7 } from "uuid";
-import { ErrorCodes, RpcFault, type CheckpointView } from "@noir/protocol";
+import {
+  ErrorCodes,
+  RpcFault,
+  type CheckpointPlanResult,
+  type CheckpointRestoreResult,
+  type CheckpointView,
+  type EngineKind,
+} from "@noir/protocol";
 import type { EventStore } from "./eventStore.js";
+import { relativePath, resolveInsideRoot } from "./fsPaths.js";
+import { provenanceFor } from "./provenance.js";
 
 const run = promisify(execFile);
 const GIT_TIMEOUT_MS = 120_000;
@@ -149,6 +158,116 @@ export class CheckpointService {
     await this.git(row.workspaceId, ["add", "-A", "--", "."]);
   }
 
+  /** Paths a restore would write and paths it would delete, by git's own status class. */
+  async changedPaths(row: CheckpointRow): Promise<{ modified: string[]; deleted: string[]; created: string[] }> {
+    if (row.treeSha === null) throw new RpcFault(ErrorCodes.notFound, row.error ?? "Checkpoint has no tree");
+    // `-z` because a quoted path would be written back verbatim: this machine's temp dirs and the
+    // workspaces under them carry non-ASCII names. `--no-renames` keeps the output to a status/path pair.
+    const out = await this.git(row.workspaceId, ["diff-index", "--name-status", "-z", "--no-renames", "--cached", row.treeSha]);
+    const modified: string[] = [];
+    const deleted: string[] = [];
+    const created: string[] = [];
+    const tokens = out.split("\u0000");
+    for (let index = 0; index + 1 < tokens.length; index += 2) {
+      const status = tokens[index] ?? "";
+      const path = tokens[index + 1] ?? "";
+      if (path === "") continue;
+      // `D` is in the tree and gone from the work tree: it comes back. `A` exists only now: it goes.
+      if (status === "D") deleted.push(path);
+      else if (status === "A") created.push(path);
+      else modified.push(path);
+    }
+    return { modified, deleted, created };
+  }
+
+  private async counts(row: CheckpointRow): Promise<CheckpointPlanResult> {
+    const paths = await this.changedPaths(row);
+    return {
+      restored: paths.modified.length,
+      deleted: paths.deleted.length,
+      removed: paths.created.length,
+      failed: [],
+    };
+  }
+
+  async plan(sessionId: string, checkpointId: string): Promise<CheckpointPlanResult> {
+    const row = this.row(sessionId, checkpointId);
+    await this.refresh(row);
+    return this.counts(row);
+  }
+
+  async restore(sessionId: string, checkpointId: string): Promise<CheckpointRestoreResult> {
+    const row = this.row(sessionId, checkpointId);
+    const workspaceRoot: string | null = row.workspaceRoot;
+    if (workspaceRoot === null || workspaceRoot === undefined) throw new RpcFault(ErrorCodes.notFound, "Workspace missing");
+    if (row.treeSha === null) throw new RpcFault(ErrorCodes.notFound, row.error ?? "Checkpoint has no tree");
+    await this.refresh(row);
+    // What the user is about to lose becomes a checkpoint too, so a mistaken restore is one more
+    // rewind away instead of a lost afternoon. Its seq is the one the marker is about to take, so
+    // the range this rewind abandons ends exactly where the safety checkpoint starts.
+    const safety = await this.capture({
+      sessionId, workspaceId: row.workspaceId, workspaceRoot, turnId: null, seq: this.events.nextSeq(sessionId), label: "pre-restore",
+    });
+    // A rewind whose undo could not be taken is not a rewind: refuse rather than overwrite the work
+    // tree with no way back.
+    if (safety.error !== null) {
+      throw new RpcFault(ErrorCodes.conflict, `The current state could not be captured: ${safety.error}`);
+    }
+    const plan = await this.counts(row);
+    const paths = await this.changedPaths(row);
+    const failed: string[] = [];
+
+    // The index becomes the snapshot's tree; `checkout-index` then writes those bytes per path, so
+    // one locked file is reported instead of aborting the whole restore.
+    await this.git(row.workspaceId, ["read-tree", row.treeSha]);
+    for (const path of [...paths.modified, ...paths.deleted]) {
+      try {
+        await this.git(row.workspaceId, ["checkout-index", "--force", "-z", "--stdin"], [path]);
+      } catch {
+        failed.push(path);
+      }
+    }
+    for (const path of paths.created) {
+      try {
+        await rm(resolveInsideRoot(workspaceRoot, relativePath(path)), { force: true });
+      } catch {
+        failed.push(path);
+      }
+    }
+
+    const session = this.db.prepare("SELECT agent_id, engine FROM sessions WHERE id = ?").get(sessionId) as
+      | { agent_id: string; engine: EngineKind }
+      | undefined;
+    if (session === undefined) throw new RpcFault(ErrorCodes.notFound, "Session not found");
+    const prompt = this.db
+      .prepare(
+        `SELECT seq FROM events WHERE session_id = ? AND seq >= ? AND type = 'message.delta'
+           AND json_extract(payload_json, '$.role') = 'user' ORDER BY seq ASC LIMIT 1`,
+      )
+      .get(sessionId, row.seq) as { seq: number } | undefined;
+
+    const event = this.events.append({
+      sessionId,
+      agentId: session.agent_id,
+      type: "session.rewound",
+      turnId: null,
+      payload: {
+        cutSeq: row.seq,
+        checkpointId: row.id,
+        promptSeq: prompt?.seq ?? null,
+        restored: plan.restored,
+        deleted: plan.deleted,
+        removed: plan.removed,
+        failed: failed.length,
+        notCaptured: row.notCaptured,
+        engine: session.engine,
+        engineNotRewound: session.engine === "acp",
+      },
+      provenance: provenanceFor(session.engine),
+    });
+    return { ...plan, failed, ok: true, eventSeq: event.seq };
+  }
+
   private rows(sessionId: string): Row[] {
     return this.db
       .prepare("SELECT c.*, w.path FROM checkpoints c LEFT JOIN workspaces w ON w.id = c.workspace_id WHERE c.session_id = ? ORDER BY c.created_at ASC, c.id ASC")
@@ -159,14 +278,31 @@ export class CheckpointService {
     return join(this.opts.dataDir, "checkpoints", workspaceId);
   }
 
-  private async git(workspaceId: string, args: string[]): Promise<string> {
-    const result = await run(this.gitCommand, [...IDENTITY, "-C", this.storeDir(workspaceId), ...args], {
-      timeout: GIT_TIMEOUT_MS,
-      windowsHide: true,
-      maxBuffer: 32 * 1024 * 1024,
-      encoding: "utf8",
+  private async git(workspaceId: string, args: string[], stdin?: readonly string[]): Promise<string> {
+    const argv = [...IDENTITY, "-C", this.storeDir(workspaceId), ...args];
+    if (stdin === undefined) {
+      const result = await run(this.gitCommand, argv, {
+        timeout: GIT_TIMEOUT_MS,
+        windowsHide: true,
+        maxBuffer: 32 * 1024 * 1024,
+        encoding: "utf8",
+      });
+      return result.stdout;
+    }
+    // `execFile` has no `input`, and a pipe that is never ended leaves `checkout-index --stdin`
+    // waiting for an EOF that never comes. Write the NUL-separated list, then close it.
+    const { promise, resolve, reject } = Promise.withResolvers<string>();
+    const child = spawn(this.gitCommand, argv, { timeout: GIT_TIMEOUT_MS, windowsHide: true });
+    const out: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer) => out.push(chunk));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve(Buffer.concat(out).toString("utf8"));
+      else reject(new Error(`git ${args[0] ?? ""} exited with code ${code ?? "signal"}`));
     });
-    return result.stdout;
+    child.stdin.on("error", reject);
+    child.stdin.end(`${stdin.join("\u0000")}\u0000`);
+    return await promise;
   }
 
   /** One exclusion list per store: the forced excludes plus this workspace's data dir, if nested. */
