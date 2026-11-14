@@ -10,6 +10,7 @@ import {
   type AgentUpdateParams,
   type AgentView,
 } from "@noir/protocol";
+import type { EventStore } from "./eventStore.js";
 import type { ModelService } from "./models.js";
 import { parsePermissionPolicy } from "./policy.js";
 import type { SessionService } from "./sessions.js";
@@ -102,6 +103,7 @@ export class AgentService {
     private readonly db: Database.Database,
     private readonly models: ModelService,
     private readonly sessions: SessionService,
+    private readonly events: EventStore,
   ) {}
 
   /** Non-archived agents first by default; archived profiles keep their row and their sessions. */
@@ -266,8 +268,20 @@ export class AgentService {
    * The newest `tool.started` kind, `usage.updated` reading and permission event per open session, in
    * one query. Closed sessions can never be active, so they are excluded before ranking. The
    * approval row is joined so a corrupt request payload still contributes its category.
+   *
+   * A rewind abandons a range of the log, and the office must not show a tool, a reading or an
+   * approval from inside one — the same filter `events.visible` applies, as SQL. Ranges are few and
+   * only exist for sessions that were rewound.
    */
   private openSessionState(): Map<string, ActiveSessionState> {
+    const rewound = this.db
+      .prepare("SELECT DISTINCT session_id FROM events WHERE type = 'session.rewound'")
+      .pluck()
+      .all() as string[];
+    const ranges = rewound.flatMap((sessionId) =>
+      this.events.rewoundRanges(sessionId).map((range) => ({ sessionId, ...range })),
+    );
+    const exclusion = ranges.map(() => "AND NOT (e.session_id = ? AND e.seq >= ? AND e.seq < ?)").join(" ");
     const rows = this.db
       .prepare(
         `SELECT session_id, type, payload_json, seq, approval_id, approval_kind FROM (
@@ -277,9 +291,10 @@ export class AgentService {
            LEFT JOIN approvals a ON a.event_id = e.id
            WHERE e.type IN ('tool.started', 'usage.updated', 'permission.requested', 'permission.resolved')
              AND e.session_id IN (SELECT id FROM sessions WHERE status <> 'closed')
+             ${exclusion}
          ) WHERE rn = 1`,
       )
-      .all() as Array<{
+      .all(...ranges.flatMap((range) => [range.sessionId, range.from, range.to])) as Array<{
         session_id: string;
         type: string;
         payload_json: string;

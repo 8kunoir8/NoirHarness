@@ -63,7 +63,7 @@ function setup(): TestServices {
   const providers = new ProviderService(db, memorySecrets());
   const models = new ModelService(db);
   const sessions = new SessionService(db, events, models);
-  const agents = new AgentService(db, models, sessions);
+  const agents = new AgentService(db, models, sessions, events);
   return { db, events, projects, workspaces, providers, models, sessions, agents };
 }
 
@@ -386,6 +386,65 @@ describe("AgentService.roster", () => {
     });
   });
 
+  it("hides an approval and a tool a rewind abandoned", () => {
+    const services = setup();
+    const workspaceId = workspaceFor(services);
+    const agent = services.agents.create(agentInput({ name: "Rewound" }));
+    const session = services.sessions.create(workspaceId, { agentId: agent.id });
+    services.sessions.setStatus(session.id, "running");
+    const tool = services.events.append({
+      sessionId: session.id,
+      agentId: agent.id,
+      type: "tool.started",
+      payload: { toolCallId: "t1", kind: "write", title: "Edit main.ts" },
+      provenance,
+    });
+    services.events.append({
+      sessionId: session.id,
+      agentId: agent.id,
+      type: "usage.updated",
+      payload: { inputTokens: 10, outputTokens: 20, contextUsed: 900, contextWindow: 1000, costUsd: 0.001 },
+      provenance,
+    });
+    services.events.append({
+      sessionId: session.id,
+      agentId: agent.id,
+      type: "permission.requested",
+      payload: { approvalId: "a1", category: "shell", title: "Run rm -rf build", options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }] },
+      provenance,
+    });
+    services.events.append({
+      sessionId: session.id,
+      agentId: agent.id,
+      type: "session.rewound",
+      payload: {
+        cutSeq: tool.seq, checkpointId: "c-1", promptSeq: tool.seq, restored: 0, deleted: 0, removed: 0,
+        failed: 0, notCaptured: 0, engine: "acp", engineNotRewound: true,
+      },
+      provenance,
+    });
+
+    expect(entryFor(services, agent.id)).toMatchObject({
+      status: "working",
+      activeToolKind: null,
+      usage: null,
+      pendingApproval: null,
+    });
+
+    // A request the rewind did not touch still counts: only the abandoned range is filtered.
+    services.events.append({
+      sessionId: session.id,
+      agentId: agent.id,
+      type: "permission.requested",
+      payload: { approvalId: "a2", category: "shell", title: "Run ls", options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }] },
+      provenance,
+    });
+    expect(entryFor(services, agent.id)).toMatchObject({
+      status: "needs_you",
+      pendingApproval: { approvalId: "a2", title: "Run ls" },
+    });
+  });
+
   it("clears the pending approval when a newer permission.resolved arrives", () => {
     const services = setup();
     const workspaceId = workspaceFor(services);
@@ -556,7 +615,7 @@ describe("AgentService.roster", () => {
     try {
       services.agents.roster();
       const baseline = calls;
-      expect(baseline).toBe(6); // session list (4, one added by the rewound-range filter) + agent list (1) + one batched event query
+      expect(baseline).toBe(7); // session list (4), agent list (1), batched event query (1), rewind marker scan (1)
 
       for (let index = 0; index < 8; index += 1) {
         const extra = services.agents.create(agentInput({ name: `Extra ${index}` }));
