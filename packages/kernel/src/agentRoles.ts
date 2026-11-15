@@ -121,23 +121,23 @@ const GENERALIST: AgentRoleView = {
 /**
  * How strongly a piece of text claims one preset: one point per distinct keyword it contains. Word
  * boundaries keep `code` out of `encode` and `api` out of `capital`, so a description cannot inflate
- * its score by accident.
+ * its score by accident. The patterns are built once: a catalog pass tests every keyword against every
+ * skill and server, and compiling on each test would dominate the call.
  */
-function score(text: string, keywords: readonly string[]): number {
-  let hits = 0;
-  for (const keyword of keywords) {
-    const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    if (new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, "i").test(text)) hits += 1;
-  }
-  return hits;
-}
+const PATTERNS = PRESETS.map((preset) => ({
+  preset,
+  patterns: preset.keywords.map(
+    (keyword) => new RegExp(`(^|[^a-z0-9])${keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9]|$)`, "i"),
+  ),
+}));
 
 /** The preset that claims this text, or `undefined` when no vocabulary recognises it. */
 function bestPreset(text: string): RolePreset | undefined {
   let best: RolePreset | undefined;
   let bestScore = 0;
-  for (const preset of PRESETS) {
-    const hits = score(text, preset.keywords);
+  for (const { preset, patterns } of PATTERNS) {
+    let hits = 0;
+    for (const pattern of patterns) if (pattern.test(text)) hits += 1;
     if (hits > bestScore) {
       best = preset;
       bestScore = hits;
