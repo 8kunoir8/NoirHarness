@@ -35,5 +35,7 @@ contextBridge.exposeInMainWorld("noir", {
   /** The OS directory picker; `null` when the user cancels. */
   pickFolder: () => ipcRenderer.invoke("dialog:pickFolder"),
   automationsArmed: (count: number) => ipcRenderer.send("automations:armed", count),
+  /** Shows a workspace file in the OS file manager; the handler re-joins and re-checks the path. */
+  revealInFolder: (root: string, path: string) => ipcRenderer.invoke("shell:revealInFolder", root, path),
   windowControls,
 });

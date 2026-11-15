@@ -50,6 +50,9 @@ export const Methods = {
   artifactRead: "artifact.read",
   gitStatus: "git.status",
   gitDiff: "git.diff",
+  gitStage: "git.stage",
+  gitUnstage: "git.unstage",
+  gitCommit: "git.commit",
   annotationList: "annotation.list",
   annotationAdd: "annotation.add",
   annotationDelete: "annotation.delete",
@@ -77,6 +80,8 @@ export const Methods = {
   remotePair: "remote.pair",
   remoteDevices: "remote.devices",
   remoteRevoke: "remote.revoke",
+  updateCheck: "update.check",
+  updateDismiss: "update.dismiss",
 } as const;
 
 /** `system.health` result. `engineDir` is the agent directory the kernel materializes and omp reads. */
@@ -84,6 +89,8 @@ export const SystemHealthResult = z.object({
   status: z.literal("ok"),
   pid: z.number().int(),
   engineDir: z.string(),
+  /** The running app's version, from `NOIR_APP_VERSION`; Help reports this build's identity. */
+  version: z.string(),
   /** `unavailable` disables every rewind affordance; the reason is shown instead. */
   checkpoints: z.enum(["ok", "unavailable"]).optional(),
   checkpointReason: z.string().optional(),
@@ -412,9 +419,14 @@ export type ArtifactReadResult = z.infer<typeof ArtifactReadResult>;
 
 export const GitFileStatus = z.object({
   path: z.string(),
+  /** The merged summary the inspector and chat header already show; unchanged semantics. */
   change: z.enum(["created", "modified", "deleted"]),
   add: z.number().int().nonnegative(),
   del: z.number().int().nonnegative(),
+  /** Index (staged) side of the `XY` status pair, or null when the index matches HEAD. */
+  index: z.enum(["created", "modified", "deleted"]).nullable(),
+  /** Worktree (unstaged) side, or null when the worktree matches the index. */
+  worktree: z.enum(["created", "modified", "deleted"]).nullable(),
 });
 export type GitFileStatus = z.infer<typeof GitFileStatus>;
 
@@ -423,6 +435,9 @@ export type GitStatusParams = z.infer<typeof GitStatusParams>;
 export const GitStatusResult = z.object({
   isRepo: z.boolean(),
   branch: z.string().nullable(),
+  /** Commits the branch has that its upstream does not, and the reverse; 0 with no upstream. */
+  ahead: z.number().int().nonnegative(),
+  behind: z.number().int().nonnegative(),
   files: z.array(GitFileStatus),
 });
 export type GitStatusResult = z.infer<typeof GitStatusResult>;
@@ -430,6 +445,43 @@ export const GitDiffParams = z.object({ workspaceId: z.string().min(1), path: z.
 export type GitDiffParams = z.infer<typeof GitDiffParams>;
 export const GitDiffResult = z.object({ diff: z.string() });
 export type GitDiffResult = z.infer<typeof GitDiffResult>;
+
+export const GitStageParams = z.object({
+  workspaceId: z.string().min(1),
+  paths: z.array(z.string().min(1)).min(1).max(500),
+});
+export type GitStageParams = z.infer<typeof GitStageParams>;
+export const GitUnstageParams = GitStageParams;
+export type GitUnstageParams = z.infer<typeof GitUnstageParams>;
+export const GitCommitParams = z.object({
+  workspaceId: z.string().min(1),
+  message: z.string().max(4000),
+});
+export type GitCommitParams = z.infer<typeof GitCommitParams>;
+/** A commit answers with the fresh status so the page never shows a stale index. */
+export const GitCommitResult = z.object({
+  sha: z.string(),
+  summary: z.string(),
+  status: GitStatusResult,
+});
+export type GitCommitResult = z.infer<typeof GitCommitResult>;
+
+export const UpdateCheckParams = z.object({ force: z.boolean().optional() });
+export type UpdateCheckParams = z.infer<typeof UpdateCheckParams>;
+export const UpdateDismissParams = z.object({ version: z.string().min(1) });
+export type UpdateDismissParams = z.infer<typeof UpdateDismissParams>;
+export const UpdateState = z.object({
+  current: z.string(),
+  latest: z.string().nullable(),
+  status: z.enum(["current", "available", "failed"]),
+  /** Why the check failed, for Help; never shown as a toast. */
+  reason: z.string().optional(),
+  checkedAt: z.number().int().nonnegative(),
+  /** True when the user dismissed this exact version. */
+  dismissed: z.boolean(),
+  url: z.string(),
+});
+export type UpdateState = z.infer<typeof UpdateState>;
 
 export const AnnotationView = z.object({
   id: z.string(),

@@ -49,6 +49,22 @@ export function closeTab(state: TabsState, id: string): TabsState {
   return { ...state, tabs, active: neighbour?.id };
 }
 
+/** Keeps the named tab as the only one open; an unknown id leaves the state untouched. */
+export function closeOthers(state: TabsState, id: string): TabsState {
+  const tab = state.tabs.find((candidate) => candidate.id === id);
+  if (tab === undefined) return state;
+  return { ...state, tabs: [tab], active: id };
+}
+
+/** Drops every tab after the named one; the active tab falls back to it when it was dropped. */
+export function closeRightOf(state: TabsState, id: string): TabsState {
+  const index = state.tabs.findIndex((candidate) => candidate.id === id);
+  if (index === -1 || index === state.tabs.length - 1) return state;
+  const tabs = state.tabs.slice(0, index + 1);
+  const active = tabs.some((tab) => tab.id === state.active) ? state.active : id;
+  return { ...state, tabs, active };
+}
+
 function isTab(value: unknown): value is Tab {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as Record<string, unknown>;

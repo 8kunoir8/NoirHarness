@@ -1,4 +1,4 @@
-import type { KeyboardEvent } from "react";
+import type { KeyboardEvent, Ref } from "react";
 
 export type ComposerStatus = "idle" | "sending" | "queued" | "streaming" | "interrupted" | "error";
 
@@ -15,6 +15,8 @@ export interface ComposerProps {
   onQueue: () => void;
   onInterrupt: () => void;
   onCancelQueued: () => void;
+  /** The prompt element, so a surface that fills the draft can also put the caret in it. */
+  inputRef?: Ref<HTMLTextAreaElement> | undefined;
 }
 
 const STATUS_HINT: Record<ComposerStatus, string> = {
@@ -42,6 +44,7 @@ export function Composer({
   onQueue,
   onInterrupt,
   onCancelQueued,
+  inputRef,
 }: ComposerProps) {
   const streaming = status === "streaming";
 
@@ -77,6 +80,7 @@ export function Composer({
       <textarea
         aria-label="Prompt"
         value={draft}
+        ref={inputRef}
         placeholder={streaming ? "Draft the next message…" : "Message the agent…"}
         onChange={(event) => onDraftChange(event.target.value)}
         onKeyDown={onKeyDown}

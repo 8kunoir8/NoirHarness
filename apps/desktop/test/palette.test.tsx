@@ -74,7 +74,7 @@ function stubApp({ models = [MODEL], sessions = [] }: { models?: readonly unknow
   appApi.request.mockImplementation(async (method: string, params?: unknown): Promise<unknown> => {
     switch (method) {
       case "system.health":
-        return { status: "ok", pid: 1, engineDir: "engine" };
+        return { status: "ok", pid: 1, engineDir: "engine", version: "0.1.0" };
       case "project.list":
         return { projects: [] };
       case "workspace.list":
@@ -140,7 +140,9 @@ describe("shortcuts", () => {
     expect(matchesShortcut(keydown({ key: "B", metaKey: true }), shortcut)).toBe(true);
     expect(matchesShortcut(keydown({ key: "b" }), shortcut)).toBe(false);
     expect(matchesShortcut(keydown({ key: "b", metaKey: true, shiftKey: true }), { key: "b", mod: true, shift: true })).toBe(true);
-    expect(shortcutLabel({ key: "k", mod: true, shift: true })).toBe("⌘⇧K");
+    // Platform is explicit: the glyph form is macOS-only, and Windows reads `Ctrl+Shift+K`.
+    expect(shortcutLabel({ key: "k", mod: true, shift: true }, "darwin")).toBe("⌘⇧K");
+    expect(shortcutLabel({ key: "k", mod: true, shift: true }, "win32")).toBe("Ctrl+Shift+K");
   });
 
   it("dispatches the first enabled match and skips typing targets unless allowed", () => {

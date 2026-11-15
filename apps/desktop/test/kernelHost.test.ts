@@ -37,7 +37,7 @@ describe("hostKernel", () => {
     const spawnProcess = vi.fn(() => ({ unref: () => undefined }));
     const hosted = await hostKernel(target(dir), baseDeps({ spawnProcess }));
     expect(spawnProcess).toHaveBeenCalledTimes(1);
-    expect(hosted).toEqual({ pid: 100, port: 4000, token: "tok", daemon: true, buildMatches: true });
+    expect(hosted).toEqual({ pid: 100, port: 4000, token: "tok", daemon: true, buildMatches: true, buildId: "same" });
   });
 
   it("hands the daemon no handles and a log path instead", async () => {

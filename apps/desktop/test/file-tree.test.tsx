@@ -1,7 +1,8 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { FileTree } from "../src/renderer/FileTree.js";
+import { ContextMenuProvider } from "../src/renderer/ContextMenu.js";
 
 const entries: Record<string, unknown> = {
   "": {
@@ -164,6 +165,40 @@ describe("FileTree", () => {
     });
     expect(screen.queryByRole("treeitem", { name: /old\.txt/ })).toBeNull();
     expect(screen.getByRole("treeitem", { name: /new\.ts/ })).toBeTruthy();
+  });
+
+  it("offers open, diff, copy and reveal on a file row", async () => {
+    const onDiffFile = vi.fn();
+    const onReveal = vi.fn();
+    render(
+      <ContextMenuProvider>
+        <FileTree
+          request={fakeRequest as never}
+          workspaceId="w1"
+          onOpenFile={() => undefined}
+          onDiffFile={onDiffFile}
+          onReveal={onReveal}
+        />
+      </ContextMenuProvider>,
+    );
+
+    fireEvent.contextMenu(await screen.findByRole("treeitem", { name: /README\.md/ }));
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+      "Open",
+      "Diff",
+      "Copy path",
+      "Reveal in Explorer",
+    ]);
+    await userEvent.click(screen.getByRole("menuitem", { name: "Reveal in Explorer" }));
+    expect(onReveal).toHaveBeenCalledWith("README.md");
+
+    // A directory has nothing to diff, and its first action says which way it will go.
+    fireEvent.contextMenu(screen.getByRole("treeitem", { name: /src/ }));
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+      "Expand",
+      "Copy path",
+      "Reveal in Explorer",
+    ]);
   });
 });
 

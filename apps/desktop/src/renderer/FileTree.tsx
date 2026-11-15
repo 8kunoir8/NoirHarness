@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { FsEntry as Entry, FsListResult as Listing } from "@noir/protocol";
 import type { RequestFn } from "./api.js";
+import { menuForShortcut, useContextMenu, type MenuItem } from "./ContextMenu.js";
 import { previewKind } from "./preview/kind.js";
 
 interface Failure {
@@ -15,6 +16,10 @@ export interface FileTreeProps {
   onOpenFile: (path: string) => void;
   /** Opens a previewable file in the artifact tab; the row's default action is unchanged. */
   onPreviewFile?: ((path: string) => void) | undefined;
+  /** Opens the file's diff tab. */
+  onDiffFile?: ((path: string) => void) | undefined;
+  /** Reveals the entry in the OS file manager; omitted in a browser build. */
+  onReveal?: ((path: string) => void) | undefined;
 }
 
 /** Names the failing directory in the alert so a nested failure is identifiable. */
@@ -25,7 +30,8 @@ function describeFailure(path: string, cause: unknown): string {
 }
 
 /** Lazily expanded tree over `fs.list`; expansions and listings are cached for the mount. */
-export function FileTree({ request, workspaceId, activePath, onOpenFile, onPreviewFile }: FileTreeProps) {
+export function FileTree({ request, workspaceId, activePath, onOpenFile, onPreviewFile, onDiffFile, onReveal }: FileTreeProps) {
+  const menu = useContextMenu();
   const [listings, setListings] = useState<Record<string, Listing>>({});
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [error, setError] = useState<Failure | undefined>(undefined);
@@ -106,6 +112,27 @@ export function FileTree({ request, workspaceId, activePath, onOpenFile, onPrevi
     onOpenFile(entry.path);
   };
 
+  const itemsFor = (entry: Entry): MenuItem[] => [
+    {
+      kind: "item",
+      id: "open",
+      label: entry.kind === "dir" ? (expanded.has(entry.path) ? "Collapse" : "Expand") : "Open",
+      run: () => open(entry),
+    },
+    ...(entry.kind === "file" && onDiffFile !== undefined
+      ? [{ kind: "item" as const, id: "diff", label: "Diff", run: () => onDiffFile(entry.path) }]
+      : []),
+    {
+      kind: "item",
+      id: "copy-path",
+      label: "Copy path",
+      run: () => void navigator.clipboard?.writeText(entry.path).catch(() => undefined),
+    },
+    ...(onReveal === undefined
+      ? []
+      : [{ kind: "item" as const, id: "reveal", label: "Reveal in Explorer", run: () => onReveal(entry.path) }]),
+  ];
+
   return (
     <section aria-label="Files" className="file-tree">
       <h3>Files</h3>
@@ -130,7 +157,17 @@ export function FileTree({ request, workspaceId, activePath, onOpenFile, onPrevi
             tabIndex={0}
             data-depth={Math.min(depth, 6)}
             onClick={() => open(entry)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              menu.open(itemsFor(entry), { x: event.clientX, y: event.clientY }, { element: event.currentTarget });
+            }}
             onKeyDown={(event) => {
+              // A menu chord works from the row or from the Preview button inside it.
+              if (menuForShortcut(event) !== undefined) {
+                event.preventDefault();
+                menu.openFor(itemsFor(entry), { element: event.currentTarget });
+                return;
+              }
               // The Preview button is a descendant; its own Enter must not also open the row.
               if (event.target !== event.currentTarget) return;
               if (event.key !== "Enter" && event.key !== " ") return;

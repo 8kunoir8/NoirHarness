@@ -1,4 +1,4 @@
-import { act, render, renderHook, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentEvent, SessionView } from "@noir/protocol";
@@ -21,6 +21,7 @@ const api = vi.hoisted(() => ({
 vi.mock("../src/renderer/api.js", () => api);
 
 import { Chat } from "../src/renderer/Chat.js";
+import { ContextMenuProvider } from "../src/renderer/ContextMenu.js";
 import type { RequestFn } from "../src/renderer/api.js";
 
 function makeEvent(seq: number, type: AgentEvent["type"], payload: unknown, sessionId = "s1"): AgentEvent {
@@ -192,9 +193,28 @@ describe("reduceChat", () => {
 
 
 /** Chat is a pure view over lifted events; tests need the same shape App supplies. */
-function ChatHarness({ request, onPreview }: { request: RequestFn; onPreview?: (path: string) => void }) {
+function ChatHarness({
+  request,
+  onPreview,
+  onFork,
+}: {
+  request: RequestFn;
+  onPreview?: (path: string) => void;
+  onFork?: (upToSeq: number) => void;
+}) {
   const events = useSessionEvents(session.id, request);
-  return <Chat session={session} models={[]} request={request} events={events} onPreview={onPreview} />;
+  return (
+    <ContextMenuProvider>
+      <Chat
+        session={session}
+        models={[]}
+        request={request}
+        events={events}
+        onPreview={onPreview}
+        {...(onFork === undefined ? {} : { onFork })}
+      />
+    </ContextMenuProvider>
+  );
 }
 
 /**
@@ -206,6 +226,25 @@ function StartingChatHarness({ request }: { request: RequestFn }) {
   const starting: SessionView = { ...session, status: "starting" };
   const events = useSessionEvents(starting.id, request);
   return <Chat session={starting} models={[]} request={request} events={events} />;
+}
+
+/** One user message and its completion: the smallest transcript a message menu can open on. */
+function transcriptRequest(): RequestFn {
+  const request = vi.fn(async (method: string): Promise<unknown> => {
+    if (method !== "session.subscribe") throw new Error(method);
+    return {
+      events: [
+        makeEvent(1, "message.delta", {
+          messageId: "m1",
+          role: "user",
+          block: { type: "text", text: "hello there" },
+        }),
+        makeEvent(2, "message.completed", { messageId: "m1", status: "done" }),
+      ],
+      lastSeq: 2,
+    };
+  });
+  return request as unknown as RequestFn;
 }
 
 describe("Chat", () => {
@@ -685,6 +724,38 @@ describe("Chat", () => {
 
     expect((await screen.findByRole("alert")).textContent).toContain("engine unavailable");
     expect(prompt.value).toBe("keep me");
+  });
+
+  it("quotes a message into the composer from its menu", async () => {
+    render(<ChatHarness request={transcriptRequest()} />);
+    fireEvent.contextMenu(await screen.findByTestId("message-user"));
+
+    await userEvent.click(screen.getByRole("menuitem", { name: "Quote in composer" }));
+    const prompt = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
+    // The fence names the chat and the turn, so the quote stays traceable once it is sent.
+    expect(prompt.value).toBe("```chat Test session turn 1\nhello there\n```");
+    expect(document.activeElement).toBe(prompt);
+  });
+
+  it("forks from a message's own seq, and offers no fork without a handler", async () => {
+    const onFork = vi.fn();
+    const { unmount } = render(<ChatHarness request={transcriptRequest()} onFork={onFork} />);
+    fireEvent.contextMenu(await screen.findByTestId("message-user"));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Fork from here" }));
+    expect(onFork).toHaveBeenCalledWith(1);
+    unmount();
+
+    render(<ChatHarness request={transcriptRequest()} />);
+    fireEvent.contextMenu(await screen.findByTestId("message-user"));
+    expect(screen.queryByRole("menuitem", { name: "Fork from here" })).toBeNull();
+  });
+
+  it("opens the message menu from the keyboard as well as the pointer", async () => {
+    render(<ChatHarness request={transcriptRequest()} />);
+    const message = await screen.findByTestId("message-user");
+    fireEvent.keyDown(message, { key: "F10", shiftKey: true });
+    expect(screen.getByRole("menu")).toBeTruthy();
+    expect(document.activeElement?.textContent).toContain("Copy text");
   });
 });
 

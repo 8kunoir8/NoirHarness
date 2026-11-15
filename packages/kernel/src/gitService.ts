@@ -7,18 +7,38 @@ import { relativePath, resolveInsideRoot } from "./fsPaths.js";
 const run = promisify(execFile);
 const GIT = process.env.NOIR_GIT_COMMAND ?? "git";
 const TIMEOUT_MS = 5_000;
+/** A commit hook is user code: it may compile, test, or lint before it lets the commit through. */
+const MUTATE_TIMEOUT_MS = 30_000;
+
+export type GitChange = "created" | "modified" | "deleted";
 
 export interface GitFileStatusView {
   path: string;
-  change: "created" | "modified" | "deleted";
+  /** The merged summary the inspector and chat header show; a file with work on both sides is one row. */
+  change: GitChange;
   add: number;
   del: number;
+  /** Index side of the porcelain `XY` pair, or null when the index matches HEAD. */
+  index: GitChange | null;
+  /** Worktree side of the pair, or null when the worktree matches the index. */
+  worktree: GitChange | null;
 }
 
 export interface GitStatusView {
   isRepo: boolean;
   branch: string | null;
+  /** Commits this branch has that its upstream does not, and the reverse; 0 without an upstream. */
+  ahead: number;
+  behind: number;
   files: GitFileStatusView[];
+}
+
+/** A hook that rejects a commit has a reason the user has to read, so git's stderr wins over its argv. */
+function faultOf(error: unknown): RpcFault {
+  const stderr = (error as { stderr?: unknown } | undefined)?.stderr;
+  const text = typeof stderr === "string" ? stderr.trim() : "";
+  if (text !== "") return new RpcFault(ErrorCodes.internal, text);
+  return new RpcFault(ErrorCodes.internal, error instanceof Error ? error.message : "git failed");
 }
 
 async function git(root: string, args: string[]): Promise<string> {
@@ -29,7 +49,22 @@ async function git(root: string, args: string[]): Promise<string> {
     maxBuffer: 16 * 1024 * 1024,
     encoding: "utf8",
   }).catch((error: unknown) => {
-    throw new RpcFault(ErrorCodes.internal, error instanceof Error ? error.message : "git failed");
+    throw faultOf(error);
+  });
+  return result.stdout;
+}
+
+/** A mutating command: longer timeout, and no process may sit waiting for credentials. */
+async function gitMutate(root: string, args: string[]): Promise<string> {
+  const result = await run(GIT, ["-c", "core.quotepath=false", ...args], {
+    cwd: root,
+    timeout: MUTATE_TIMEOUT_MS,
+    windowsHide: true,
+    maxBuffer: 16 * 1024 * 1024,
+    encoding: "utf8",
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+  }).catch((error: unknown) => {
+    throw faultOf(error);
   });
   return result.stdout;
 }
@@ -124,10 +159,27 @@ function parseNumstat(numstat: string): Map<string, { add: number; del: number }
   return counts;
 }
 
+/** One side of a porcelain `XY` code; `" "` means that side matches, `?`/`A` is new, `D` is gone. */
+function sideOf(code: string | undefined): GitChange | null {
+  if (code === undefined || code === " ") return null;
+  if (code === "?" || code === "A") return "created";
+  if (code === "D") return "deleted";
+  // `M`, a rename or copy (`R`/`C`), a type change (`T`), or an unmerged pair (`U`).
+  return "modified";
+}
+
+/** `ahead`/`behind` against the upstream; no upstream, no HEAD, or no repo all answer 0/0. */
+async function divergence(root: string): Promise<{ ahead: number; behind: number }> {
+  const output = await git(root, ["rev-list", "--left-right", "--count", "HEAD...@{upstream}"]).catch(() => "");
+  const [ahead = "0", behind = "0"] = output.trim().split(/\s+/);
+  return { ahead: Number(ahead) || 0, behind: Number(behind) || 0 };
+}
+
 export async function gitStatus(root: string): Promise<GitStatusView> {
-  if (!(await isRepo(root))) return { isRepo: false, branch: null, files: [] };
+  if (!(await isRepo(root))) return { isRepo: false, branch: null, ahead: 0, behind: 0, files: [] };
   const prefix = (await git(root, ["rev-parse", "--show-prefix"]).catch(() => "")).trim();
   const branch = await git(root, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => "");
+  const { ahead, behind } = await divergence(root);
   // A status failure degrades to an empty list rather than an error wall.
   const porcelain = await git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]).catch(() => "");
   // A repository with no commit yet has no HEAD to diff against; untracked files still report.
@@ -158,15 +210,94 @@ export async function gitStatus(root: string): Promise<GitStatusView> {
             : "modified";
     const counted = counts.get(path) ?? { add: 0, del: 0 };
     const createdLines = change === "created" ? await countLines(root, path) : 0;
+    const untracked = code === "??";
     files.push({
       path,
       change,
       add: change === "deleted" ? 0 : counted.add > 0 ? counted.add : createdLines,
       del: counted.del,
+      index: untracked ? null : sideOf(code[0]),
+      worktree: untracked ? "created" : sideOf(code[1]),
     });
   }
   files.sort((a, b) => a.path.localeCompare(b.path));
-  return { isRepo: true, branch: branch.trim() === "" ? null : branch.trim(), files };
+  return { isRepo: true, branch: branch.trim() === "" ? null : branch.trim(), ahead, behind, files };
+}
+
+const chains = new Map<string, Promise<unknown>>();
+
+/**
+ * One mutating command at a time per workspace: RPC handlers are concurrent, index writes are not.
+ * A rejected mutation still releases the queue; its error belongs to its own caller.
+ */
+function serialize<T>(root: string, action: () => Promise<T>): Promise<T> {
+  const previous = chains.get(root) ?? Promise.resolve();
+  const next = previous.then(action, action);
+  chains.set(
+    root,
+    next.catch(() => undefined),
+  );
+  return next;
+}
+
+/** Every path is checked against the workspace before any of them reaches git's argv. */
+function writablePaths(root: string, paths: string[]): string[] {
+  return paths.map((path) => {
+    resolveInsideRoot(root, path);
+    const normalized = relativePath(path);
+    if (normalized === "") throw new RpcFault(ErrorCodes.invalidParams, `Path must name a file: ${path}`);
+    return normalized;
+  });
+}
+
+/** Stages the named paths, then answers with the fresh index so the page cannot show a stale one. */
+export async function gitStage(root: string, paths: string[]): Promise<GitStatusView> {
+  const target = writablePaths(root, paths);
+  return serialize(root, async () => {
+    if (!(await isRepo(root))) throw new RpcFault(ErrorCodes.conflict, "Not a git repository");
+    await gitMutate(root, ["add", "--", ...target]);
+    return gitStatus(root);
+  });
+}
+
+/** Unstages the named paths; a repository with no commit yet has no HEAD, so its entries are dropped. */
+export async function gitUnstage(root: string, paths: string[]): Promise<GitStatusView> {
+  const target = writablePaths(root, paths);
+  return serialize(root, async () => {
+    if (!(await isRepo(root))) throw new RpcFault(ErrorCodes.conflict, "Not a git repository");
+    try {
+      await gitMutate(root, ["reset", "-q", "HEAD", "--", ...target]);
+    } catch (error) {
+      const head = await git(root, ["rev-parse", "--verify", "--quiet", "HEAD"]).catch(() => "");
+      if (head.trim() !== "") throw error;
+      await gitMutate(root, ["rm", "--cached", "-q", "--", ...target]);
+    }
+    return gitStatus(root);
+  });
+}
+
+/**
+ * Commits exactly what is staged: nothing is added here, so an unstaged edit stays unstaged.
+ * The empty-message and empty-index refusals happen after queuing, so a commit fired behind
+ * another one judges the index the first left behind.
+ */
+export async function gitCommit(
+  root: string,
+  message: string,
+): Promise<{ sha: string; summary: string; status: GitStatusView }> {
+  const trimmed = message.trim();
+  if (trimmed === "") throw new RpcFault(ErrorCodes.invalidParams, "Write a commit message");
+  return serialize(root, async () => {
+    const before = await gitStatus(root);
+    if (!before.isRepo) throw new RpcFault(ErrorCodes.conflict, "Not a git repository");
+    if (!before.files.some((file) => file.index !== null)) {
+      throw new RpcFault(ErrorCodes.conflict, "Nothing staged to commit");
+    }
+    await gitMutate(root, ["commit", "-m", trimmed]);
+    const sha = (await git(root, ["rev-parse", "HEAD"])).trim();
+    const summary = (await git(root, ["log", "-1", "--pretty=%s"])).trim();
+    return { sha, summary, status: await gitStatus(root) };
+  });
 }
 
 export async function gitDiff(root: string, value: string): Promise<string> {

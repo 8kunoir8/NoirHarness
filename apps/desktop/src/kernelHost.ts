@@ -10,6 +10,11 @@ export interface HostTarget {
   nodeBin: string;
   /** The built renderer a paired browser loads; absent when there is none to serve. */
   webRoot?: string;
+  /**
+   * The app's own version, reported by `system.health` so Help can name the running build. Absent
+   * in tests and in the browser build, which then reports `0.0.0`.
+   */
+  appVersion?: string | undefined;
 }
 
 export interface HostedKernel {
@@ -20,6 +25,8 @@ export interface HostedKernel {
   daemon: boolean;
   /** False when the app talks to a different build than the one it would spawn. */
   buildMatches: boolean;
+  /** The build the daemon reports, so Help can name it; null when it did not say. */
+  buildId: string | null;
 }
 
 export interface HealthInfo {
@@ -188,14 +195,14 @@ export async function hostKernel(target: HostTarget, overrides: HostDeps = {}): 
     const health = await deps.probeHealth(current.port, PROBE_TIMEOUT_MS);
     if (health !== null && health.pid === current.pid) {
       if (health.buildId === wanted) {
-        return { port: current.port, token: current.token, pid: current.pid, daemon: true, buildMatches: true };
+        return { port: current.port, token: current.token, pid: current.pid, daemon: true, buildMatches: true, buildId: health.buildId };
       }
       const outcome = await deps.requestShutdown(current.port, current.token, false);
       if (outcome.status === 200) {
         await waitGone(current.pid, deps.isAlive, deps.sleep);
       } else if (outcome.status === 409) {
         if ((await deps.promptBusy(outcome.body.live ?? 0)) === "keep") {
-          return { port: current.port, token: current.token, pid: current.pid, daemon: true, buildMatches: false };
+          return { port: current.port, token: current.token, pid: current.pid, daemon: true, buildMatches: false, buildId: health.buildId };
         }
         await deps.requestShutdown(current.port, current.token, true);
         await waitGone(current.pid, deps.isAlive, deps.sleep);
@@ -221,6 +228,8 @@ async function spawnDetached(target: HostTarget, deps: ResolvedDeps): Promise<Ho
     ELECTRON_RUN_AS_NODE: "1",
     NOIR_DATA_DIR: target.dataDir,
     NOIR_KERNEL_LOG: logPath(target.dataDir),
+    // `system.health` reports this, so Help names the build that is actually running.
+    NOIR_APP_VERSION: target.appVersion ?? "0.0.0",
     ...(target.webRoot === undefined ? {} : { NOIR_WEB_ROOT: target.webRoot }),
   };
   // Every handle is closed: a detached child that inherits one holds this app's pipes open, and
@@ -242,5 +251,5 @@ async function spawnDetached(target: HostTarget, deps: ResolvedDeps): Promise<Ho
     spawnOnce(false);
   }
   const info = await deps.waitRuntime(file, START_TIMEOUT_MS);
-  return { port: info.port, token: info.token, pid: info.pid, daemon, buildMatches: true };
+  return { port: info.port, token: info.token, pid: info.pid, daemon, buildMatches: true, buildId: deps.buildId(target.kernelEntry) };
 }

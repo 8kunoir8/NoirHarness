@@ -6,6 +6,8 @@ export interface KernelInfo {
   token: string;
   buildMatches: boolean;
   daemon: boolean;
+  /** The kernel build's hash; null when it did not report one. Help names it for bug reports. */
+  buildId: string | null;
 }
 
 /** Mirrors `WindowState`/`WindowControls` in `preload.ts`; the preload cannot be imported here. */
@@ -25,14 +27,18 @@ export interface WindowControls {
 declare global {
   interface Window {
     /** Absent in a browser: the shell there is served by the kernel and has no preload. */
-    noir?: {
-      kernelInfo(): Promise<KernelInfo>;
-      openExternal(url: string): Promise<void>;
-      /** Absent in a browser build: only the desktop shell owns a native dialog. */
-      pickFolder?(): Promise<string | null>;
-      automationsArmed(count: number): void;
-      windowControls?: WindowControls;
-    };
+    noir?:
+      | {
+          kernelInfo(): Promise<KernelInfo>;
+          openExternal(url: string): Promise<void>;
+          /** Absent in a browser build: only the desktop shell owns a native dialog. */
+          pickFolder?(): Promise<string | null>;
+          automationsArmed(count: number): void;
+          /** Shows a workspace file in the OS file manager; absent in a browser build. */
+          revealInFolder?(root: string, path: string): Promise<void>;
+          windowControls?: WindowControls;
+        }
+      | undefined;
   }
 }
 
@@ -79,6 +85,8 @@ export function kernelInfo(): Promise<KernelInfo> {
     token: "",
     buildMatches: true,
     daemon: true,
+    // The kernel is the one that served this page; there is no second build to hash here.
+    buildId: null,
   });
 }
 

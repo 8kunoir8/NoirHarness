@@ -7,6 +7,7 @@ import {
   SessionListResult,
   SessionView,
   SystemHealthResult,
+  UpdateState,
   type AgentEvent,
   type FsReadResult,
   type GitStatusResult,
@@ -21,11 +22,14 @@ import type { DiffStats } from "./ChatHeader.js";
 import { CommandPalette } from "./CommandPalette.js";
 import type { Command } from "./commands.js";
 import { DiffView } from "./DiffView.js";
+import { ContextMenuProvider } from "./ContextMenu.js";
 import { runningToolTitle, useSessionEvents, type ChatFile } from "./events.js";
 import { FileTree } from "./FileTree.js";
 import { Inspector } from "./Inspector.js";
 import { KernelBanner } from "./KernelBanner.js";
-import { MonacoEditor } from "./MonacoEditor.js";
+import { MonacoEditor, type EditorSelection } from "./MonacoEditor.js";
+import { Help } from "./Help.js";
+import { UpdateRow, UpdateToast } from "./UpdateNotice.js";
 import { ArtifactPreview } from "./preview/ArtifactPreview.js";
 import { previewKind } from "./preview/kind.js";
 import { LiveSidebar } from "./LiveSidebar.js";
@@ -37,12 +41,15 @@ import { useRoster } from "./useRoster.js";
 import { Setup } from "./Setup.js";
 import { Shell } from "./Shell.js";
 import { Skills } from "./Skills.js";
+import { Source } from "./Source.js";
 import { StatusBar } from "./StatusBar.js";
 import { TabStrip } from "./TabStrip.js";
 import {
   activateTab,
   chatTab,
   closeTab,
+  closeOthers,
+  closeRightOf,
   diffTab,
   editorTab,
   loadTabs,
@@ -60,7 +67,7 @@ import { WindowControlsBar } from "./WindowControls.js";
 import { WorkspacePanel, type ProjectView, type WorkspaceView } from "./WorkspacePanel.js";
 import "./styles.css";
 
-type View = "setup" | "chats" | "skills" | "agents" | "automations";
+type View = "setup" | "chats" | "skills" | "agents" | "automations" | "source" | "help";
 
 /** The two messages `api.ts` raises when there is no socket at all. */
 const CONNECTION_FAILURE = /kernel connection (failed|closed)|kernel not connected/;
@@ -127,6 +134,8 @@ function storeJson(key: string, value: unknown): void {
 export function App() {
   const [status, setStatus] = useState("connecting");
   const [engineDir, setEngineDir] = useState<string | undefined>(undefined);
+  /** The build the kernel reports; Help names it so a bug report can identify the bytes running. */
+  const [version, setVersion] = useState("0.0.0");
   const [view, setView] = useState<View>("setup");
   const [theme, , toggleTheme] = useTheme();
   const [kernel, setKernel] = useState<KernelInfo | undefined>(undefined);
@@ -169,6 +178,11 @@ export function App() {
     loadJson<{ rail: boolean; list: boolean }>(COLUMNS_KEY, { rail: true, list: true }),
   );
   const [paletteOpen, setPaletteOpen] = useState(false);
+  /** The kernel's answer about newer tags; undefined until the one check this window makes lands. */
+  const [update, setUpdate] = useState<UpdateState | undefined>(undefined);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  /** Text another surface (a message menu, an editor selection) drops into the next chat's composer. */
+  const [quote, setQuote] = useState<string | undefined>(undefined);
   const [armed, setArmed] = useState(0);
   const [skillCount, setSkillCount] = useState<number | undefined>(undefined);
   // One live roster for the shell: the nav badge and the sidebar office read the same snapshot.
@@ -177,7 +191,26 @@ export function App() {
   const agentConfigRef = useRef<HTMLElement | null>(null);
   // An archived or deleted pick falls back to the default instead of making the next chat fail.
   const chatAgentId = agents.some((agent) => agent.id === newChatAgentId) ? newChatAgentId : defaultAgentId;
-
+  /** The workspace whose files the tree lists; the reveal action needs its absolute root. */
+  const workspaceRoot = workspaces.find((candidate) => candidate.id === workspaceId)?.path;
+  const reveal =
+    workspaceRoot === undefined || window.noir?.revealInFolder === undefined
+      ? undefined
+      : (path: string) => {
+          void window.noir?.revealInFolder?.(workspaceRoot, path).catch(() => undefined);
+        };
+  // The last chat tab is where a quoted selection lands: opening one first would surprise more than
+  // quoting into the conversation the person was already having.
+  const quoteTarget = [...tabState.tabs].reverse().find((tab) => tab.kind === "chat");
+  const addSelection =
+    quoteTarget === undefined
+      ? undefined
+      : (selection: EditorSelection) => {
+          setQuote(
+            [`\`\`\`${selection.path}:${String(selection.from)}-${String(selection.to)}`, selection.text, "```"].join("\n"),
+          );
+          setTabState((current) => activateTab(current, quoteTarget.id));
+        };
   const activeTab = tabState.tabs.find((tab) => tab.id === tabState.active);
   // Opening a file leaves the chat subscription alone: the last chat that was actually active stays
   // the one subscribed (and the only one whose read watermark moves), instead of falling back to
@@ -334,6 +367,22 @@ export function App() {
     };
   }, [request, status, workspaceId]);
 
+  // One check per window, after the kernel is healthy, so a slow remote never delays start-up. The
+  // kernel owns the 24-hour cadence and what was dismissed, so two windows cannot disagree.
+  useEffect(() => {
+    if (status !== "kernel ok" || update !== undefined) return;
+    let cancelled = false;
+    void request<UpdateState>("update.check", { force: false })
+      .then((state) => {
+        if (!cancelled) setUpdate(UpdateState.parse(state));
+      })
+      // A check that cannot run (an older kernel, a blocked write) changes nothing on screen.
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [request, status, update]);
+
   /**
    * The list is a page, not a table read: the window asks for what it renders, and the kernel
    * answers the filter. `unread` stays in the window because only it knows what each tab has shown.
@@ -359,6 +408,7 @@ export function App() {
       const health = SystemHealthResult.parse(await request("system.health"));
       setStatus("kernel ok");
       setEngineDir(health.engineDir);
+      setVersion(health.version);
       const [projectResult, workspaceResult, modelResult, sessionList, agentResult] = await Promise.all([
         request<{ projects: ProjectView[] }>("project.list"),
         request<{ workspaces: WorkspaceView[] }>("workspace.list"),
@@ -786,16 +836,39 @@ export function App() {
     }
   }
 
-  /** The conversation so far becomes the parent; the fork continues from it and leaves it alone. */
-  async function forkSession(sessionId: string): Promise<void> {
+  /** The conversation up to `upToSeq` becomes the parent; the fork continues from it and leaves it alone. */
+  async function forkSession(sessionId: string, upToSeq?: number): Promise<void> {
     setError(undefined);
     try {
-      const result = await request<{ session: SessionView; copiedEvents: number }>("session.fork", { sessionId });
+      const result = await request<{ session: SessionView; copiedEvents: number }>("session.fork", {
+        sessionId,
+        ...(upToSeq === undefined ? {} : { upToSeq }),
+      });
       await loadSessions();
       openSession(result.session);
     } catch (forkError) {
       setError(forkError instanceof Error ? forkError.message : "Could not fork the chat");
     }
+  }
+
+  /** `force` re-reads the remote; an unforced call is answered from the kernel's 24-hour cache. */
+  async function checkUpdates(force: boolean): Promise<void> {
+    setCheckingUpdate(true);
+    try {
+      setUpdate(UpdateState.parse(await request<UpdateState>("update.check", { force })));
+    } catch {
+      // A check that cannot run changes nothing: Help keeps whatever it last showed.
+    } finally {
+      setCheckingUpdate(false);
+    }
+  }
+
+  async function dismissUpdate(release: string): Promise<void> {
+    if (release === "") return;
+    // The kernel records it, so the badge stays off in every window and across restarts.
+    const next = update === undefined ? undefined : { ...update, dismissed: true };
+    setUpdate(next);
+    await request("update.dismiss", { version: release }).catch(() => undefined);
   }
 
   // Named once: the nav, the palette and the `C` shortcut all reach the same view switch.
@@ -852,6 +925,31 @@ export function App() {
         <span className="nav-count" aria-hidden="true">
           {armed}
         </span>
+      </span>
+      <span className="nav-item">
+        <button
+          type="button"
+          aria-pressed={view === "source"}
+          onClick={() => setView("source")}
+          title="Source control"
+        >
+          Source
+        </button>
+        {workspaceGitStatus === undefined || workspaceGitStatus.files.length === 0 ? null : (
+          <span className="nav-count" aria-hidden="true">
+            {workspaceGitStatus.files.length}
+          </span>
+        )}
+      </span>
+      <span className="nav-item">
+        <button type="button" aria-pressed={view === "help"} onClick={() => goTo("help")} title="Help and shortcuts">
+          Help
+        </button>
+        {update?.status === "available" && !update.dismissed ? (
+          <span className="nav-count" data-tone="warn" aria-hidden="true">
+            ●
+          </span>
+        ) : null}
       </span>
       <span className="nav-item">
         <button type="button" aria-pressed={view === "setup"} onClick={() => goTo("setup")} title="Setup">
@@ -942,8 +1040,15 @@ export function App() {
     <>
       <span className="brand">NoirHarness</span>
       <span className="topbar-workspace">
-        {branch === null ? "" : `${branch} · `}
-        {workspaceSessions.length === 0 ? "" : `${workspaceSessions.length} chat${workspaceSessions.length === 1 ? "" : "s"}`}
+        {branch === null ? null : (
+          // The branch is the page's subject, so it is the page's second door.
+          <button type="button" className="topbar-branch" title="Open source control" onClick={() => setView("source")}>
+            {branch}
+          </button>
+        )}
+        {workspaceSessions.length === 0
+          ? null
+          : `${branch === null ? "" : " · "}${workspaceSessions.length} chat${workspaceSessions.length === 1 ? "" : "s"}`}
       </span>
       <button type="button" className="topbar-action" onClick={() => setPaletteOpen(true)} aria-label="Commands">
         ⌘K
@@ -965,6 +1070,12 @@ export function App() {
   const statusbar = (
     <StatusBar status={status} running={running} pendingApprovals={pendingApprovals} engineDir={engineDir} />
   );
+  // One notice per release, and never over a dialog: an approval or the palette owns the window
+  // until it closes, so the notice waits rather than covering the thing the user must answer.
+  const updateToast =
+    update === undefined || paletteOpen || pendingApprovals > 0 ? null : (
+      <UpdateToast state={update} onDismiss={(release) => void dismissUpdate(release)} />
+    );
 
   const emptyMain = (
     <p className="empty">
@@ -1102,6 +1213,43 @@ export function App() {
       run: () => setView("automations"),
     },
     {
+      id: "open-source",
+      label: "Open source control",
+      keywords: "git stage unstage commit changes diff",
+      shortcut: { key: "g", mod: true, shift: true },
+      enabled: workspaceId !== "",
+      // Opening a page never types a character, so it has to work from inside a commit message.
+      allowInInput: true,
+      run: () => setView("source"),
+    },
+    {
+      id: "open-help",
+      label: "Open help",
+      keywords: "keyboard shortcuts keys version about",
+      shortcut: { key: "f1" },
+      enabled: true,
+      allowInInput: true,
+      run: () => setView("help"),
+    },
+    {
+      id: "toggle-projects-column",
+      label: "Toggle the projects column",
+      keywords: "rail sidebar hide show projects",
+      shortcut: { key: "1", mod: true, shift: true },
+      enabled: true,
+      allowInInput: true,
+      run: () => setColumns((current) => ({ ...current, rail: !current.rail })),
+    },
+    {
+      id: "toggle-chats-column",
+      label: "Toggle the chats column",
+      keywords: "list sidebar hide show sessions files",
+      shortcut: { key: "2", mod: true, shift: true },
+      enabled: true,
+      allowInInput: true,
+      run: () => setColumns((current) => ({ ...current, list: !current.list })),
+    },
+    {
       id: "switch-theme",
       label: "Switch theme",
       keywords: "paper ink dark light",
@@ -1191,14 +1339,21 @@ export function App() {
     </div>
   );
 
-  // Agents may exist with `modelRef: null`, and the profile is configurable before any model is
-  // added, so only chats depend on a configured model.
+  // Agents may exist with `modelRef: null`, the profile is configurable before any model is added,
+  // and source control, help and the office have nothing to do with a model, so only chats need one.
   if (
     view === "setup" ||
-    (models.length === 0 && view !== "skills" && view !== "agents" && view !== "automations")
+    (models.length === 0 &&
+      view !== "skills" &&
+      view !== "agents" &&
+      view !== "automations" &&
+      view !== "source" &&
+      view !== "help")
   ) {
+    // The same element type as the chats branch: a fragment here would remount the whole shell the
+    // moment a model is added, dropping focus and any element a pointer was already over.
     return (
-      <>
+      <ContextMenuProvider commands={commands}>
         {kernel === undefined ? null : <KernelBanner daemon={kernel.daemon} buildMatches={kernel.buildMatches} />}
         <Shell
           nav={nav}
@@ -1225,12 +1380,13 @@ export function App() {
         />
         {quickOpenOverlay}
         {palette}
-      </>
+        {updateToast}
+      </ContextMenuProvider>
     );
   }
 
   return (
-    <>
+    <ContextMenuProvider commands={commands}>
       {kernel === undefined ? null : <KernelBanner daemon={kernel.daemon} buildMatches={kernel.buildMatches} />}
       <Shell
         nav={nav}
@@ -1246,6 +1402,8 @@ export function App() {
                 activePath={activeTab?.kind === "editor" ? activeTab.path : undefined}
                 onOpenFile={(path) => void openFile(path)}
                 onPreviewFile={openPreview}
+                onDiffFile={(path) => setTabState((current) => openTab(current, diffTab(path)))}
+                {...(reveal === undefined ? {} : { onReveal: reveal })}
               />
             ) : (
               <section aria-label="Sessions" className="sessions-region">
@@ -1301,7 +1459,38 @@ export function App() {
           </>
         ) : undefined}
         main={
-          view === "skills" ? (
+          view === "source" ? (
+            <>
+              {error === undefined ? null : <p role="alert">{error}</p>}
+              <Source
+                key={workspaceId}
+                request={request}
+                workspaceId={workspaceId}
+                workspaceName={workspaces.find((candidate) => candidate.id === workspaceId)?.path ?? "No workspace"}
+                onOpenDiff={(path) => {
+                  // The diff is a tab, and tabs render in the chats view.
+                  setTabState((current) => openTab(current, diffTab(path)));
+                  setView("chats");
+                }}
+              />
+            </>
+          ) : view === "help" ? (
+            <Help
+              version={version}
+              buildId={kernel?.buildId ?? undefined}
+              commands={commands}
+              update={
+                update === undefined ? undefined : (
+                  <UpdateRow
+                    state={update}
+                    checking={checkingUpdate}
+                    onCheck={() => void checkUpdates(true)}
+                    onDismiss={(release) => void dismissUpdate(release)}
+                  />
+                )
+              }
+            />
+          ) : view === "skills" ? (
             <>
               {error === undefined ? null : <p role="alert">{error}</p>}
               <Skills key={workspaceId} workspaceId={workspaceId} request={request} />
@@ -1348,6 +1537,8 @@ export function App() {
                 onClose={closeTabById}
                 titles={Object.fromEntries(sessions.map((session) => [session.id, session.title]))}
                 dirty={dirty}
+                onCloseOthers={(id) => setTabState((current) => closeOthers(current, id))}
+                onCloseRight={(id) => setTabState((current) => closeRightOf(current, id))}
               />
               {activeTab === undefined ? (
                 emptyMain
@@ -1364,6 +1555,10 @@ export function App() {
                     diffStats={diffStats}
                     onSessionChange={() => void loadSessions().catch(() => undefined)}
                     onPreview={openPreview}
+                    onFork={(upToSeq) => void forkSession(activeSession.id, upToSeq)}
+                    quote={quote}
+                    onQuoteApplied={() => setQuote(undefined)}
+                    onOpenSource={() => setView("source")}
                   />
                 )
               ) : activeTab.kind === "editor" ? (
@@ -1389,6 +1584,7 @@ export function App() {
                           return document === undefined ? current : { ...current, [activeTab.path]: { ...document, draft } };
                         })
                       }
+                      {...(addSelection === undefined ? {} : { onAddSelection: addSelection })}
                     />
                   )}
                 </section>
@@ -1416,6 +1612,7 @@ export function App() {
       />
       {quickOpenOverlay}
       {palette}
-    </>
+      {updateToast}
+    </ContextMenuProvider>
   );
 }

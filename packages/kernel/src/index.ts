@@ -22,8 +22,11 @@ import {
   FsListParams,
   FsReadParams,
   FsWriteParams,
+  GitCommitParams,
   GitDiffParams,
+  GitStageParams,
   GitStatusParams,
+  GitUnstageParams,
   McpServerCreateParams,
   McpServerDeleteParams,
   McpServerUpdateParams,
@@ -63,6 +66,8 @@ import {
   SkillRemoveParams,
   SkillSetEnabledParams,
   SkillUpdateParams,
+  UpdateCheckParams,
+  UpdateDismissParams,
   type SkillListResult,
   WorkspaceCreateParams,
   type AgentEvent,
@@ -78,7 +83,7 @@ import { DEFAULT_AGENT_ID, ensureDefaultAgent } from "./defaultAgent.js";
 import { EngineManager } from "./engineManager.js";
 import { EventStore } from "./eventStore.js";
 import { findFiles, listDirectory, readArtifact, readFileText, writeFileText } from "./fsService.js";
-import { gitDiff, gitStatus } from "./gitService.js";
+import { gitCommit, gitDiff, gitStage, gitStatus, gitUnstage } from "./gitService.js";
 import { liveCount } from "./liveness.js";
 import { McpClient } from "./mcp/client.js";
 import { McpService } from "./mcp/service.js";
@@ -110,6 +115,7 @@ import {
 } from "./runtimeFile.js";
 import { KeyringSecrets, type Secrets } from "./secrets.js";
 import { SessionService } from "./sessions.js";
+import { UpdateService } from "./update.js";
 import { WorkspaceService } from "./workspaces.js";
 
 export interface Kernel {
@@ -232,6 +238,8 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; o
       });
       const events = new EventStore(db, (event) => broadcast(event), redactor);
       const checkpoints = new CheckpointService(db, events, { dataDir: dir });
+      // The update channel runs from the data dir: a packaged app has no checkout to ask from.
+      const updates = new UpdateService(db, dir);
       const projects = new ProjectService(db);
       const workspaces = new WorkspaceService(db, projects);
       const workspaceRoot = (workspaceId: string): string => {
@@ -325,8 +333,11 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; o
           status: "ok",
           pid: process.pid,
           engineDir: profileAgentDir(dir),
+          version: process.env.NOIR_APP_VERSION ?? "0.0.0",
           ...(await checkpoints.health()),
         }),
+        [Methods.updateCheck]: async (params) => updates.check(UpdateCheckParams.parse(params ?? {}).force ?? false),
+        [Methods.updateDismiss]: async (params) => updates.dismiss(UpdateDismissParams.parse(params).version),
         [Methods.projectAdd]: async (params) => projects.add(ProjectAddParams.parse(params).path),
         [Methods.projectList]: async () => ({ projects: projects.list() }),
         [Methods.workspaceCreate]: async (params) => workspaces.createLocal(WorkspaceCreateParams.parse(params).projectId),
@@ -349,6 +360,18 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; o
         },
         [Methods.fsFiles]: async (params) => findFiles(workspaceRoot(FsFilesParams.parse(params).workspaceId)),
         [Methods.gitStatus]: async (params) => gitStatus(workspaceRoot(GitStatusParams.parse(params).workspaceId)),
+        [Methods.gitStage]: async (params) => {
+          const { workspaceId, paths } = GitStageParams.parse(params);
+          return gitStage(workspaceRoot(workspaceId), paths);
+        },
+        [Methods.gitUnstage]: async (params) => {
+          const { workspaceId, paths } = GitUnstageParams.parse(params);
+          return gitUnstage(workspaceRoot(workspaceId), paths);
+        },
+        [Methods.gitCommit]: async (params) => {
+          const { workspaceId, message } = GitCommitParams.parse(params);
+          return gitCommit(workspaceRoot(workspaceId), message);
+        },
         [Methods.gitDiff]: async (params) => {
           const { workspaceId, path } = GitDiffParams.parse(params);
           return { diff: await gitDiff(workspaceRoot(workspaceId), path) };

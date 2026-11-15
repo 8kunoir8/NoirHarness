@@ -1,6 +1,8 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { MonacoEditor } from "../src/renderer/MonacoEditor.js";
+import { ContextMenuProvider } from "../src/renderer/ContextMenu.js";
 import { languageFor, loadMonaco } from "../src/renderer/monaco.js";
 
 vi.mock("../src/renderer/monaco.js", () => ({
@@ -11,7 +13,12 @@ vi.mock("../src/renderer/monaco.js", () => ({
 
 function makeMonaco() {
   let listener: (() => void) | undefined;
-  const model = { getValue: vi.fn(() => "seed"), setValue: vi.fn(), dispose: vi.fn() };
+  const model = {
+    getValue: vi.fn(() => "seed"),
+    setValue: vi.fn(),
+    getValueInRange: vi.fn(() => "const a = 1;"),
+    dispose: vi.fn(),
+  };
   const editor = {
     onDidChangeModelContent: vi.fn((next: () => void) => {
       listener = next;
@@ -19,6 +26,7 @@ function makeMonaco() {
     }),
     getValue: vi.fn(() => "typed"),
     getModel: vi.fn(() => model),
+    getSelection: vi.fn(() => ({ startLineNumber: 2, endLineNumber: 4 })),
     hasTextFocus: vi.fn(() => false),
     updateOptions: vi.fn(),
     dispose: vi.fn(),
@@ -69,5 +77,36 @@ describe("MonacoEditor", () => {
     render(<MonacoEditor path="a.ts" value="" theme="ink" onChange={() => undefined} />);
 
     expect((await screen.findByRole("alert")).textContent).toBe("worker unavailable");
+  });
+
+  it("adds the selection to a chat from the editor menu", async () => {
+    const fake = makeMonaco();
+    vi.mocked(loadMonaco).mockResolvedValue(fake.monaco as never);
+    const onAddSelection = vi.fn();
+    render(
+      <ContextMenuProvider>
+        <MonacoEditor
+          path="src/main.ts"
+          value="hello"
+          theme="paper"
+          onChange={() => undefined}
+          onAddSelection={onAddSelection}
+        />
+      </ContextMenuProvider>,
+    );
+    await waitFor(() => expect(fake.editor.onDidChangeModelContent).toHaveBeenCalled());
+
+    const host = screen.getByTestId("monaco-host").parentElement;
+    expect(host).not.toBeNull();
+    fireEvent.contextMenu(host as HTMLElement);
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Copy", "Add to chat"]);
+
+    await userEvent.click(screen.getByRole("menuitem", { name: "Add to chat" }));
+    expect(onAddSelection).toHaveBeenCalledWith({ path: "src/main.ts", text: "const a = 1;", from: 2, to: 4 });
+
+    // An empty selection still gets a menu, with the reason it can do nothing.
+    fake.model.getValueInRange.mockReturnValue("   ");
+    fireEvent.contextMenu(host as HTMLElement);
+    expect(screen.getByRole("menuitem", { name: "Copy" }).getAttribute("title")).toBe("Select some text first");
   });
 });

@@ -24,6 +24,8 @@ export interface ChatHeaderProps {
   onModelChange: (modelId: string) => void;
   /** Omitted where the chat cannot be renamed; the title then renders as plain text. */
   onRename?: ((title: string) => void) | undefined;
+  /** Omitted where the chat cannot reach a Source page; the stats then render as plain text. */
+  onOpenSource?: (() => void) | undefined;
 }
 
 /** Live elapsed time for the running turn; freezes when `turnStartedAt` disappears. */
@@ -51,6 +53,7 @@ export function ChatHeader({
   onInterrupt,
   onModelChange,
   onRename,
+  onOpenSource,
 }: ChatHeaderProps) {
   const elapsed = useElapsed(turnStartedAt);
   const [draft, setDraft] = useState<string | undefined>(undefined);
@@ -134,10 +137,21 @@ export function ChatHeader({
           : `${formatDuration(elapsed)}`}
       </span>
       <UsageMeter usage={usage} />
-      {diffStats === undefined ? null : (
+      {diffStats === undefined ? null : onOpenSource === undefined ? (
         <span className="chat-diff" role="group" aria-label="Diff stats">
           <span className="diff-add">+{diffStats.add}</span> <span className="diff-del">−{diffStats.del}</span>
         </span>
+      ) : (
+        // The counts already say which files changed; the same spot now also says where to go.
+        <button
+          type="button"
+          className="chat-diff"
+          aria-label="Diff stats"
+          title="Open source control"
+          onClick={onOpenSource}
+        >
+          <span className="diff-add">+{diffStats.add}</span> <span className="diff-del">−{diffStats.del}</span>
+        </button>
       )}
       {canInterrupt ? (
         <button type="button" onClick={onInterrupt}>

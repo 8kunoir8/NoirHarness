@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { once } from "node:events";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
+import { ErrorCodes } from "@noir/protocol";
+import { gitCommit, gitStage, gitStatus, gitUnstage } from "../src/gitService.js";
 import type { Kernel } from "../src/index.js";
 import { startKernel } from "./support.js";
 
@@ -76,9 +78,30 @@ describe("git.* RPCs", () => {
     const files = status.result.files as Array<{ path: string; change: string; add: number; del: number }>;
     expect(status.result.isRepo).toBe(true);
     expect(status.result.branch).not.toBe("");
-    expect(files.find((file) => file.path === "a.txt")).toEqual({ path: "a.txt", change: "modified", add: 1, del: 0 });
-    expect(files.find((file) => file.path === "c.txt")).toEqual({ path: "c.txt", change: "created", add: 2, del: 0 });
-    expect(files.find((file) => file.path === "b.txt")).toEqual({ path: "b.txt", change: "deleted", add: 0, del: 1 });
+    expect(files.find((file) => file.path === "a.txt")).toEqual({
+      path: "a.txt",
+      change: "modified",
+      add: 1,
+      del: 0,
+      index: null,
+      worktree: "modified",
+    });
+    expect(files.find((file) => file.path === "c.txt")).toEqual({
+      path: "c.txt",
+      change: "created",
+      add: 2,
+      del: 0,
+      index: null,
+      worktree: "created",
+    });
+    expect(files.find((file) => file.path === "b.txt")).toEqual({
+      path: "b.txt",
+      change: "deleted",
+      add: 0,
+      del: 1,
+      index: null,
+      worktree: "deleted",
+    });
   });
 
   it("returns a unified diff for a tracked change and a synthetic one for a new file", async () => {
@@ -99,7 +122,7 @@ describe("git.* RPCs", () => {
     writeFileSync(join(root, "x.txt"), "x");
     const { kernel, workspaceId } = await setupWorkspace(root);
     const status = await call(kernel, "git.status", { workspaceId });
-    expect(status.result).toEqual({ isRepo: false, branch: null, files: [] });
+    expect(status.result).toEqual({ isRepo: false, branch: null, ahead: 0, behind: 0, files: [] });
   });
 
   it("reports only paths inside a workspace nested in a repository", async () => {
@@ -116,7 +139,9 @@ describe("git.* RPCs", () => {
     writeFileSync(join(repo, "outside.txt"), "out\nmore\n");
 
     const status = await call(kernel, "git.status", { workspaceId });
-    expect(status.result.files).toEqual([{ path: "tracked.txt", change: "modified", add: 1, del: 0 }]);
+    expect(status.result.files).toEqual([
+      { path: "tracked.txt", change: "modified", add: 1, del: 0, index: null, worktree: "modified" },
+    ]);
 
     const diff = await call(kernel, "git.diff", { workspaceId, path: "tracked.txt" });
     expect(diff.result.diff).toContain("+two");
@@ -135,7 +160,9 @@ describe("git.* RPCs", () => {
     const status = await call(kernel, "git.status", { workspaceId });
     expect(status.result.isRepo).toBe(true);
     expect(status.result.branch).toBeNull();
-    expect(status.result.files).toEqual([{ path: "fresh.txt", change: "created", add: 3, del: 0 }]);
+    expect(status.result.files).toEqual([
+      { path: "fresh.txt", change: "created", add: 3, del: 0, index: null, worktree: "created" },
+    ]);
   });
 
   it("caps the read of a huge untracked file and says so in its patch", async () => {
@@ -147,7 +174,9 @@ describe("git.* RPCs", () => {
     const { kernel, workspaceId } = await setupWorkspace(root);
 
     const status = await call(kernel, "git.status", { workspaceId });
-    expect(status.result.files).toEqual([{ path: "big.log", change: "created", add: 1, del: 0 }]);
+    expect(status.result.files).toEqual([
+      { path: "big.log", change: "created", add: 1, del: 0, index: null, worktree: "created" },
+    ]);
 
     const diff = await call(kernel, "git.diff", { workspaceId, path: "big.log" });
     expect(diff.result.diff).toContain("@@ -0,0 +1,2 @@");
@@ -166,6 +195,8 @@ describe("git.* RPCs", () => {
       change: "deleted",
       add: 0,
       del: 1,
+      index: "deleted",
+      worktree: null,
     });
 
     const diff = await call(kernel, "git.diff", { workspaceId, path: "b.txt" });
@@ -179,7 +210,7 @@ describe("git.* RPCs", () => {
     const status = await call(kernel, "git.status", { workspaceId });
     const files = status.result.files as Array<{ path: string; change: string; add: number; del: number }>;
     expect(files.filter((file) => file.path === "renamed.txt")).toEqual([
-      { path: "renamed.txt", change: "modified", add: 0, del: 0 },
+      { path: "renamed.txt", change: "modified", add: 0, del: 0, index: "modified", worktree: null },
     ]);
     expect(files.find((file) => file.path === "a.txt")).toBeUndefined();
     expect(files.filter((file) => file.path === "renamed.txt")).toHaveLength(1);
@@ -196,5 +227,160 @@ describe("git.* RPCs", () => {
     const paths = (status.result.files as Array<{ path: string }>).map((file) => file.path);
     expect(paths).toContain("a.txt");
     expect(paths.some((path) => path === ".noir" || path.startsWith(".noir/"))).toBe(false);
+  });
+});
+
+/** A repository with one commit, no kernel: the mutation tests exercise the service itself. */
+function committedRepo(): string {
+  const root = tempDir();
+  writeFileSync(join(root, "a.txt"), "one\n");
+  writeFileSync(join(root, "b.txt"), "gone\n");
+  initRepo(root);
+  git(root, "add", ".");
+  git(root, "commit", "-q", "-m", "init");
+  return root;
+}
+
+function gitText(root: string, ...args: string[]): string {
+  return execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+}
+
+describe("git mutations", () => {
+  it("stages one path and reports both sides of a file that is staged and modified", async () => {
+    const root = committedRepo();
+    writeFileSync(join(root, "a.txt"), "one\ntwo\n");
+
+    const staged = await gitStage(root, ["a.txt"]);
+    const row = staged.files.find((file) => file.path === "a.txt");
+    expect(row?.index).toBe("modified");
+    expect(row?.worktree).toBeNull();
+
+    // Edited after staging: one row, both sides non-null.
+    writeFileSync(join(root, "a.txt"), "one\ntwo\nthree\n");
+    const both = await gitStatus(root);
+    const combined = both.files.find((file) => file.path === "a.txt");
+    expect(combined?.index).toBe("modified");
+    expect(combined?.worktree).toBe("modified");
+    expect(both.files.filter((file) => file.path === "a.txt")).toHaveLength(1);
+    expect(both.ahead).toBe(0);
+    expect(both.behind).toBe(0);
+  });
+
+  it("unstages on a repository with no commit yet", async () => {
+    const root = tempDir();
+    initRepo(root);
+    writeFileSync(join(root, "a.txt"), "one\n");
+    git(root, "add", "a.txt");
+
+    const after = await gitUnstage(root, ["a.txt"]);
+    const row = after.files.find((file) => file.path === "a.txt");
+    expect(row?.index).toBeNull();
+    expect(row?.worktree).toBe("created");
+    expect(gitText(root, "ls-files")).toBe("");
+  });
+
+  it("refuses an empty message and a clean index", async () => {
+    const root = committedRepo();
+
+    await expect(gitCommit(root, "   ")).rejects.toThrow(/commit message/i);
+    const empty = await gitCommit(root, "wip").catch((error: unknown) => error);
+    expect(empty).toMatchObject({ code: ErrorCodes.conflict, message: "Nothing staged to commit" });
+  });
+
+  it("commits what is staged and leaves the rest alone", async () => {
+    const root = committedRepo();
+    writeFileSync(join(root, "a.txt"), "one\ntwo\n");
+    git(root, "add", "a.txt");
+    writeFileSync(join(root, "b.txt"), "gone\nmore\n");
+
+    const result = await gitCommit(root, "  feat: one  ");
+    expect(result.summary).toBe("feat: one");
+    expect(result.sha).toBe(gitText(root, "rev-parse", "HEAD"));
+    expect(gitText(root, "log", "-1", "--pretty=%s")).toBe("feat: one");
+
+    const b = result.status.files.find((file) => file.path === "b.txt");
+    expect(b?.index).toBeNull();
+    expect(b?.worktree).toBe("modified");
+    expect(result.status.files.some((file) => file.path === "a.txt")).toBe(false);
+  });
+
+  it("serializes two commits fired together on one workspace", async () => {
+    const root = committedRepo();
+    writeFileSync(join(root, "a.txt"), "one\ntwo\n");
+    git(root, "add", "a.txt");
+    const before = Number(gitText(root, "rev-list", "--count", "HEAD"));
+
+    const first = gitCommit(root, "first");
+    const second = gitCommit(root, "second");
+    const done = await first;
+    // The second waited for the first, so it judges the index the first left behind and refuses.
+    await expect(second).rejects.toThrow(/Nothing staged to commit/);
+    expect(done.summary).toBe("first");
+    expect(Number(gitText(root, "rev-list", "--count", "HEAD"))).toBe(before + 1);
+    expect(gitText(root, "log", "-1", "--pretty=%s")).toBe("first");
+  });
+
+  it("reports ahead and behind against a real upstream", async () => {
+    const work = tempDir();
+    const origin = join(work, "origin.git");
+    git(work, "init", "-q", "--bare", origin);
+    const root = tempDir();
+    initRepo(root);
+    writeFileSync(join(root, "a.txt"), "one\n");
+    git(root, "add", ".");
+    git(root, "commit", "-q", "-m", "init");
+    git(root, "remote", "add", "origin", origin);
+    git(root, "push", "-q", "-u", "origin", "HEAD");
+    for (const subject of ["two", "three"]) {
+      writeFileSync(join(root, "a.txt"), `${subject}\n`);
+      git(root, "add", ".");
+      git(root, "commit", "-q", "-m", subject);
+    }
+
+    const ahead = await gitStatus(root);
+    expect(ahead.ahead).toBe(2);
+    expect(ahead.behind).toBe(0);
+
+    // One commit lands upstream from a second clone; after a fetch this branch is 2 and 1.
+    const other = tempDir();
+    git(work, "clone", "-q", origin, other);
+    git(other, "config", "user.email", "t@example.com");
+    git(other, "config", "user.name", "T");
+    writeFileSync(join(other, "upstream.txt"), "x\n");
+    git(other, "add", ".");
+    git(other, "commit", "-q", "-m", "upstream");
+    git(other, "push", "-q", "origin", "HEAD");
+    git(root, "fetch", "-q", "origin");
+
+    const diverged = await gitStatus(root);
+    expect(diverged.ahead).toBe(2);
+    expect(diverged.behind).toBe(1);
+  });
+});
+
+describe("git mutations over RPC", () => {
+  it("stages, unstages and commits through the dispatch table", async () => {
+    const { kernel, workspaceId, root } = await setupRepo();
+    writeFileSync(join(root, "a.txt"), "one\ntwo\n");
+
+    const staged = await call(kernel, "git.stage", { workspaceId, paths: ["a.txt"] });
+    expect(staged.result.files.find((file: { path: string }) => file.path === "a.txt").index).toBe("modified");
+
+    const committed = await call(kernel, "git.commit", { workspaceId, message: "rpc commit" });
+    expect(committed.result.summary).toBe("rpc commit");
+    expect(committed.result.status.files).toEqual([]);
+
+    writeFileSync(join(root, "a.txt"), "one\nthree\n");
+    git(root, "add", "a.txt");
+    const unstaged = await call(kernel, "git.unstage", { workspaceId, paths: ["a.txt"] });
+    expect(unstaged.result.files.find((file: { path: string }) => file.path === "a.txt").index).toBeNull();
+  });
+
+  it("refuses a path outside the workspace", async () => {
+    const { kernel, workspaceId } = await setupRepo();
+    await expect(call(kernel, "git.stage", { workspaceId, paths: ["../escape.txt"] })).rejects.toThrow(
+      /Path must not contain/,
+    );
+    await expect(call(kernel, "git.commit", { workspaceId, message: "" })).rejects.toThrow(/commit message/i);
   });
 });

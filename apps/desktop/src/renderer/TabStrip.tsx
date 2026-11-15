@@ -1,3 +1,4 @@
+import { menuForShortcut, useContextMenu, type MenuItem } from "./ContextMenu.js";
 import type { Tab } from "./tabs.js";
 
 export interface TabStripProps {
@@ -8,6 +9,9 @@ export interface TabStripProps {
   /** Session titles by session id; a missing entry renders `Untitled chat`. */
   titles: Readonly<Record<string, string>>;
   dirty?: ((path: string) => boolean) | undefined;
+  /** Close every other tab; omitted where the strip cannot own that action. */
+  onCloseOthers?: ((tabId: string) => void) | undefined;
+  onCloseRight?: ((tabId: string) => void) | undefined;
 }
 
 function labelFor(tab: Tab, titles: Readonly<Record<string, string>>, dirty?: (path: string) => boolean): string {
@@ -20,15 +24,47 @@ function labelFor(tab: Tab, titles: Readonly<Record<string, string>>, dirty?: (p
   return tab.kind === "editor" && dirty?.(tab.path) === true ? `${text} •` : text;
 }
 
-export function TabStrip({ tabs, activeId, onSelect, onClose, titles, dirty }: TabStripProps) {
+export function TabStrip({ tabs, activeId, onSelect, onClose, titles, dirty, onCloseOthers, onCloseRight }: TabStripProps) {
+  const menu = useContextMenu();
   if (tabs.length === 0) return null;
   return (
     <div className="tabs" role="tablist" aria-label="Open tabs">
-      {tabs.map((tab) => {
+      {tabs.map((tab, index) => {
         const text = labelFor(tab, titles, dirty);
         const active = tab.id === activeId;
+        const items: MenuItem[] = [
+          { kind: "item", id: "close", label: "Close", commandId: "close-tab", run: () => onClose(tab.id) },
+          ...(onCloseOthers === undefined
+            ? []
+            : [{ kind: "item" as const, id: "close-others", label: "Close others", run: () => onCloseOthers(tab.id) }]),
+          ...(onCloseRight === undefined
+            ? []
+            : [
+                {
+                  kind: "item" as const,
+                  id: "close-right",
+                  label: "Close to the right",
+                  ...(index === tabs.length - 1 ? { disabled: "Nothing to the right" } : {}),
+                  run: () => onCloseRight(tab.id),
+                },
+              ]),
+        ];
         return (
-          <div key={tab.id} className="tab" data-active={active} data-kind={tab.kind}>
+          <div
+            key={tab.id}
+            className="tab"
+            data-active={active}
+            data-kind={tab.kind}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              menu.open(items, { x: event.clientX, y: event.clientY }, { element: event.currentTarget });
+            }}
+            onKeyDown={(event) => {
+              if (menuForShortcut(event) === undefined) return;
+              event.preventDefault();
+              menu.openFor(items, { element: event.currentTarget });
+            }}
+          >
             <button
               type="button"
               role="tab"

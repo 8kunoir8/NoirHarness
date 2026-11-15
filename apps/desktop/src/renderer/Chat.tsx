@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { menuForShortcut, useContextMenu, type MenuItem } from "./ContextMenu.js";
 import {
   PayloadSchemas,
   SESSION_STATUS_FACTS,
@@ -12,7 +13,7 @@ import {
 import type { RequestFn } from "./api.js";
 import { ChatHeader, type DiffStats } from "./ChatHeader.js";
 import { Composer, type ComposerStatus } from "./Composer.js";
-import { errorMessage, transcriptRows, type SessionEvents } from "./events.js";
+import { errorMessage, transcriptRows, type ChatMessage, type SessionEvents } from "./events.js";
 import { MarkdownContent } from "./MarkdownContent.js";
 import { previewKind } from "./preview/kind.js";
 import { RewindDialog } from "./RewindDialog.js";
@@ -34,6 +35,10 @@ export function Chat({
   diffStats,
   onSessionChange,
   onPreview,
+  onFork,
+  quote,
+  onQuoteApplied,
+  onOpenSource,
 }: {
   session: SessionView;
   models: ModelView[];
@@ -43,9 +48,26 @@ export function Chat({
   onSessionChange?: (() => void) | undefined;
   /** Opens a referenced previewable file in the artifact tab. */
   onPreview?: ((path: string) => void) | undefined;
+  /** Forks this chat at a message's event seq; omitted where forking is unavailable. */
+  onFork?: ((upToSeq: number) => void) | undefined;
+  /** Text another surface wants in the composer, consumed once. */
+  quote?: string | undefined;
+  onQuoteApplied?: (() => void) | undefined;
+  /** Opens the Source page for this chat's workspace; omitted where there is no such page. */
+  onOpenSource?: (() => void) | undefined;
 }) {
+  const menu = useContextMenu();
   const { state, appendUser } = events;
   const [draft, setDraft] = useState("");
+
+  // Another surface's text lands once: the parent clears it, so a re-render cannot duplicate it.
+  const prompt = useRef<HTMLTextAreaElement | null>(null);
+  useEffect(() => {
+    if (quote === undefined) return;
+    setDraft((current) => (current.trim() === "" ? quote : `${current}\n\n${quote}`));
+    prompt.current?.focus();
+    onQuoteApplied?.();
+  }, [quote, onQuoteApplied]);
   const [sending, setSending] = useState(false);
   const [queuedTurnId, setQueuedTurnId] = useState<string | undefined>(undefined);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
@@ -196,6 +218,63 @@ export function Chat({
     openCheckpoint(entry, "rewind");
   }
 
+  /** Adds text to the composer and puts the caret in it; nothing is sent. */
+  function fillComposer(text: string): void {
+    setDraft((current) => (current.trim() === "" ? text : `${current}\n\n${text}`));
+    prompt.current?.focus();
+  }
+
+  /** One list for the pointer and the keyboard, so both offer the same actions on a message. */
+  function messageItems(message: ChatMessage, turnId: string | undefined, canRewind: boolean): MenuItem[] {
+    const text = message.blocks
+      .flatMap((block) => (block.kind === "text" ? [block.text] : []))
+      .join("\n\n");
+    const seq = message.seq;
+    // The fence names where the text came from, so a pasted quote is traceable after the fact.
+    const source = `${session.title === "" ? "Untitled chat" : session.title} turn ${turnId ?? String(seq ?? "?")}`;
+    const quoted = ["```chat " + source, text.trim(), "```"].join("\n");
+    const items: MenuItem[] = [
+      {
+        kind: "item",
+        id: "copy-text",
+        label: "Copy text",
+        ...(text.trim() === "" ? { disabled: "Nothing to copy" } : {}),
+        run: () => void navigator.clipboard?.writeText(text).catch(() => undefined),
+      },
+      {
+        kind: "item",
+        id: "quote-in-composer",
+        label: "Quote in composer",
+        ...(text.trim() === "" ? { disabled: "Nothing to quote" } : {}),
+        run: () => fillComposer(quoted),
+      },
+    ];
+    if (onFork !== undefined) {
+      items.push({ kind: "separator" });
+      items.push({
+        kind: "item",
+        id: "fork-from-here",
+        label: "Fork from here",
+        ...(seq === undefined ? { disabled: "This message has no turn to cut from" } : {}),
+        run: () => {
+          if (seq !== undefined) onFork(seq);
+        },
+      });
+    }
+    if (message.role === "user") {
+      items.push({
+        kind: "item",
+        id: "rewind",
+        label: "Rewind to before this prompt",
+        ...(canRewind ? {} : { disabled: "No checkpoint for this turn" }),
+        run: () => {
+          if (turnId !== undefined) beginRewind(turnId);
+        },
+      });
+    }
+    return items;
+  }
+
   function closeRewind(): void {
     planTarget.current = undefined;
     setRewind(undefined);
@@ -289,6 +368,7 @@ export function Chat({
         onInterrupt={() => void interrupt()}
         onModelChange={(modelId) => void changeModel(modelId)}
         onRename={(next) => void rename(next)}
+        {...(onOpenSource === undefined ? {} : { onOpenSource })}
       />
 
       {state.skillsLoaded.length === 0 ? null : (
@@ -340,6 +420,20 @@ export function Chat({
               key={message.id}
               className={`message message-${message.role}`}
               data-testid={message.role === "assistant" ? "message-assistant" : "message-user"}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                menu.open(
+                  messageItems(message, turnId, canRewind),
+                  { x: event.clientX, y: event.clientY },
+                  { element: event.currentTarget },
+                );
+              }}
+              onKeyDown={(event) => {
+                // A chord works from the message itself or from its own controls.
+                if (menuForShortcut(event) === undefined) return;
+                event.preventDefault();
+                menu.openFor(messageItems(message, turnId, canRewind), { element: event.currentTarget });
+              }}
             >
               <strong>{message.role === "user" ? "You" : "Assistant"}</strong>
               {canRewind ? (
@@ -440,6 +534,7 @@ export function Chat({
         onQueue={() => void submit()}
         onInterrupt={() => void interrupt()}
         onCancelQueued={() => void cancelQueued()}
+        inputRef={prompt}
       />
     </section>
   );

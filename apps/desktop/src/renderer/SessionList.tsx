@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { SESSION_STATUS_FACTS, type ModelView, type SessionView } from "@noir/protocol";
+import { menuForShortcut, useContextMenu, type MenuItem } from "./ContextMenu.js";
 
 export type SessionFilter = "all" | "needs" | "working" | "unread" | "done";
 
@@ -165,6 +166,29 @@ export interface SessionListProps {
   now?: number;
 }
 
+/** One list for the pointer and the keyboard, so the two can never offer different actions. */
+function menuItems(label: string, actions: {
+  rename: (() => void) | undefined;
+  remove: (() => void) | undefined;
+}): MenuItem[] {
+  const items: MenuItem[] = [];
+  if (actions.rename !== undefined) {
+    items.push({ kind: "item", id: "rename", label: "Rename", run: actions.rename });
+  }
+  items.push({
+    kind: "item",
+    id: "copy-title",
+    label: "Copy title",
+    run: () => void navigator.clipboard?.writeText(label).catch(() => undefined),
+  });
+  if (actions.remove !== undefined) {
+    // No arming step here: opening a menu and choosing Delete is already two deliberate acts.
+    items.push({ kind: "separator" });
+    items.push({ kind: "item", id: "delete", label: "Delete chat", danger: true, run: actions.remove });
+  }
+  return items;
+}
+
 export function SessionList({
   sessions,
   models,
@@ -188,6 +212,7 @@ export function SessionList({
   // One row at a time can be renamed, and the draft lives with the id so a stale input cannot
   // commit another row's text.
   const [editing, setEditing] = useState<{ id: string; draft: string } | undefined>(undefined);
+  const menu = useContextMenu();
   const needle = query.trim().toLowerCase();
   const visible = sortSessions(sessions).filter(
     (session) =>
@@ -231,8 +256,31 @@ export function SessionList({
                 const label = session.title === "" ? "Untitled chat" : session.title;
                 const meta = modelLabel(session, models);
                 const isArmed = armed === session.id;
+                const items = menuItems(label, {
+                  rename:
+                    onRename === undefined ? undefined : () => setEditing({ id: session.id, draft: session.title }),
+                  remove: onDelete === undefined ? undefined : () => onDelete(session),
+                });
                 return (
-                  <li key={session.id} className="session-item">
+                  <li
+                    key={session.id}
+                    className="session-item"
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      const row = event.currentTarget.querySelector(".session-row");
+                      menu.open(
+                        items,
+                        { x: event.clientX, y: event.clientY },
+                        { element: row instanceof HTMLElement ? row : event.currentTarget },
+                      );
+                    }}
+                    onKeyDown={(event) => {
+                      // Bubbled from the row button or its rename field: the row owns the menu either way.
+                      if (menuForShortcut(event) === undefined) return;
+                      event.preventDefault();
+                      menu.openFor(items, { element: event.currentTarget });
+                    }}
+                  >
                     {editing?.id === session.id ? (
                       // A button cannot hold an input, so the editing row replaces the row button
                       // rather than nesting inside it. Enter commits; Esc abandons.

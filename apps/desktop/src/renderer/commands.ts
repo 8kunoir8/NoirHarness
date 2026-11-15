@@ -3,20 +3,57 @@ export interface Shortcut {
   /** Command/Control on every platform; the shell is Windows-first but must not fight macOS. */
   mod?: boolean;
   shift?: boolean;
+  /** Alt/Option. Compared exactly, so `Ctrl+Alt+X` never answers a `Ctrl+X` binding. */
+  alt?: boolean;
 }
 
-export function shortcutLabel(shortcut: Shortcut): string {
-  const mod = shortcut.mod === true ? "⌘" : "";
-  const shift = shortcut.shift === true ? "⇧" : "";
-  return `${mod}${shift}${shortcut.key.toUpperCase()}`;
+/** Read once: the renderer never changes platforms mid-session, and a test passes it explicitly. */
+const DEFAULT_PLATFORM = typeof navigator === "undefined" ? "win32" : navigator.platform;
+
+/** Canonical form for comparison and collision checks; `K` and `k` are one chord. */
+export function shortcutKey(shortcut: Shortcut): string {
+  const parts = [
+    shortcut.mod === true ? "mod" : "",
+    shortcut.alt === true ? "alt" : "",
+    shortcut.shift === true ? "shift" : "",
+    shortcut.key.toLowerCase(),
+  ].filter((part) => part !== "");
+  return parts.join("+");
 }
+
+/**
+ * `Ctrl+Shift+K` on the platform this app ships for, `⌘⇧K` on macOS. The glyph form is a macOS
+ * convention: printing it on Windows taught a key combination that does not exist there.
+ */
+export function shortcutLabel(shortcut: Shortcut, platform: string = DEFAULT_PLATFORM): string {
+  const key = shortcut.key.toUpperCase();
+  if (platform.startsWith("darwin") || platform.startsWith("Mac")) {
+    return `${shortcut.mod === true ? "⌘" : ""}${shortcut.alt === true ? "⌥" : ""}${
+      shortcut.shift === true ? "⇧" : ""
+    }${key}`;
+  }
+  const parts = [
+    shortcut.mod === true ? "Ctrl" : "",
+    shortcut.alt === true ? "Alt" : "",
+    shortcut.shift === true ? "Shift" : "",
+    key,
+  ].filter((part) => part !== "");
+  return parts.join("+");
+}
+
+/** A chord on a digit: the only keys whose `key` shifts away from the character it was typed as. */
+const DIGIT = /^[0-9]$/;
 
 /** Compares a keyboard event with a shortcut. Keys are matched case-insensitively by `key`. */
 export function matchesShortcut(event: KeyboardEvent, shortcut: Shortcut): boolean {
-  if (event.key.toLowerCase() !== shortcut.key.toLowerCase()) return false;
+  // `Shift+1` reports `!` as `key` on a US layout, so a chord that names a digit falls back to the
+  // physical key; without that, every shifted-digit shortcut is dead.
+  const named = event.key.toLowerCase() === shortcut.key.toLowerCase();
+  if (!named && !(DIGIT.test(shortcut.key) && event.code === `Digit${shortcut.key}`)) return false;
   const mod = event.metaKey || event.ctrlKey;
   if (mod !== (shortcut.mod === true)) return false;
-  return (event.shiftKey === true) === (shortcut.shift === true);
+  if ((event.shiftKey === true) !== (shortcut.shift === true)) return false;
+  return (event.altKey === true) === (shortcut.alt === true);
 }
 
 export interface Command {

@@ -1,5 +1,6 @@
 import { appendFileSync } from "node:fs";
-import { join } from "node:path";
+import { stat } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { app, BrowserWindow, Menu, Notification, Tray, dialog, ipcMain, nativeImage, shell, type IpcMainInvokeEvent } from "electron";
 import { KernelEvents } from "./kernelEvents.js";
 import { hostKernel, probeHealth, type HostedKernel } from "./kernelHost.js";
@@ -204,7 +205,7 @@ if (!app.requestSingleInstanceLock()) {
 
   const startKernel = (): Promise<HostedKernel> =>
     hostKernel(
-      { dataDir, kernelEntry, nodeBin, webRoot: rendererRoot },
+      { dataDir, kernelEntry, nodeBin, webRoot: rendererRoot, appVersion: app.getVersion() },
       {
         promptBusy: async (live) => {
           // The only question the daemon ever asks: replacing an idle build is silent.
@@ -262,7 +263,7 @@ if (!app.requestSingleInstanceLock()) {
     supervisor.start();
     ipcMain.handle("kernel:info", () => {
       if (hosted === undefined) throw new Error("Kernel did not start");
-      return { port: hosted.port, token: hosted.token, buildMatches: hosted.buildMatches, daemon: hosted.daemon };
+      return { port: hosted.port, token: hosted.token, buildMatches: hosted.buildMatches, daemon: hosted.daemon, buildId: hosted.buildId };
     });
     // The renderer never touches Electron directly; only these protocols may leave the app.
     ipcMain.handle("shell:openExternal", async (_event, raw: unknown) => {
@@ -275,6 +276,19 @@ if (!app.requestSingleInstanceLock()) {
       }
       if (!["http:", "https:", "mailto:"].includes(url.protocol)) throw new Error("blocked url");
       await shell.openExternal(url.toString());
+    });
+    // A reveal names a workspace root plus a relative path; the join and the escape check happen
+    // here so the page cannot hand the shell an absolute path of its own choosing.
+    ipcMain.handle("shell:revealInFolder", async (_event, rawRoot: unknown, rawPath: unknown) => {
+      if (typeof rawRoot !== "string" || typeof rawPath !== "string") throw new Error("invalid path");
+      const root = resolve(rawRoot);
+      const target = resolve(root, rawPath);
+      const step = relative(root, target);
+      if (step === "" || step.startsWith("..") || isAbsolute(step)) throw new Error("path leaves the workspace");
+      await stat(target).catch(() => {
+        throw new Error("path not found");
+      });
+      shell.showItemInFolder(target);
     });
     // Adding a project is a directory choice, so the OS picker is the honest control: the page
     // cannot enumerate the disk, and a typed path is a guess the kernel then has to reject.

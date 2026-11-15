@@ -58,7 +58,7 @@ describe("App file-event refresh", () => {
     appApi.request.mockImplementation(async (method: string): Promise<unknown> => {
       switch (method) {
         case "system.health":
-          return { status: "ok", pid: 1, engineDir: "engine" };
+          return { status: "ok", pid: 1, engineDir: "engine", version: "0.1.0" };
         case "project.list":
           return { projects: [] };
         case "workspace.list":

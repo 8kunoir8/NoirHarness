@@ -1365,6 +1365,159 @@ button.diff-gutter:hover, button.diff-gutter:focus-visible { color: var(--accent
 .file-tree li[data-depth="5"] { padding-left: 60px; }
 .file-tree li[data-depth="6"] { padding-left: 72px; }
 
+/* --- context menu --- */
+
+.context-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 180px;
+  max-width: 320px;
+  padding: 4px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 18%);
+}
+
+.context-menu-item {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.82rem;
+  text-align: left;
+  cursor: default;
+}
+
+.context-menu-item.is-active { background: var(--surface-sunken); }
+.context-menu-item[aria-disabled="true"] { color: var(--muted); }
+.context-menu-item[data-danger="true"] { color: var(--danger); }
+.context-menu-item:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.context-menu-hint { color: var(--muted); font-family: var(--font-mono); font-size: 0.76rem; }
+.context-menu-separator { height: 1px; margin: 4px 6px; background: var(--border); }
+
+/* --- source control --- */
+
+/* The branch reads as data, so it is a quiet button rather than an action-coloured one. */
+.topbar-branch {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline dotted transparent;
+  cursor: pointer;
+}
+
+.topbar-branch:hover { text-decoration-color: currentColor; }
+
+button.chat-diff {
+  padding: 2px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  cursor: pointer;
+}
+
+button.chat-diff:hover { border-color: var(--border); background: var(--surface-sunken); }
+
+.source {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 20px;
+  overflow: auto;
+  height: 100%;
+}
+
+.source-header {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.source-header h2 {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+.source-branch { color: var(--muted); font-family: var(--font-mono); font-size: 0.82rem; }
+.source-divergence { color: var(--muted); font-family: var(--font-mono); font-size: 0.82rem; }
+.source-header .source-counts { margin-left: auto; }
+.source-counts { display: inline-flex; gap: 4px; font-family: var(--font-mono); font-size: 0.8rem; }
+.source .diff-add { color: var(--success); }
+.source .diff-del { color: var(--danger); }
+.source-busy, .source-note { margin: 0; color: var(--muted); font-size: 0.8rem; }
+.source-error { margin: 0; color: var(--danger); font-size: 0.82rem; }
+.source-committed { margin: 0; color: var(--success); font-size: 0.82rem; }
+
+.source-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+}
+
+.source-group-header {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.source-group-header h3 { margin: 0; font-size: 0.8rem; letter-spacing: 0.04em; text-transform: uppercase; }
+.source-group-header button { margin-left: auto; }
+.source-group .empty { margin: 0; }
+
+.source-list { list-style: none; margin: 0; padding: 0; }
+
+.source-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 2px 0;
+}
+
+.source-path {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.source-path:hover { text-decoration: underline; }
+
+.source-commit { display: flex; gap: 10px; align-items: flex-end; }
+.source-commit label { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; color: var(--muted); }
+.source-commit textarea {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85rem;
+  resize: vertical;
+}
+
 /* --- responsive --- */
 
 /*

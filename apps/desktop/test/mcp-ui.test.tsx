@@ -49,7 +49,7 @@ function setupRequest(overrides: Partial<Record<string, (params?: unknown) => un
       case "model.list":
         return { models: [] };
       case "system.health":
-        return { status: "ok", pid: 1, engineDir: "C:/data/engine" };
+        return { status: "ok", pid: 1, engineDir: "C:/data/engine", version: "0.1.0" };
       case "mcp.list":
         return { servers: [] };
       case "remote.status":

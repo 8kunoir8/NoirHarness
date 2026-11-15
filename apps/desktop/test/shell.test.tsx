@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { ModelView, SessionView } from "@noir/protocol";
@@ -10,6 +10,7 @@ import {
   type ReadState,
   type SessionFilter,
 } from "../src/renderer/SessionList.js";
+import { ContextMenuProvider } from "../src/renderer/ContextMenu.js";
 
 const NOW = new Date(2026, 10, 10, 12, 0, 0).getTime();
 
@@ -175,6 +176,62 @@ describe("SessionList", () => {
     // Escape closes the field: the pencil is back and the title is unchanged.
     expect(screen.getByRole("button", { name: "Rename Refactor kernel" })).toBeTruthy();
     expect(screen.queryByRole("textbox", { name: "Rename Refactor kernel" })).toBeNull();
+  });
+});
+
+describe("SessionList menu", () => {
+  function renderMenuList(
+    handlers: { onRename?: (s: SessionView, title: string) => void; onDelete?: (s: SessionView) => void } = {},
+  ) {
+    render(
+      <ContextMenuProvider>
+        <SessionList
+          sessions={[session("a", { title: "Refactor kernel" })]}
+          models={[model]}
+          read={{}}
+          query=""
+          filter="all"
+          onQueryChange={() => undefined}
+          onSelect={vi.fn()}
+          {...(handlers.onDelete === undefined ? {} : { onDelete: handlers.onDelete })}
+          {...(handlers.onRename === undefined ? {} : { onRename: handlers.onRename })}
+          onNewChat={vi.fn()}
+          canCreate
+          now={NOW}
+        />
+      </ContextMenuProvider>,
+    );
+  }
+
+  it("offers rename, copy and delete on a chat row", async () => {
+    const user = userEvent.setup();
+    const onDelete = vi.fn();
+    renderMenuList({ onRename: vi.fn(), onDelete });
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: /^Refactor kernel/ }));
+    const menu = screen.getByRole("menu");
+    expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+      "Rename",
+      "Copy title",
+      "Delete chat",
+    ]);
+
+    await user.click(within(menu).getByRole("menuitem", { name: "Rename" }));
+    expect(screen.getByRole("textbox", { name: "Rename Refactor kernel" })).toBeTruthy();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("textbox", { name: "Rename Refactor kernel" })).toBeNull();
+
+    // The row is a button again, and Delete from the menu needs no second arming click.
+    fireEvent.contextMenu(screen.getByRole("button", { name: /^Refactor kernel/ }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete chat" }));
+    expect(onDelete).toHaveBeenCalledWith(expect.objectContaining({ id: "a" }));
+  });
+
+  it("lists only what the list can do, and opens from the keyboard", () => {
+    renderMenuList();
+    fireEvent.keyDown(screen.getByRole("button", { name: /^Refactor kernel/ }), { key: "F10", shiftKey: true });
+
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Copy title"]);
   });
 });
 

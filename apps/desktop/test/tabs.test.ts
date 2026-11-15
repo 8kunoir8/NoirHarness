@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   activateTab,
   chatTab,
+  closeOthers,
+  closeRightOf,
   closeTab,
   diffTab,
   editorTab,
@@ -165,6 +167,43 @@ describe("tabs", () => {
       workspaceId: "w1",
     });
     expect(pruneChatTabs(state, new Set(["live", "dead"]))).toBe(state);
+  });
+
+
+  it("closeOthers keeps one tab and closeRightOf drops the tail", () => {
+    const state: TabsState = {
+      tabs: [chatTab("s1"), editorTab("a.ts"), diffTab("b.ts"), previewTab("c.md")],
+      active: "diff:b.ts",
+      workspaceId: "w1",
+    };
+
+    expect(closeRightOf(state, "editor:a.ts")).toEqual({
+      tabs: [chatTab("s1"), editorTab("a.ts")],
+      // The active tab was dropped, so the clicked one takes the view.
+      active: "editor:a.ts",
+      workspaceId: "w1",
+    });
+    // Nothing to the right and an unknown id both leave the state alone.
+    expect(closeRightOf(state, "preview:c.md")).toBe(state);
+    expect(closeRightOf(state, "nope")).toBe(state);
+    expect(closeRightOf(state, "editor:a.ts")).not.toBe(state);
+
+    expect(closeOthers(state, "diff:b.ts")).toEqual({
+      tabs: [diffTab("b.ts")],
+      active: "diff:b.ts",
+      workspaceId: "w1",
+    });
+    expect(closeOthers(state, "nope")).toBe(state);
+  });
+
+  it("closeRightOf keeps a surviving active tab and falls back to the clicked one", () => {
+    const state: TabsState = {
+      tabs: [chatTab("s1"), editorTab("a.ts"), diffTab("b.ts")],
+      active: "editor:a.ts",
+      workspaceId: "w1",
+    };
+    expect(closeRightOf(state, "editor:a.ts").active).toBe("editor:a.ts");
+    expect(closeRightOf(state, "chat:s1").active).toBe("chat:s1");
   });
 
   it("pins the storage key", () => {
