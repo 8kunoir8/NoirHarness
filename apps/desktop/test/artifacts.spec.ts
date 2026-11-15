@@ -36,6 +36,14 @@ test("previews markdown, CSV, and PDF artifacts, then restores and reports a del
     await bootstrap(page, mock, harness.workspacePath);
     await showFiles(page);
 
+    // The row's own click opens the source in the editor; only the trailing control previews. A
+    // stretched control used to sit under the middle of the row and quietly win that click.
+    await page.getByRole("treeitem").filter({ hasText: "notes.md" }).click();
+    await expect(page.locator(".monaco-editor .view-lines")).toContainText("# Artifact notes", { timeout: 20_000 });
+    await expect(page.locator(".artifact-preview")).toHaveCount(0);
+    // Close it again: the restore below asserts one tab per artifact name.
+    await page.keyboard.press("ControlOrMeta+w");
+
     // Markdown: GFM table renders, and every hostile construct is inert rather than executed.
     await preview(page, "notes.md");
     const markdown = page.getByRole("region", { name: "Preview notes.md", exact: true });

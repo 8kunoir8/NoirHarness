@@ -1340,6 +1340,7 @@ button.diff-gutter:hover, button.diff-gutter:focus-visible { color: var(--accent
 }
 .file-tree ul { list-style: none; margin: 0; padding: 0; overflow: auto; min-height: 0; }
 .file-tree li {
+  position: relative;
   display: flex;
   gap: 6px;
   align-items: baseline;
@@ -1349,7 +1350,18 @@ button.diff-gutter:hover, button.diff-gutter:focus-visible { color: var(--accent
   font-size: 12px;
   cursor: pointer;
 }
-.file-tree .file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+/* The name owns the row's free space, so a click right of it still opens the file, not the preview. */
+.file-tree .file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+/* Preview waits at the end of the row for hover or focus, and never takes a click meant for the row. */
+.file-tree li > .link {
+  flex: none;
+  opacity: 0;
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+.file-tree li:hover > .link,
+.file-tree li:focus-within > .link { opacity: 1; }
+.file-tree li[aria-selected="true"] > .link { color: inherit; }
 .file-tree-alert {
   margin: 0;
   display: flex;
