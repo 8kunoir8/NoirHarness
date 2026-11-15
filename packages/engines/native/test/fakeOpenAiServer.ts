@@ -34,65 +34,68 @@ export async function startFakeOpenAiServer(script: ScriptStep[]): Promise<FakeO
   const requests: FakeOpenAiServer["requests"] = [];
   let next = 0;
 
-  const server = createServer(async (req, res) => {
-    const raw = await readBody(req);
-    requests.push({
-      path: req.url ?? "",
-      body: raw === "" ? {} : (JSON.parse(raw) as Record<string, unknown>),
-    });
-    const step = script[next++] ?? { finish: "stop" };
+  // `createServer` ignores the handler's promise; this fake must fail the test rather than the process.
+  const server = createServer((req, res) => {
+    void (async (): Promise<void> => {
+      const raw = await readBody(req);
+      requests.push({
+        path: req.url ?? "",
+        body: raw === "" ? {} : (JSON.parse(raw) as Record<string, unknown>),
+      });
+      const step = script[next++] ?? { finish: "stop" };
 
-    res.writeHead(200, {
-      "content-type": "text/event-stream",
-      "cache-control": "no-cache",
-      connection: "keep-alive",
-    });
-    // A client that gave up mid-stream closes the socket; a late write must not fault the server.
-    res.on("error", () => undefined);
-    const send = (payload: unknown): void => {
-      if (res.writableEnded || res.destroyed) return;
-      res.write(`data: ${JSON.stringify(payload)}\n\n`);
-    };
+      res.writeHead(200, {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+        connection: "keep-alive",
+      });
+      // A client that gave up mid-stream closes the socket; a late write must not fault the server.
+      res.on("error", () => undefined);
+      const send = (payload: unknown): void => {
+        if (res.writableEnded || res.destroyed) return;
+        res.write(`data: ${JSON.stringify(payload)}\n\n`);
+      };
 
-    if (step.delayMs !== undefined) {
-      const delayed = Promise.withResolvers<void>();
-      setTimeout(delayed.resolve, step.delayMs);
-      await delayed.promise;
-    }
-    if (step.text !== undefined && step.text !== "") {
-      send({ choices: [{ delta: { content: step.text } }] });
-    }
-    if (step.toolCall !== undefined) {
-      const { id, name, args } = step.toolCall;
-      const half = Math.ceil(args.length / 2);
+      if (step.delayMs !== undefined) {
+        const delayed = Promise.withResolvers<void>();
+        setTimeout(delayed.resolve, step.delayMs);
+        await delayed.promise;
+      }
+      if (step.text !== undefined && step.text !== "") {
+        send({ choices: [{ delta: { content: step.text } }] });
+      }
+      if (step.toolCall !== undefined) {
+        const { id, name, args } = step.toolCall;
+        const half = Math.ceil(args.length / 2);
+        send({
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  { index: 0, id, type: "function", function: { name, arguments: args.slice(0, half) } },
+                ],
+              },
+            },
+          ],
+        });
+        send({
+          choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: args.slice(half) } }] } }],
+        });
+      }
       send({
         choices: [
           {
-            delta: {
-              tool_calls: [
-                { index: 0, id, type: "function", function: { name, arguments: args.slice(0, half) } },
-              ],
-            },
+            delta: {},
+            finish_reason: step.finish ?? (step.toolCall === undefined ? "stop" : "tool_calls"),
           },
         ],
       });
-      send({
-        choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: args.slice(half) } }] } }],
-      });
-    }
-    send({
-      choices: [
-        {
-          delta: {},
-          finish_reason: step.finish ?? (step.toolCall === undefined ? "stop" : "tool_calls"),
-        },
-      ],
-    });
-    if (step.omitUsage !== true) {
-      send({ choices: [], usage: { prompt_tokens: 12, completion_tokens: 4 } });
-    }
-    res.write("data: [DONE]\n\n");
-    res.end();
+      if (step.omitUsage !== true) {
+        send({ choices: [], usage: { prompt_tokens: 12, completion_tokens: 4 } });
+      }
+      res.write("data: [DONE]\n\n");
+      res.end();
+    })();
   });
 
   server.listen(0, "127.0.0.1");

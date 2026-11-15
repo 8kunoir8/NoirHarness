@@ -31,7 +31,7 @@ test("a provider survives an app restart", async () => {
       await providersRegion.getByLabel("Name", { exact: true }).fill("Persisted");
       await providersRegion.getByLabel("Base URL", { exact: true }).fill("http://localhost:11434/v1");
       await providersRegion.getByLabel("API key", { exact: true }).fill("k");
-      await providersRegion.getByRole("button", { name: "Add provider" }).click();
+      await providersRegion.getByRole("button", { exact: true, name: "Add provider" }).click();
       await expect(providersRegion.getByText("Persisted")).toBeVisible();
     } finally {
       await closeWindow(first);

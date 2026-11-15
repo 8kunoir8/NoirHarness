@@ -26,17 +26,17 @@ test("projects: one action per folder, and a re-add selects", async () => {
       await expect(first).toHaveAttribute("aria-current", "true");
 
       // A second folder takes the selection with it, and leaves the first row unselected.
-      await projects.getByRole("button", { name: "New project" }).click();
+      await projects.getByRole("button", { exact: true, name: "New project" }).click();
       await projects.getByLabel("Project path", { exact: true }).fill(second);
-      await projects.getByRole("button", { name: "Add project" }).click();
+      await projects.getByRole("button", { exact: true, name: "Add project" }).click();
       const secondRow = projects.getByRole("button", { name: second, exact: true });
       await expect(secondRow).toHaveAttribute("aria-current", "true");
       await expect(first).not.toHaveAttribute("aria-current", "true");
 
       // Re-picking an existing folder selects it instead of raising the kernel's conflict.
-      await projects.getByRole("button", { name: "New project" }).click();
+      await projects.getByRole("button", { exact: true, name: "New project" }).click();
       await projects.getByLabel("Project path", { exact: true }).fill(harness.workspacePath);
-      await projects.getByRole("button", { name: "Add project" }).click();
+      await projects.getByRole("button", { exact: true, name: "Add project" }).click();
       await expect(first).toHaveAttribute("aria-current", "true");
       await expect(projects.getByRole("alert")).toHaveCount(0);
 
@@ -52,8 +52,8 @@ test("projects: one action per folder, and a re-add selects", async () => {
     }
   } finally {
     await stopKernel(harness.dataDir);
-    removeDir(harness.dataDir);
-    removeDir(harness.workspacePath);
-    removeDir(second);
+    await removeDir(harness.dataDir);
+    await removeDir(harness.workspacePath);
+    await removeDir(second);
   }
 });

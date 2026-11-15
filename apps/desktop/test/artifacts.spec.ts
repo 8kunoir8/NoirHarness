@@ -7,7 +7,7 @@ import { deleteProviderThroughKernel, removeDir, stopKernel } from "./helpers.js
 import { startMockProvider, type MockProvider } from "./mock-provider.js";
 
 async function showFiles(page: Page): Promise<void> {
-  await page.getByRole("group", { name: "List pane" }).getByRole("button", { name: "File list" }).click();
+  await page.getByRole("group", { exact: true, name: "List pane" }).getByRole("button", { exact: true, name: "File list" }).click();
   await expect(page.getByRole("treeitem").filter({ hasText: "notes.md" })).toBeVisible();
 }
 
@@ -39,11 +39,11 @@ test("previews markdown, CSV, and PDF artifacts, then restores and reports a del
     // Markdown: GFM table renders, and every hostile construct is inert rather than executed.
     await preview(page, "notes.md");
     const markdown = page.getByRole("region", { name: "Preview notes.md", exact: true });
-    await expect(markdown.getByRole("heading", { name: "Artifact notes", level: 1 })).toBeVisible();
+    await expect(markdown.getByRole("heading", { exact: true, name: "Artifact notes", level: 1 })).toBeVisible();
     await expect(markdown.getByRole("cell", { name: "table", exact: true })).toBeVisible();
     await expect(markdown.locator("script")).toHaveCount(0);
     await expect(markdown.locator("img")).toHaveCount(0);
-    await expect(markdown.getByRole("link", { name: "hostile link" })).toHaveCount(0);
+    await expect(markdown.getByRole("link", { exact: true, name: "hostile link" })).toHaveCount(0);
 
     // CSV: the quoted comma stays one cell and the embedded newline stays inside it.
     await preview(page, "data.csv");
@@ -98,13 +98,13 @@ test("previews markdown, CSV, and PDF artifacts, then restores and reports a del
     }
     await restarted.getByRole("tab", { name: "notes.md", exact: true }).click();
     const restored = restarted.getByRole("region", { name: "Preview notes.md", exact: true });
-    await expect(restored.getByRole("heading", { name: "Artifact notes", level: 1 })).toBeVisible({
+    await expect(restored.getByRole("heading", { exact: true, name: "Artifact notes", level: 1 })).toBeVisible({
       timeout: 20_000,
     });
 
     // A file deleted behind the app's back surfaces the kernel's message, not a blank pane.
     rmSync(join(harness.workspacePath, "notes.md"));
-    await restored.getByRole("button", { name: "Reload" }).click();
+    await restored.getByRole("button", { exact: true, name: "Reload" }).click();
     await expect(restored.getByRole("alert")).toHaveText("File not found: notes.md");
   } finally {
     if (app !== undefined) await deleteProviderThroughKernel(harness.dataDir, "Mock").catch(() => undefined);

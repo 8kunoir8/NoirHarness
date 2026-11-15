@@ -6,15 +6,15 @@ import { startMockProvider } from "./mock-provider.js";
 
 async function sendPrompt(page: Page, text: string): Promise<void> {
   await page.getByLabel("Prompt", { exact: true }).fill(text);
-  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("button", { exact: true, name: "Send" }).click();
 }
 
 function rail(page: Page) {
-  return page.getByRole("navigation", { name: "Main" });
+  return page.getByRole("navigation", { exact: true, name: "Main" });
 }
 
 async function showAgents(page: Page): Promise<void> {
-  await rail(page).getByRole("button", { name: "Agents" }).click();
+  await rail(page).getByRole("button", { exact: true, name: "Agents" }).click();
 }
 
 /**
@@ -22,20 +22,20 @@ async function showAgents(page: Page): Promise<void> {
  * as its default, so the start form is ready without a second selection.
  */
 async function createAgent(page: Page, name: string, workspacePath: string): Promise<void> {
-  await page.getByRole("button", { name: "Create agent" }).click();
+  await page.getByRole("button", { exact: true, name: "Create agent" }).click();
   const config = page.getByRole("region", { name: "Agent config", exact: true });
   await config.getByLabel("Name", { exact: true }).fill(name);
   await config.getByLabel("Default model", { exact: true }).selectOption({ label: "mock-1" });
   await config
     .getByLabel("Default workspace", { exact: true })
     .selectOption({ label: basename(workspacePath) });
-  await config.getByRole("button", { name: "Save" }).click();
-  await expect(page.getByRole("button", { name: `Select ${name}` })).toBeVisible();
+  await config.getByRole("button", { exact: true, name: "Save" }).click();
+  await expect(page.getByRole("button", { exact: true, name: `Select ${name}` })).toBeVisible();
 }
 
 /** Starts the selected agent's session from the office pane; the shell opens its chat tab. */
 async function startSession(page: Page): Promise<void> {
-  await page.getByRole("button", { name: "Start session" }).click();
+  await page.getByRole("button", { exact: true, name: "Start session" }).click();
   await expect(page.getByLabel("Prompt", { exact: true })).toBeVisible({ timeout: 20_000 });
 }
 
@@ -71,7 +71,7 @@ test("paints two agents, surfaces an approval, restores desks, and opens chat fr
     await showAgents(page);
     await expect(rosterRow(page, "Alpha").locator(".agents-status")).toHaveText("Idle", { timeout: 20_000 });
     await page.getByRole("button", { name: "Select Alpha", exact: true }).click();
-    await page.getByRole("button", { name: "Open chat" }).click();
+    await page.getByRole("button", { exact: true, name: "Open chat" }).click();
     await sendPrompt(page, "slow");
 
     // Beta: the same path in a second workspace session, so the office has to paint two characters.
@@ -91,7 +91,7 @@ test("paints two agents, surfaces an approval, restores desks, and opens chat fr
     // Approval leg: Alpha's turn asks for a shell command; the request reaches the roster before
     // anyone answers it, and the bubble carries the same title the chat's card shows.
     await page.getByRole("button", { name: "Select Alpha", exact: true }).click();
-    await page.getByRole("button", { name: "Open chat" }).click();
+    await page.getByRole("button", { exact: true, name: "Open chat" }).click();
     await sendPrompt(page, "tool");
     const permission = page.getByTestId("permission-card");
     await expect(permission).toBeVisible({ timeout: 20_000 });
@@ -105,8 +105,8 @@ test("paints two agents, surfaces an approval, restores desks, and opens chat fr
 
     // Answering from the reopened chat clears the roster bubble through the kernel's events.
     await page.getByRole("button", { name: "Select Alpha", exact: true }).click();
-    await page.getByRole("button", { name: "Open chat" }).click();
-    await permission.getByRole("button", { name: "Allow once" }).click();
+    await page.getByRole("button", { exact: true, name: "Open chat" }).click();
+    await permission.getByRole("button", { exact: true, name: "Allow once" }).click();
     await expect(page.getByTestId("tool-card").locator("pre")).toContainText("hi", { timeout: 20_000 });
     await expect(
       page.getByTestId("message-assistant").filter({ hasText: "tool finished" }),
@@ -138,11 +138,11 @@ test("paints two agents, surfaces an approval, restores desks, and opens chat fr
     await expect(restoredCanvas).toHaveAttribute("data-office-desks", desksBefore ?? "");
 
     // List view: the canvas leaves the DOM, every roster row stays operable.
-    await page.getByRole("button", { name: "List view" }).click();
+    await page.getByRole("button", { exact: true, name: "List view" }).click();
     await expect(page.locator(".office-canvas")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Select Alpha", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Select Beta", exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "Office view" }).click();
+    await page.getByRole("button", { exact: true, name: "Office view" }).click();
     await expect(page.locator(".office-canvas")).toHaveAttribute("data-office-ready", "true", {
       timeout: 30_000,
     });
@@ -151,7 +151,7 @@ test("paints two agents, surfaces an approval, restores desks, and opens chat fr
     // Alpha's transcript carries the tool turn, so finding it proves the tab belongs to Alpha.
     await page.getByRole("button", { name: "Select Alpha", exact: true }).focus();
     await page.keyboard.press("Enter");
-    await expect(page.getByRole("tablist", { name: "Open tabs" })).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole("tablist", { exact: true, name: "Open tabs" })).toBeVisible({ timeout: 20_000 });
     await expect(
       page.getByTestId("message-assistant").filter({ hasText: "tool finished" }),
     ).toBeVisible({ timeout: 20_000 });

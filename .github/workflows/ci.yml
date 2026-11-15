@@ -1,0 +1,46 @@
+name: CI
+
+# Windows matches the only environment the app is built and run in; a green Linux run would prove
+# nothing about the shell, the keyring, or the paths this code actually touches.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.18.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      # A rule that stopped matching still reports clean. This step makes each local rule fail on
+      # the file it exists to reject, so a silently dead rule fails CI instead of passing it.
+      - name: Prove the local lint rules
+        run: pnpm lint:proof
+
+      - name: Unit tests
+        run: pnpm test
+
+      # The Playwright suite drives the packaged Electron app over a real kernel process; it stays
+      # a local, pre-push check (`pnpm --filter @noir/desktop test:e2e`).

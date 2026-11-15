@@ -21,7 +21,7 @@ function manifestEntries(path: string): { name: string; scope: string }[] {
 
 async function sendPrompt(page: Page, text: string): Promise<void> {
   await page.getByLabel("Prompt", { exact: true }).fill(text);
-  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("button", { exact: true, name: "Send" }).click();
 }
 
 test("lists a project skill, toggles it, and shows its body", async () => {
@@ -42,18 +42,18 @@ test("lists a project skill, toggles it, and shows its body", async () => {
       const page = await app.firstWindow();
       await bootstrap(page, mock, harness.workspacePath);
 
-      await page.getByRole("navigation", { name: "Main" }).getByRole("button", { name: "Skills" }).click();
-      const project = page.getByRole("region", { name: "Project skills" });
+      await page.getByRole("navigation", { exact: true, name: "Main" }).getByRole("button", { exact: true, name: "Skills" }).click();
+      const project = page.getByRole("region", { exact: true, name: "Project skills" });
       await expect(project).toContainText("demo", { timeout: 20_000 });
       await expect(project).toContainText("e2e demo skill");
-      await project.getByRole("button", { name: "View demo" }).click();
-      const body = page.getByRole("region", { name: "Skill body" });
+      await project.getByRole("button", { exact: true, name: "View demo" }).click();
+      const body = page.getByRole("region", { exact: true, name: "Skill body" });
       await expect(body).toContainText("DEMO_SKILL_BODY");
 
       // The first turn spawns the engine, which materializes the enabled set on disk. The list row
       // alone does not prove that, so assert the copy and the manifest before toggling anything.
       // `exact`, because the "Chats column" toggle would also match.
-      await page.getByRole("navigation", { name: "Main" }).getByRole("button", { name: "Chats", exact: true }).click();
+      await page.getByRole("navigation", { exact: true, name: "Main" }).getByRole("button", { name: "Chats", exact: true }).click();
       await sendPrompt(page, "stream");
       await expect(
         page.getByTestId("message-assistant").filter({ hasText: "Hello from mock." }),
@@ -68,12 +68,12 @@ test("lists a project skill, toggles it, and shows its body", async () => {
 
       // The toggle reaches the kernel's materialization, not just the row: setEnabled rewrites the
       // manifest and drops the disabled skill from the directory the engine reads.
-      await page.getByRole("navigation", { name: "Main" }).getByRole("button", { name: "Skills" }).click();
-      const projectAfterTurn = page.getByRole("region", { name: "Project skills" });
-      await projectAfterTurn.getByRole("button", { name: "View demo" }).click();
+      await page.getByRole("navigation", { exact: true, name: "Main" }).getByRole("button", { exact: true, name: "Skills" }).click();
+      const projectAfterTurn = page.getByRole("region", { exact: true, name: "Project skills" });
+      await projectAfterTurn.getByRole("button", { exact: true, name: "View demo" }).click();
       await expect(body).toContainText("DEMO_SKILL_BODY");
-      await projectAfterTurn.getByRole("button", { name: "Disable demo" }).click();
-      await expect(projectAfterTurn.getByRole("button", { name: "Enable demo" })).toBeVisible();
+      await projectAfterTurn.getByRole("button", { exact: true, name: "Disable demo" }).click();
+      await expect(projectAfterTurn.getByRole("button", { exact: true, name: "Enable demo" })).toBeVisible();
       // The viewer re-reads the source after the toggle; a failed re-read would surface an error.
       await expect(body).toContainText("DEMO_SKILL_BODY");
       await expect(page.getByRole("status")).toHaveCount(0);

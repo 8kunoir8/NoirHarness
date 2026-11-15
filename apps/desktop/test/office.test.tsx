@@ -970,7 +970,7 @@ describe("office scene", () => {
         deskIndex: 1,
       }),
     ];
-    const { scene } = await harnessed.createScene(false, states, { selected: "a-1" });
+    await harnessed.createScene(false, states, { selected: "a-1" });
 
     const [scout, beta] = harnessed.sprites;
     expect(scout?.tint).toBe(0x9ad0ff);

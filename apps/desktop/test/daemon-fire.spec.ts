@@ -19,14 +19,14 @@ test("fires a schedule after the window closes", async () => {
     await setupWorkspace(page, mock, harness.workspacePath);
     await agentNeededBySchedule(page, harness.workspacePath);
 
-    await page.getByRole("navigation", { name: "Main" }).getByRole("button", { name: "Automations" }).click();
-    await page.getByRole("button", { name: "New schedule" }).click();
-    const editor = page.getByRole("region", { name: "Schedule editor" });
+    await page.getByRole("navigation", { exact: true, name: "Main" }).getByRole("button", { exact: true, name: "Automations" }).click();
+    await page.getByRole("button", { exact: true, name: "New schedule" }).click();
+    const editor = page.getByRole("region", { exact: true, name: "Schedule editor" });
     await editor.getByLabel("Name", { exact: true }).fill("Headless");
     await editor.getByLabel("Prompt", { exact: true }).fill("headless tick");
     await editor.getByLabel("Cadence", { exact: true }).selectOption("15");
-    await editor.getByRole("button", { name: "Save schedule" }).click();
-    await expect(page.getByRole("region", { name: "Schedules" })).toContainText("Headless", { timeout: 20_000 });
+    await editor.getByRole("button", { exact: true, name: "Save schedule" }).click();
+    await expect(page.getByRole("region", { exact: true, name: "Schedules" })).toContainText("Headless", { timeout: 20_000 });
 
     // Retime to a minute over the socket: the editor's shortest cadence is fifteen.
     const scheduleId = await withKernel(harness.dataDir, async (request) => {
@@ -60,10 +60,10 @@ test("fires a schedule after the window closes", async () => {
     const reopened = await launchApp(harness);
     try {
       const page2 = await reopened.firstWindow();
-      await page2.getByRole("navigation", { name: "Main" }).getByRole("button", { name: "Automations" }).click();
-      const schedules = page2.getByRole("region", { name: "Schedules" });
+      await page2.getByRole("navigation", { exact: true, name: "Main" }).getByRole("button", { exact: true, name: "Automations" }).click();
+      const schedules = page2.getByRole("region", { exact: true, name: "Schedules" });
       await schedules.getByRole("button", { name: /Headless/ }).first().click();
-      await expect(page2.getByRole("region", { name: "Run history" })).toContainText("fired", { timeout: 20_000 });
+      await expect(page2.getByRole("region", { exact: true, name: "Run history" })).toContainText("fired", { timeout: 20_000 });
     } finally {
       await deleteProviderThroughKernel(harness.dataDir, "Mock").catch(() => undefined);
       await closeWindow(reopened);
@@ -78,14 +78,14 @@ test("fires a schedule after the window closes", async () => {
 
 /** A schedule fires into an agent; the setup leaves agent selection on the default one. */
 async function agentNeededBySchedule(page: Page, workspacePath: string): Promise<void> {
-  await page.getByRole("navigation", { name: "Main" }).getByRole("button", { name: "Agents" }).click();
-  await page.getByRole("button", { name: "Create agent" }).click();
+  await page.getByRole("navigation", { exact: true, name: "Main" }).getByRole("button", { exact: true, name: "Agents" }).click();
+  await page.getByRole("button", { exact: true, name: "Create agent" }).click();
   const config = page.getByRole("region", { name: "Agent config", exact: true });
   await config.getByLabel("Name", { exact: true }).fill("Headless");
   await config.getByLabel("Default model", { exact: true }).selectOption({ label: "mock-1" });
   await config
     .getByLabel("Default workspace", { exact: true })
     .selectOption({ label: basename(workspacePath) });
-  await config.getByRole("button", { name: "Save" }).click();
-  await expect(page.getByRole("button", { name: "Select Headless" })).toBeVisible();
+  await config.getByRole("button", { exact: true, name: "Save" }).click();
+  await expect(page.getByRole("button", { exact: true, name: "Select Headless" })).toBeVisible();
 }

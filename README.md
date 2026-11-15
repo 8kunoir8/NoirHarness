@@ -532,11 +532,32 @@ The desktop shell also honours `NOIR_DATA_DIR`, `NOIR_KERNEL_ENTRY`, and `NOIR_N
 ## Verify
 
 ```sh
+pnpm lint
+pnpm lint:proof
 pnpm -r typecheck
 pnpm -r test
 pnpm --filter @noir/desktop test
 pnpm --filter @noir/desktop test:e2e
 ```
+
+`pnpm lint` is one flat config at the root. Beyond `typescript-eslint`'s type-aware defaults it runs
+three rules of this repo's own (`tools/eslint-plugin-noir`), each one written down because the defect
+it catches already shipped here:
+
+- `noir/no-cross-process-import` — the renderer may import `@noir/protocol` and its own files, never
+  `electron`, a Node builtin, or a main-process module. The boundary is what keeps the renderer
+  bundle loadable in a plain browser tab.
+- `noir/no-bare-timer` — renderer code takes timers from `renderer/defer.ts` (`after`, `every`,
+  `coalesce`, `debounce`), which hand back the canceller. A raw `setTimeout` returns an id the caller
+  must remember to clear, and the site that forgot outlived its component.
+- `noir/strict-locator-name` — every Playwright `getByRole`/`getByLabel` string name carries
+  `exact: true`. A substring match silently starts matching a second element the moment a new
+  control appears next to it, which is how a locator passes today and fails on the next feature.
+
+`pnpm lint:proof` runs each rule against a file it must reject and a neighbour it must accept, so a
+rule that stops matching fails the check instead of quietly reporting a clean tree. CI
+(`.github/workflows/ci.yml`) runs `lint`, `lint:proof`, `typecheck` and `test`; the Playwright suite
+stays a local pre-push check because it needs a real Electron app and a kernel process.
 
 `test:e2e` builds the app and drives Electron with Playwright against a local mock provider. Fifteen
 specs, twenty-one tests: `smoke` (2) — boot, process spawn, health, and a provider surviving an app

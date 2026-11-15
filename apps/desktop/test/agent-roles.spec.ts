@@ -44,12 +44,12 @@ test("staffs chats as Noir and derives the role catalog from the workspace", asy
 
     const sessions = page.getByRole("region", { name: "Sessions", exact: true });
     await sessions.getByLabel("New chat model", { exact: true }).selectOption({ label: "mock-1" });
-    await sessions.getByRole("button", { name: "New chat" }).click();
+    await sessions.getByRole("button", { exact: true, name: "New chat" }).click();
     await expect(page.getByLabel("Prompt", { exact: true })).toBeVisible({ timeout: 20_000 });
 
     // A second chat picks no agent again: it must reuse Noir, not invent a row per chat.
-    await sessions.getByRole("button", { name: "New chat" }).click();
-    await page.getByRole("navigation", { name: "Main" }).getByRole("button", { name: "Agents", exact: true }).click();
+    await sessions.getByRole("button", { exact: true, name: "New chat" }).click();
+    await page.getByRole("navigation", { exact: true, name: "Main" }).getByRole("button", { name: "Agents", exact: true }).click();
     const roster = page.getByRole("region", { name: "Agents", exact: true });
     await expect(roster.getByRole("button", { name: "Select Noir", exact: true })).toBeVisible();
     await expect(roster.locator("li")).toHaveCount(1);
@@ -61,11 +61,11 @@ test("staffs chats as Noir and derives the role catalog from the workspace", asy
     // The catalog lists what this workspace can staff and explains the pick it makes.
     await config.getByLabel("Role", { exact: true }).selectOption({ label: "Engineer" });
     await expect(config.getByText("Skills this role is for: code-review")).toBeVisible();
-    await config.getByRole("button", { name: "Save" }).click();
+    await config.getByRole("button", { exact: true, name: "Save" }).click();
     await expect(config.getByRole("alert")).toHaveCount(0);
 
     // The row a chat falls back to cannot be archived away: the kernel refuses and the form says why.
-    await config.getByRole("button", { name: "Archive" }).click();
+    await config.getByRole("button", { exact: true, name: "Archive" }).click();
     await expect(config.getByRole("alert")).toContainText("default agent");
   });
 });
@@ -80,7 +80,7 @@ test("bootstraps the first chat without a second agent row", async () => {
     const page = await app.firstWindow();
     // `bootstrap` creates the first chat without naming an agent, the path a new install takes.
     await bootstrap(page, mock, harness.workspacePath);
-    await page.getByRole("navigation", { name: "Main" }).getByRole("button", { name: "Agents", exact: true }).click();
+    await page.getByRole("navigation", { exact: true, name: "Main" }).getByRole("button", { name: "Agents", exact: true }).click();
     const roster = page.getByRole("region", { name: "Agents", exact: true });
     await expect(roster.getByRole("button", { name: "Select Noir", exact: true })).toBeVisible();
     await expect(roster.locator("li")).toHaveCount(1);

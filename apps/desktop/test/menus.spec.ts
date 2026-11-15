@@ -49,7 +49,7 @@ test("opens a chat row's menu with the pointer and with the menu key", async () 
 
     // The first item is focused on open, so Enter renames without a pointer. The pencil button
     // carries the same label, so the field is addressed by role.
-    const field = sessions.getByRole("textbox", { name: "Rename Untitled chat" });
+    const field = sessions.getByRole("textbox", { exact: true, name: "Rename Untitled chat" });
     await page.keyboard.press("Enter");
     await expect(field).toBeVisible();
     await page.keyboard.press("Escape");
@@ -60,21 +60,21 @@ test("opens a chat row's menu with the pointer and with the menu key", async () 
 test("quotes a message into the composer and closes a tab from its menu", async () => {
   await runShell(async (page) => {
     await page.getByLabel("Prompt", { exact: true }).fill("stream");
-    await page.getByRole("button", { name: "Send" }).click();
+    await page.getByRole("button", { exact: true, name: "Send" }).click();
     const message = page.getByTestId("message-user").first();
     await expect(message).toContainText("stream", { timeout: 20_000 });
 
     await message.click({ button: "right" });
     const items = page.getByRole("menuitem");
     await expect(items.filter({ hasText: "Quote in composer" })).toBeVisible();
-    await page.getByRole("menuitem", { name: "Quote in composer" }).click();
+    await page.getByRole("menuitem", { exact: true, name: "Quote in composer" }).click();
     await expect(page.getByLabel("Prompt", { exact: true })).toHaveValue(/```/);
 
     // A tab's menu is about the tab strip, and the effect reaches the strip itself.
-    const tabs = page.getByRole("tablist", { name: "Open tabs" });
+    const tabs = page.getByRole("tablist", { exact: true, name: "Open tabs" });
     await tabs.getByRole("tab").first().click({ button: "right" });
-    await expect(page.getByRole("menuitem", { name: "Close others" })).toBeVisible();
-    await page.getByRole("menuitem", { name: "Close others" }).click();
+    await expect(page.getByRole("menuitem", { exact: true, name: "Close others" })).toBeVisible();
+    await page.getByRole("menuitem", { exact: true, name: "Close others" }).click();
     await expect(tabs.getByRole("tab")).toHaveCount(1);
   });
 });

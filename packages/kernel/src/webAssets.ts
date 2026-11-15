@@ -25,8 +25,6 @@ export interface Asset {
   immutable: boolean;
 }
 
-class BadPath extends Error {}
-
 function withinRoot(root: string, candidate: string): boolean {
   const base = resolve(root);
   return candidate === base || candidate.startsWith(base.endsWith(sep) ? base : base + sep);

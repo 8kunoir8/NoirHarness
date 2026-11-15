@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { PDFDocumentLoadingTask, PDFDocumentProxy, RenderTask } from "pdfjs-dist";
 import type * as PdfJsModule from "pdfjs-dist/legacy/build/pdf.mjs";
+import { debounce } from "../defer.js";
 import { base64ToBytes } from "./bytes.js";
 
 const ZOOM_MIN = 0.5;
@@ -110,14 +111,11 @@ export function PdfArtifact({ base64 }: PdfArtifactProps) {
     const measure = (): void => setPaneWidth(element.clientWidth);
     measure();
     if (typeof ResizeObserver === "undefined") return;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const observer = new ResizeObserver(() => {
-      clearTimeout(timer);
-      timer = setTimeout(measure, RESIZE_DEBOUNCE_MS);
-    });
+    const pending = debounce(RESIZE_DEBOUNCE_MS, measure);
+    const observer = new ResizeObserver(() => pending.schedule());
     observer.observe(element);
     return () => {
-      clearTimeout(timer);
+      pending.cancel();
       observer.disconnect();
     };
   }, [status]);

@@ -229,7 +229,7 @@ if (!app.requestSingleInstanceLock()) {
     witness.start();
   };
 
-  app.whenReady().then(async () => {
+  void app.whenReady().then(async () => {
     hosted = await startKernel().catch((error: unknown) => {
       // The window still opens: the banner says nothing survives it.
       console.error("Kernel failed to start:", error instanceof Error ? error.message : error);

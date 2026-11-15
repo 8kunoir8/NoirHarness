@@ -36,15 +36,15 @@ test("collapses both left columns and keeps them collapsed", async () => {
     await expect(sessions).toBeVisible();
     const before = (await main.boundingBox())?.width ?? 0;
 
-    await page.getByRole("button", { name: "Projects column" }).click();
+    await page.getByRole("button", { exact: true, name: "Projects column" }).click();
     await expect(projects).toBeHidden();
     // Width, not just visibility: a zeroed track is what gives the space to the chat.
     await expect.poll(async () => (await main.boundingBox())?.width ?? 0).toBeGreaterThan(before);
 
-    await page.getByRole("button", { name: "Chats column" }).click();
+    await page.getByRole("button", { exact: true, name: "Chats column" }).click();
     await expect(sessions).toBeHidden();
-    await expect(page.getByRole("button", { name: "Projects column" })).toHaveAttribute("aria-pressed", "false");
-    await expect(page.getByRole("button", { name: "Chats column" })).toHaveAttribute("aria-pressed", "false");
+    await expect(page.getByRole("button", { exact: true, name: "Projects column" })).toHaveAttribute("aria-pressed", "false");
+    await expect(page.getByRole("button", { exact: true, name: "Chats column" })).toHaveAttribute("aria-pressed", "false");
     // The chat itself does not collapse with the columns around it.
     await expect(page.getByLabel("Prompt", { exact: true })).toBeVisible();
 
@@ -54,14 +54,14 @@ test("collapses both left columns and keeps them collapsed", async () => {
     await expect(page.getByRole("region", { name: "Projects", exact: true })).toBeHidden();
     await expect(page.getByRole("region", { name: "Sessions", exact: true })).toBeHidden();
 
-    await page.getByRole("button", { name: "Projects column" }).click();
+    await page.getByRole("button", { exact: true, name: "Projects column" }).click();
     await expect(page.getByRole("region", { name: "Projects", exact: true })).toBeVisible();
   });
 });
 
 test("keeps the session pill inside its own column when the chat is narrow", async () => {
   await runShell(async (page) => {
-    await page.getByRole("button", { name: "New chat" }).click();
+    await page.getByRole("button", { exact: true, name: "New chat" }).click();
     await expect(page.getByTestId("session-status")).toBeVisible();
     // Widths where the header runs out of room: the pill is `nowrap`, so a title column allowed to
     // shrink past its own content paints the pill over the model picker instead of wrapping.

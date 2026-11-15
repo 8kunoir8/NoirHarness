@@ -8,6 +8,7 @@ import {
   type AgentView,
 } from "@noir/protocol";
 import type { RequestFn } from "./api.js";
+import { every } from "./defer.js";
 import { errorMessage } from "./events.js";
 import { formatCadence, formatClock } from "./format.js";
 
@@ -186,12 +187,11 @@ export function Automations({ workspaceId, request, onOpenSession }: Automations
   // touched by a refresh.
   useEffect(() => {
     if (workspaceId === "") return;
-    const timer = setInterval(() => {
+    return every(REFRESH_MS, () => {
       void load(generation.current, workspaceId, true);
       const selected = draftId.current;
       if (selected !== null) void loadRuns(selected, generation.current, true);
-    }, REFRESH_MS);
-    return () => clearInterval(timer);
+    });
   }, [workspaceId, load, loadRuns]);
 
   // The first usable agent is the sensible default for a new schedule.

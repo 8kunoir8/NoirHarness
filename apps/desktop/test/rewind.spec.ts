@@ -7,7 +7,7 @@ import { startMockProvider } from "./mock-provider.js";
 
 async function sendPrompt(page: Page, text: string): Promise<void> {
   await page.getByLabel("Prompt", { exact: true }).fill(text);
-  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("button", { exact: true, name: "Send" }).click();
 }
 
 /**
@@ -39,7 +39,7 @@ test("rewinds the workspace and the conversation to before a prompt", async () =
 
     await page
       .getByTestId("message-user")
-      .getByRole("button", { name: "Rewind to before this prompt" })
+      .getByRole("button", { exact: true, name: "Rewind to before this prompt" })
       .click();
     const dialog = page.getByTestId("rewind-dialog");
     await expect(dialog).toBeVisible();
@@ -51,7 +51,7 @@ test("rewinds the workspace and the conversation to before a prompt", async () =
       /^1 file restored · 0 deleted files · \d+ created files? removed$/,
       { timeout: 20_000 },
     );
-    const confirm = dialog.getByRole("button", { name: "Rewind" });
+    const confirm = dialog.getByRole("button", { exact: true, name: "Rewind" });
     await expect(confirm).toBeEnabled();
     await confirm.click();
 
@@ -103,20 +103,20 @@ test("refuses a rewind while the workspace is mid-turn", async () => {
 
     await page
       .getByTestId("message-user")
-      .getByRole("button", { name: "Rewind to before this prompt" })
+      .getByRole("button", { exact: true, name: "Rewind to before this prompt" })
       .click();
     const dialog = page.getByTestId("rewind-dialog");
     await expect(page.getByTestId("rewind-counts")).toBeVisible({ timeout: 20_000 });
-    const confirm = dialog.getByRole("button", { name: "Rewind" });
+    const confirm = dialog.getByRole("button", { exact: true, name: "Rewind" });
     await expect(confirm).toBeEnabled();
     await confirm.click();
     await expect(dialog.getByRole("alert")).toContainText("A turn is running in this workspace");
 
     // Nothing moved: close the dialog, let the turn settle, and the transcript still holds the
     // prompt it was asked about and no marker.
-    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await dialog.getByRole("button", { exact: true, name: "Cancel" }).click();
     await expect(dialog).toBeHidden();
-    await page.getByTestId("permission-card").getByRole("button", { name: "Allow once" }).click();
+    await page.getByTestId("permission-card").getByRole("button", { exact: true, name: "Allow once" }).click();
     await expect(
       page.getByTestId("message-assistant").filter({ hasText: "native tool finished" }),
     ).toBeVisible({ timeout: 30_000 });

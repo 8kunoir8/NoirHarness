@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentEvent, AgentRosterEntry, AgentRosterResult } from "@noir/protocol";
 import { connect, offEvent, type RequestFn } from "./api.js";
+import { coalesce } from "./defer.js";
 
 /** Trailing window for the live roster refresh: a burst of events costs one `agent.roster` call. */
 const ROSTER_REFRESH_MS = 250;
@@ -99,20 +100,15 @@ export function useRoster(request: RequestFn, { subscribe = false, initial = fal
   useEffect(() => {
     if (!subscribe) return;
     if (initial) void refresh();
-    let timer: number | undefined;
+    // Many events in one burst schedule exactly one fetch.
+    const soon = coalesce(ROSTER_REFRESH_MS, () => void refresh());
     const listener = (event: AgentEvent): void => {
       if (!refreshesRoster(event.type)) return;
-      // Trailing coalescing: many events in one burst schedule exactly one fetch.
-      if (timer !== undefined) return;
-      timer = window.setTimeout(() => {
-        timer = undefined;
-        void refresh();
-      }, ROSTER_REFRESH_MS);
+      soon.schedule();
     };
     void connect(listener).catch(() => undefined);
     return () => {
-      if (timer !== undefined) window.clearTimeout(timer);
-      timer = undefined;
+      soon.cancel();
       offEvent(listener);
     };
   }, [subscribe, initial, refresh]);

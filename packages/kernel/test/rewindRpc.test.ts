@@ -30,6 +30,8 @@ async function startKernelWithManager(opts: { dataDir?: string } = {}): Promise<
   let manager: EngineManager | undefined;
   const original = EngineManager.prototype.reconcileAll;
   EngineManager.prototype.reconcileAll = function (this: EngineManager) {
+    // The instance is the thing being captured: a method cannot name its receiver any other way.
+    // eslint-disable-next-line @typescript-eslint/no-this-alias -- capturing the instance is the point
     manager = this;
     return original.call(this);
   };

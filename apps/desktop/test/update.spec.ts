@@ -61,7 +61,7 @@ test("badges Help and shows one toast for a newer tag, and remembers a dismissal
 
     // The badge sits on Help, not on a page nobody opens. It is a sibling of the button, so it is
     // addressed from the button rather than through the nav item that wraps both.
-    const nav = page.getByRole("navigation", { name: "Main" });
+    const nav = page.getByRole("navigation", { exact: true, name: "Main" });
     const help = nav.getByRole("button", { name: "Help", exact: true });
     const badge = help.locator("xpath=following-sibling::span[contains(@class,'nav-count')]");
     await expect(badge).toHaveText("●");
@@ -72,13 +72,13 @@ test("badges Help and shows one toast for a newer tag, and remembers a dismissal
     await expect(row).toContainText("v9.9.9");
 
     // A dismissal is the kernel's, so it survives the window: no toast, no badge, after a reload.
-    await row.getByRole("button", { name: "Dismiss" }).click();
+    await row.getByRole("button", { exact: true, name: "Dismiss" }).click();
     await expect(toast).toBeHidden();
     await expect(badge).toHaveCount(0);
 
     await page.reload();
     await expect(page.getByTestId("kernel-status")).toHaveText("kernel ok", { timeout: 20_000 });
-    await page.getByRole("navigation", { name: "Main" }).getByRole("button", { name: "Help", exact: true }).click();
+    await page.getByRole("navigation", { exact: true, name: "Main" }).getByRole("button", { name: "Help", exact: true }).click();
     await expect(page.getByTestId("update-row")).toContainText("v9.9.9", { timeout: 20_000 });
     await expect(page.getByTestId("update-toast")).toHaveCount(0);
   });

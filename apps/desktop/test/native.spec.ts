@@ -5,7 +5,7 @@ import { startMockProvider } from "./mock-provider.js";
 
 async function sendPrompt(page: Page, text: string): Promise<void> {
   await page.getByLabel("Prompt", { exact: true }).fill(text);
-  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("button", { exact: true, name: "Send" }).click();
 }
 
 /**
@@ -36,7 +36,7 @@ test("drives the native tool loop and reconstructs history after a restart", asy
     const permission = page.getByTestId("permission-card");
     await expect(permission).toBeVisible({ timeout: 20_000 });
     await expect(page.getByTestId("tool-card")).toBeVisible();
-    await permission.getByRole("button", { name: "Allow once" }).click();
+    await permission.getByRole("button", { exact: true, name: "Allow once" }).click();
 
     await expect(page.getByTestId("tool-card").locator("pre")).toContainText("hi", { timeout: 20_000 });
     await expect(

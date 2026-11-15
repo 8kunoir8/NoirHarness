@@ -92,21 +92,25 @@ export async function createRpcListener(opts: ListenerOptions): Promise<RpcListe
     };
     ws.on("close", forget);
     ws.on("error", forget);
-    ws.on("message", async (raw) => {
-      let id: string | number = 0;
-      try {
-        const parsed = JsonRpcRequest.parse(JSON.parse(String(raw)));
-        id = parsed.id;
-        const handler = opts.hub.handlers[parsed.method];
-        if (!handler) throw new RpcFault(ErrorCodes.methodNotFound, `Unknown method: ${parsed.method}`);
-        const result = await handler(parsed.params, ctx);
-        sendJson(ws, { jsonrpc: "2.0", id, result });
-      } catch (error) {
-        const fault = error instanceof ZodError
-          ? new RpcFault(ErrorCodes.invalidParams, error.issues.map((issue) => (issue.path.length ? `${issue.path.join(".")}: ${issue.message}` : issue.message)).join("; "))
-          : error;
-        sendJson(ws, toRpcFailure(id, fault));
-      }
+    // `ws` ignores the return value, so the handler must swallow its own failure: an unhandled
+    // rejection here would take the kernel down rather than answer the caller.
+    ws.on("message", (raw) => {
+      void (async (): Promise<void> => {
+        let id: string | number = 0;
+        try {
+          const parsed = JsonRpcRequest.parse(JSON.parse(String(raw)));
+          id = parsed.id;
+          const handler = opts.hub.handlers[parsed.method];
+          if (!handler) throw new RpcFault(ErrorCodes.methodNotFound, `Unknown method: ${parsed.method}`);
+          const result = await handler(parsed.params, ctx);
+          sendJson(ws, { jsonrpc: "2.0", id, result });
+        } catch (error) {
+          const fault = error instanceof ZodError
+            ? new RpcFault(ErrorCodes.invalidParams, error.issues.map((issue) => (issue.path.length ? `${issue.path.join(".")}: ${issue.message}` : issue.message)).join("; "))
+            : error;
+          sendJson(ws, toRpcFailure(id, fault));
+        }
+      })();
     });
   };
 

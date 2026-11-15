@@ -57,11 +57,11 @@ test("stages a file, commits it, and reports the new commit", async () => {
     await expect(commit).toHaveAttribute("title", "Write a commit message");
 
     // A controlled checkbox follows the RPC's answer, not the click, so the click is the assertion.
-    await source.getByRole("checkbox", { name: "Stage a.txt" }).click();
+    await source.getByRole("checkbox", { exact: true, name: "Stage a.txt" }).click();
     const staged = source.getByRole("region", { name: "Staged", exact: true });
     await expect(staged).toContainText("a.txt", { timeout: 20_000 });
 
-    await source.getByLabel("Commit message").fill("wip");
+    await source.getByLabel("Commit message", { exact: true }).fill("wip");
     await expect(commit).toBeEnabled();
     await commit.click();
     await expect(source.getByRole("status").filter({ hasText: "Committed" })).toBeVisible({ timeout: 20_000 });
@@ -76,13 +76,13 @@ test("stages a file, commits it, and reports the new commit", async () => {
 
 test("opens the diff from the source list and from the chat header's stats", async () => {
   await runSource(async (page) => {
-    await page.getByRole("navigation", { name: "Main" }).getByRole("button", { name: "Source", exact: true }).click();
+    await page.getByRole("navigation", { exact: true, name: "Main" }).getByRole("button", { name: "Source", exact: true }).click();
     const source = page.getByRole("region", { name: "Source", exact: true });
-    await expect(source.getByRole("region", { name: "Unstaged" })).toContainText("a.txt", { timeout: 20_000 });
+    await expect(source.getByRole("region", { exact: true, name: "Unstaged" })).toContainText("a.txt", { timeout: 20_000 });
 
     // A path is the diff: the page is about what changed, so the file name carries the patch.
-    await source.getByRole("button", { name: "a.txt" }).click();
-    await expect(page.getByRole("region", { name: "Diff" })).toContainText("+two", { timeout: 20_000 });
+    await source.getByRole("button", { exact: true, name: "a.txt" }).click();
+    await expect(page.getByRole("region", { exact: true, name: "Diff" })).toContainText("+two", { timeout: 20_000 });
 
     // The chat header's stats are the second door: the same page, from the conversation.
     await page.getByRole("tab").first().click();

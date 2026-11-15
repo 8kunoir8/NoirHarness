@@ -13,7 +13,7 @@ test("recovers a crashed session to error and resumes on the next prompt", async
     let page = await app.firstWindow();
     await bootstrap(page, mock, harness.workspacePath);
     await page.getByLabel("Prompt", { exact: true }).fill("slow");
-    await page.getByRole("button", { name: "Send" }).click();
+    await page.getByRole("button", { exact: true, name: "Send" }).click();
     // `starting` also reports `streaming`, so wait for the engine to actually reach the provider:
     // the mock writes its first delta the moment it receives the prompt.
     await expect.poll(() => mock.prompts(), { timeout: 30_000 }).toContain("slow");
@@ -43,7 +43,7 @@ test("recovers a crashed session to error and resumes on the next prompt", async
     await expect(banner).toContainText("Send a prompt to resume.");
 
     await page.getByLabel("Prompt", { exact: true }).fill("stream");
-    await page.getByRole("button", { name: "Send" }).click();
+    await page.getByRole("button", { exact: true, name: "Send" }).click();
     await expect(page.getByTestId("message-assistant").filter({ hasText: "Hello from mock." })).toBeVisible({
       timeout: 20_000,
     });

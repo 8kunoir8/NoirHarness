@@ -192,11 +192,10 @@ function isHiddenElement(attrs: Map<string, string>): boolean {
 /** Parses attributes from just after the tag name to just after the closing `>`. */
 function parseAttributes(html: string, from: number): { attrs: Map<string, string>; end: number; selfClosing: boolean } {
   const attrs = new Map<string, string>();
-  let selfClosing = false;
   let i = from;
   while (i < html.length) {
     const char = html.charAt(i);
-    if (char === ">") return { attrs, end: i + 1, selfClosing };
+    if (char === ">") return { attrs, end: i + 1, selfClosing: false };
     if (char === "/" && html.charAt(i + 1) === ">") return { attrs, end: i + 2, selfClosing: true };
     if (/\s/.test(char)) {
       i++;
@@ -234,7 +233,7 @@ function parseAttributes(html: string, from: number): { attrs: Map<string, strin
       i = j;
     }
   }
-  return { attrs, end: html.length, selfClosing };
+  return { attrs, end: html.length, selfClosing: false };
 }
 
 /**
@@ -503,6 +502,8 @@ export function htmlToText(html: string, options: HtmlTextOptions = {}): string 
 
   const emitText = (raw: string): void => {
     if (hiddenDepth > 0 || raw === "") return;
+    // Control characters are the target: they are the ones a rendered prompt must not carry.
+    // eslint-disable-next-line no-control-regex -- control characters are what is being removed
     writer.text(decodeEntities(raw.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "")));
   };
 
@@ -759,6 +760,8 @@ export function htmlToText(html: string, options: HtmlTextOptions = {}): string 
   // Paragraphs were separated by deliberate blank lines; only the stray ones are dropped here.
   text = text.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
   // Code was stored as placeholders so this pass could not touch it.
+  // NUL is the placeholder marker itself, so it has to be matched literally here.
+  // eslint-disable-next-line no-control-regex -- NUL is the placeholder marker being searched for
   text = text.replace(/\u0000(\d+)\u0000/g, (_whole, index: string) => blocks[Number(index)] ?? "");
 
   if (title !== "" && !text.startsWith(title) && !text.startsWith(`# ${title}`)) {

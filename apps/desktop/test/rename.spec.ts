@@ -31,17 +31,17 @@ test("renames a chat from its row and from the header", async () => {
   await runRename(async (page) => {
     const sessions = page.getByRole("region", { name: "Sessions", exact: true });
 
-    await sessions.getByRole("button", { name: "Rename Untitled chat" }).click();
-    await sessions.getByLabel("Rename Untitled chat").fill("Kernel audit");
+    await sessions.getByRole("button", { exact: true, name: "Rename Untitled chat" }).click();
+    await sessions.getByLabel("Rename Untitled chat", { exact: true }).fill("Kernel audit");
     await page.keyboard.press("Enter");
     await expect(sessions.getByRole("button", { name: /Kernel audit/ }).first()).toBeVisible({ timeout: 20_000 });
     // The tab carries the same name, so the rename reached the session, not just the list row.
-    await expect(page.getByRole("tablist", { name: "Open tabs" }).getByRole("tab")).toContainText("Kernel audit");
+    await expect(page.getByRole("tablist", { exact: true, name: "Open tabs" }).getByRole("tab")).toContainText("Kernel audit");
 
-    await page.getByRole("button", { name: "Rename chat" }).click();
-    await page.getByLabel("Chat title").fill("Release notes");
+    await page.getByRole("button", { exact: true, name: "Rename chat" }).click();
+    await page.getByLabel("Chat title", { exact: true }).fill("Release notes");
     await page.keyboard.press("Enter");
     await expect(sessions.getByRole("button", { name: /Release notes/ }).first()).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByRole("button", { name: "Rename chat" })).toHaveText("Release notes");
+    await expect(page.getByRole("button", { exact: true, name: "Rename chat" })).toHaveText("Release notes");
   });
 });

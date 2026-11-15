@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { DeviceView, RemotePairResult, RemoteStatusResult } from "@noir/protocol";
 import type { RequestFn } from "./api.js";
+import { every } from "./defer.js";
 import { errorMessage } from "./events.js";
 
 interface DevicesProps {
@@ -46,11 +47,10 @@ export function Devices({ request }: DevicesProps) {
 
   // A paired device can appear at any moment; the list is the only place that says so.
   useEffect(() => {
-    const timer = setInterval(() => {
+    return every(REFRESH_MS, () => {
       setNow(Date.now());
       if (status?.enabled === true) void refresh().catch(() => undefined);
-    }, REFRESH_MS);
-    return () => clearInterval(timer);
+    });
   }, [refresh, status]);
 
   const run = useCallback(

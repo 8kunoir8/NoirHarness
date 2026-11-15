@@ -58,15 +58,6 @@ const DECISION_LABEL: Record<Decision, string> = { ask: "Ask", allow: "Allow", r
 /** Missing key means `ask`; the form always sends every category so a save is a full replacement. */
 type PermissionDraft = Record<PermissionCategory, Decision>;
 
-const ASK_EVERYWHERE: PermissionDraft = {
-  shell: "ask",
-  delete: "ask",
-  rename: "ask",
-  "write-outside-workspace": "ask",
-  network: "ask",
-  mcp: "ask",
-};
-
 const STATUS_LABEL: Record<AgentRosterEntry["status"], string> = {
   idle: "Idle",
   working: "Working",
@@ -448,7 +439,7 @@ export function Agents({ workspaceId, request, onOpenChat, configRef }: AgentsPr
       setListError(errorMessage(loadError));
       setAgents([]);
     }
-  }, [request, includeArchived, workspaceId, applyRoster]);
+  }, [request, includeArchived, workspaceId, applyRoster, nextSnapshot]);
 
   useEffect(() => {
     void load();

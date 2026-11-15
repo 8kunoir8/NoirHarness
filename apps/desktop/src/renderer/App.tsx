@@ -23,6 +23,7 @@ import { CommandPalette } from "./CommandPalette.js";
 import type { Command } from "./commands.js";
 import { DiffView } from "./DiffView.js";
 import { ContextMenuProvider } from "./ContextMenu.js";
+import { after, coalesce, every } from "./defer.js";
 import { runningToolTitle, useSessionEvents, type ChatFile } from "./events.js";
 import { FileTree } from "./FileTree.js";
 import { Inspector } from "./Inspector.js";
@@ -226,8 +227,7 @@ export function App() {
   // Subscribe only once the socket is up: a restored tab mounts before `loadAll` connects, and a
   // subscribe request on a cold socket fails without retrying.
   const events = useSessionEvents(status === "kernel ok" ? (activeChatId ?? "") : "", request);
-  const refreshTimer = useRef<number | undefined>(undefined);
-  // Whether the debounced refresh still owes a git scan: session updates alone only need the list.
+  // Whether the coalesced refresh still owes a git scan: session updates alone only need the list.
   const pendingFileChange = useRef(false);
   // `git.status` scans the whole workspace; a burst of edits can overlap. Only the newest run may
   // publish, so an older scan can never overwrite a newer one.
@@ -318,7 +318,7 @@ export function App() {
       // A workspace that is not a repo (or an unavailable `git`) keeps working without stats.
       setGitStatus(undefined);
     }
-  }, [request, workspaceId]);
+  }, [workspaceId]);
 
   useEffect(() => {
     void refreshGit();
@@ -345,12 +345,12 @@ export function App() {
       reportArmed(enabled);
     };
     void report();
-    const timer = setInterval(() => void report(), 15_000);
+    const stop = every(15_000, () => void report());
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      stop();
     };
-  }, [request, workspaceId]);
+  }, [workspaceId]);
 
   // The nav badge asks the kernel for a count the shell does not otherwise load. A kernel without
   // the method (or no workspace yet) leaves the badge off rather than failing the shell.
@@ -365,7 +365,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [request, status, workspaceId]);
+  }, [status, workspaceId]);
 
   // One check per window, after the kernel is healthy, so a slow remote never delays start-up. The
   // kernel owns the 24-hour cadence and what was dismissed, so two windows cannot disagree.
@@ -381,7 +381,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [request, status, update]);
+  }, [status, update]);
 
   /**
    * The list is a page, not a table read: the window asks for what it renders, and the kernel
@@ -453,32 +453,29 @@ export function App() {
     appliedQuery.current = key;
     // `loadAll` already asked for the first list; asking again would race it.
     if (first) return;
-    const timer = setTimeout(() => {
-      void loadSessions().catch(() => undefined);
-    }, 200);
-    return () => clearTimeout(timer);
+    return after(200, () => void loadSessions().catch(() => undefined));
   }, [filter, query, workspaceId, loadSessions]);
 
   useEffect(() => {
+    // A burst of events collapses into one refresh: the first starts the wait, the rest are
+    // absorbed. A file change anywhere in the burst still earns the git scan.
+    const refresh = coalesce(250, () => {
+      const filesChanged = pendingFileChange.current;
+      pendingFileChange.current = false;
+      void loadSessions().catch(() => undefined);
+      if (filesChanged) void refreshGit();
+    });
     const listener = (event: AgentEvent): void => {
       // Session titles, statuses and badges refresh after every event; only a scan of the whole
       // workspace waits for one that can actually change files on disk.
       if (FILE_EVENTS[event.type] === true) pendingFileChange.current = true;
-      if (refreshTimer.current !== undefined) return;
-      refreshTimer.current = window.setTimeout(() => {
-        refreshTimer.current = undefined;
-        const filesChanged = pendingFileChange.current;
-        pendingFileChange.current = false;
-        void loadSessions().catch(() => undefined);
-        if (filesChanged) void refreshGit();
-      }, 250);
+      refresh.schedule();
     };
     void connect(listener).catch(() => undefined);
     return () => {
-      if (refreshTimer.current !== undefined) window.clearTimeout(refreshTimer.current);
-      // The ref must not stay set across effect re-runs (workspace change): a stale timer id would
-      // suppress every later event's refresh for the rest of the session.
-      refreshTimer.current = undefined;
+      // The pending run belongs to this subscription: a workspace change must not let an old
+      // workspace's refresh fire against the new one.
+      refresh.cancel();
       pendingFileChange.current = false;
       offEvent(listener);
     };
@@ -530,7 +527,7 @@ export function App() {
       setFailedReads((current) => ({ ...current, [path]: message }));
       return undefined;
     }
-  }, [request, workspaceId]);
+  }, [workspaceId]);
 
   // Paths are workspace-relative, so every document belongs to exactly one workspace: a switch (or
   // deselecting the workspace) drops the whole record before anything can render or save the old text.
@@ -674,7 +671,7 @@ export function App() {
       if (workspaceRef.current !== savedWorkspace) return;
       setError(cause instanceof Error ? cause.message : `Could not save ${tab.path}`);
     }
-  }, [documents, request, tabState, workspaceId, refreshGit]);
+  }, [documents, tabState, workspaceId, refreshGit]);
 
   // Re-read the active file after a save conflict (or any change made outside the editor). Unsaved
   // edits are dropped, which is what the command label says.

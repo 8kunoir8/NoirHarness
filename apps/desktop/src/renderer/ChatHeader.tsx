@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { ModelView, SessionStatus } from "@noir/protocol";
+import { every } from "./defer.js";
 import type { ChatTurn, ChatUsage } from "./events.js";
 import { formatDuration } from "./format.js";
 import { UsageMeter } from "./UsageMeter.js";
@@ -34,8 +35,7 @@ function useElapsed(startedAt: number | undefined): number {
   useEffect(() => {
     if (startedAt === undefined) return;
     setNow(Date.now());
-    const timer = window.setInterval(() => setNow(Date.now()), 500);
-    return () => window.clearInterval(timer);
+    return every(500, () => setNow(Date.now()));
   }, [startedAt]);
   return startedAt === undefined ? 0 : now - startedAt;
 }

@@ -82,8 +82,8 @@ export function AgentOffice({
         if (parent === null) return;
 
         const Phaser = phaserModule.default;
-        // `Phaser.Game` structurally satisfies the narrow handle; keeping the type local keeps
-        // Phaser out of React state and out of the component's public surface.
+        // Phaser's own `Game` type satisfies this narrow handle, so nothing is asserted: keeping
+        // the type local keeps Phaser out of React state and out of the component's public surface.
         const game: OfficeGame = new Phaser.Game({
           type: Phaser.AUTO,
           parent,
@@ -93,7 +93,7 @@ export function AgentOffice({
           pixelArt: true,
           fps: { target: 30 },
           scene: [sceneModule.createOfficeScene(Phaser)],
-        }) as unknown as OfficeGame;
+        });
 
         const select = (agentId?: unknown): void => {
           if (typeof agentId === "string") latest.current.onSelect?.(agentId);

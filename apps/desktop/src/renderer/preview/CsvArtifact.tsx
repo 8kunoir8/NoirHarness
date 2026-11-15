@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { debounce } from "../defer.js";
 import { MAX_CELL_CHARS, MAX_ROWS, parseCsv } from "./csv.js";
 
 /** Fixed row height in CSS pixels: the window maths only works against a known stride. */
@@ -43,14 +44,11 @@ export function CsvArtifact({ text }: CsvArtifactProps) {
     };
     measure();
     if (typeof ResizeObserver === "undefined") return;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const observer = new ResizeObserver(() => {
-      clearTimeout(timer);
-      timer = setTimeout(measure, 150);
-    });
+    const pending = debounce(150, measure);
+    const observer = new ResizeObserver(() => pending.schedule());
     observer.observe(element);
     return () => {
-      clearTimeout(timer);
+      pending.cancel();
       observer.disconnect();
     };
   }, []);

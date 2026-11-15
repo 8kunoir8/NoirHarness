@@ -7,7 +7,7 @@ import { startMockProvider, type MockProvider } from "./mock-provider.js";
 
 async function sendPrompt(page: Page, text: string): Promise<void> {
   await page.getByLabel("Prompt", { exact: true }).fill(text);
-  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("button", { exact: true, name: "Send" }).click();
 }
 
 /** Runs one chat against the mock. Teardown removes the keyring entry, the mock, and the data dir. */
@@ -56,7 +56,7 @@ test("allows a tool once and streams the follow-up reply", async () => {
     await sendPrompt(page, "tool");
     const permission = page.getByTestId("permission-card");
     await expect(permission).toBeVisible({ timeout: 20_000 });
-    await permission.getByRole("button", { name: "Allow once" }).click();
+    await permission.getByRole("button", { exact: true, name: "Allow once" }).click();
 
     // Only `tool.output` fills the card's <pre>; without it the element never renders.
     await expect(page.getByTestId("tool-card").locator("pre")).toContainText("hi", { timeout: 20_000 });
@@ -109,7 +109,7 @@ test("deletes a chat from the list and closes its tab", async () => {
     await sessions.getByRole("button", { name: /^Confirm delete / }).first().click();
     await expect(sessions.getByText("No chats yet. Create one to start talking to the agent.")).toBeVisible();
     // Deleting took the tab with it, so nothing is left pointing at the removed session.
-    await expect(page.getByRole("tablist", { name: "Open tabs" }).getByRole("tab")).toHaveCount(0);
+    await expect(page.getByRole("tablist", { exact: true, name: "Open tabs" }).getByRole("tab")).toHaveCount(0);
     await expect(page.getByLabel("Prompt", { exact: true })).toHaveCount(0);
   });
 });

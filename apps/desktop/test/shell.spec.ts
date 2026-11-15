@@ -5,7 +5,7 @@ import { startMockProvider } from "./mock-provider.js";
 
 async function send(page: Page, text: string): Promise<void> {
   await page.getByLabel("Prompt", { exact: true }).fill(text);
-  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("button", { exact: true, name: "Send" }).click();
 }
 
 test("queues a second prompt, interrupts the first, and replays after restart", async () => {
@@ -23,7 +23,7 @@ test("queues a second prompt, interrupts the first, and replays after restart", 
       await send(page, "tool");
       const permission = page.getByTestId("permission-card");
       await expect(permission).toBeVisible({ timeout: 20_000 });
-      await permission.getByRole("button", { name: "Allow once" }).click();
+      await permission.getByRole("button", { exact: true, name: "Allow once" }).click();
       await expect(page.getByTestId("tool-card").locator("pre")).toContainText("hi", { timeout: 20_000 });
       await expect(page.getByTestId("message-assistant").filter({ hasText: "tool finished" })).toBeVisible({
         timeout: 20_000,
@@ -36,7 +36,7 @@ test("queues a second prompt, interrupts the first, and replays after restart", 
       await page.keyboard.press("ControlOrMeta+Enter");
       await expect(page.getByRole("button", { name: /Queued — runs after this turn/ })).toBeVisible();
 
-      await page.getByRole("button", { name: "Interrupt" }).click();
+      await page.getByRole("button", { exact: true, name: "Interrupt" }).click();
 
       // The queued prompt still runs once the interrupted turn settles.
       await expect(page.getByTestId("message-assistant").filter({ hasText: "queued reply." })).toBeVisible({

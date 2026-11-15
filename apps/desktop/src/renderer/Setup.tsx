@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import {
   McpServerCreateParams,
   McpServerDeleteParams,
@@ -100,7 +100,7 @@ export function Setup({ request, onOpenChat }: SetupProps) {
   const [mcpProbes, setMcpProbes] = useState<Record<string, McpTestResult>>({});
   const [busy, setBusy] = useState(false);
 
-  async function load(): Promise<void> {
+  const load = useCallback(async (): Promise<void> => {
     try {
       const [providerResult, modelResult, health, mcpResult] = await Promise.all([
         request("provider.list").then((value) => ProviderListResult.parse(value)),
@@ -116,11 +116,11 @@ export function Setup({ request, onOpenChat }: SetupProps) {
     } catch (loadError) {
       setError(errorMessage(loadError));
     }
-  }
+  }, [request]);
 
   useEffect(() => {
     void load();
-  }, []);
+  }, [load]);
 
   const providerValid =
     name.trim().length > 0 && baseUrl.trim().length > 0 && apiKey.length > 0 && !busy;

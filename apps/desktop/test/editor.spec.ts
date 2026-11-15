@@ -29,7 +29,7 @@ test("edits a file, saves it, and opens the diff from the inspector", async () =
       const page = await app.firstWindow();
       await bootstrap(page, mock, harness.workspacePath);
 
-      await page.getByRole("button", { name: "File list" }).click();
+      await page.getByRole("button", { exact: true, name: "File list" }).click();
       await page.getByRole("treeitem", { name: /src/ }).click();
       await page.getByRole("treeitem", { name: /main\.ts/ }).click();
 
@@ -52,14 +52,15 @@ test("edits a file, saves it, and opens the diff from the inspector", async () =
 
       // The toggle lives in the top bar and the list it opens reflects the whole workspace, so the
       // chat tab stays the active one throughout.
-      await page.getByRole("banner").getByRole("button", { name: "Inspector" }).click();
-      const changed = page.getByRole("region", { name: "Changed files" });
+      await page.getByRole("banner").getByRole("button", { exact: true, name: "Inspector" }).click();
+      const changed = page.getByRole("region", { exact: true, name: "Changed files" });
       // The git scan is asynchronous; the assertion's timeout waits for it instead of a fixed sleep.
       await expect(changed).toContainText("src/main.ts", { timeout: 20_000 });
       await expect(changed).toContainText("+1");
 
-      await changed.getByRole("button", { name: "Show diff" }).click();
-      const diff = page.getByRole("region", { name: "Diff" });
+      // The button's accessible name is its `aria-label`, not the visible "Show diff".
+      await changed.getByRole("button", { exact: true, name: "Show diff for src/main.ts" }).click();
+      const diff = page.getByRole("region", { exact: true, name: "Diff" });
       await expect(diff).toContainText("+export const b = 2;");
     } finally {
       if (app !== undefined) {
@@ -90,7 +91,7 @@ test("refuses to open a file larger than the read cap", async () => {
       const page = await app.firstWindow();
       await bootstrap(page, mock, harness.workspacePath);
 
-      await page.getByRole("button", { name: "File list" }).click();
+      await page.getByRole("button", { exact: true, name: "File list" }).click();
       await page.getByRole("treeitem", { name: /huge\.txt/ }).click();
 
       // A truncated read is refused before a buffer exists: no editor, an explicit alert, and the

@@ -66,7 +66,7 @@ describe("ProviderService", () => {
   it("preserves unicode and spaces in names", () => {
     const db = openDb(":memory:");
     const service = new ProviderService(db, memorySecrets());
-    const p = service.create({ name: "Ünïcode Provider", baseUrl: "http://x/v1", apiKind: "openai-completions", apiKey: "k", enabled: true });
+    service.create({ name: "Ünïcode Provider", baseUrl: "http://x/v1", apiKind: "openai-completions", apiKey: "k", enabled: true });
     expect(service.list()[0]!.name).toBe("Ünïcode Provider");
   });
 
