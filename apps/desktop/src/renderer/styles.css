@@ -755,7 +755,9 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; colo
 }
 
 .rewind-action {
-  align-self: flex-start;
+  /* The bubble is not a flex container, so `align-self` never applied: the link ran on from "You". */
+  display: block;
+  margin-top: 2px;
   font-size: 0.8rem;
   opacity: 0.65;
 }
