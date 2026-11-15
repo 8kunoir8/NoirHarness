@@ -728,6 +728,8 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; colo
 
 .chat { display: flex; flex-direction: column; gap: 12px; min-height: 0; flex: 1; padding-bottom: 16px; }
 .chat-header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* The heading keeps a readable floor: its min-content is what stops `.chat-title` from shrinking
+   to the pill alone, so the header wraps the picker instead of hiding the title. */
 .chat-header h2 { flex: 1; min-width: 12ch; }
 .chat-header label { flex-direction: row; align-items: center; gap: 6px; }
 .chat-diff { display: inline-flex; gap: 4px; font-family: var(--font-mono); font-size: 0.8rem; }
@@ -949,7 +951,9 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; colo
 .approval p { margin: 0 0 8px; }
 .approval-options { display: flex; gap: 8px; flex-wrap: wrap; }
 
-.chat-title { display: flex; align-items: baseline; gap: 8px; flex: 1; min-width: 12ch; }
+/* `min-content`, not a fixed floor: the pill is `nowrap`, so a title column that shrinks past its
+   own content paints the pill over the model picker instead of letting the header wrap. */
+.chat-title { display: flex; align-items: baseline; gap: 8px; flex: 1; min-width: min-content; }
 .chat-title h2 { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The heading stays the heading: only its text becomes the click target. */
 .chat-title-button {

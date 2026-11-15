@@ -58,3 +58,33 @@ test("collapses both left columns and keeps them collapsed", async () => {
     await expect(page.getByRole("region", { name: "Projects", exact: true })).toBeVisible();
   });
 });
+
+test("keeps the session pill inside its own column when the chat is narrow", async () => {
+  await runShell(async (page) => {
+    await page.getByRole("button", { name: "New chat" }).click();
+    await expect(page.getByTestId("session-status")).toBeVisible();
+    // Widths where the header runs out of room: the pill is `nowrap`, so a title column allowed to
+    // shrink past its own content paints the pill over the model picker instead of wrapping.
+    for (const width of [980, 900, 820]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.waitForTimeout(100);
+      const header = await page.evaluate(() => {
+        const pill = document.querySelector(".chat-status");
+        const picker = document.querySelector(".model-picker");
+        const title = document.querySelector(".chat-title");
+        if (pill === null || picker === null || title === null) return null;
+        const a = pill.getBoundingClientRect();
+        const b = picker.getBoundingClientRect();
+        // Wrapping is the intended escape hatch, so the two only collide when they share a row.
+        const sameRow = a.top < b.bottom && b.top < a.bottom;
+        return {
+          shrunk: title.scrollWidth > title.clientWidth,
+          overlap: sameRow && a.right > b.left,
+        };
+      });
+      expect(header).not.toBeNull();
+      expect(header?.shrunk).toBe(false);
+      expect(header?.overlap).toBe(false);
+    }
+  });
+});
