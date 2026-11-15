@@ -49,8 +49,9 @@ describe("LiveSidebar", () => {
     expect(doing({ status: "error" }, "Run `pnpm test`")).toBe("Stopped on an error");
   });
 
-  it("says nothing about an agent that is not in the roster", () => {
-    render(
+  it("says which of the two reasons there is no agent to describe", () => {
+    // A chat is open and its agent was removed from the roster.
+    const { unmount } = render(
       <LiveSidebar
         roster={[]}
         agentId="a-9"
@@ -60,7 +61,21 @@ describe("LiveSidebar", () => {
         onOpenAgent={() => undefined}
       />,
     );
-    expect(screen.getByText("This chat has no agent in the roster.")).toBeTruthy();
+    expect(screen.getByText("This chat's agent is not in the roster.")).toBeTruthy();
+    unmount();
+
+    // No chat tab is open at all, so there is no chat whose agent could be missing.
+    render(
+      <LiveSidebar
+        roster={[]}
+        agentId={undefined}
+        activity={undefined}
+        showOffice={false}
+        onOpenAgents={() => undefined}
+        onOpenAgent={() => undefined}
+      />,
+    );
+    expect(screen.getByText("Open a chat to see the agent behind it.")).toBeTruthy();
   });
 });
 

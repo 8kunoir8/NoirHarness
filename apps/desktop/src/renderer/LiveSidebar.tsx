@@ -130,7 +130,11 @@ export function LiveSidebar({
       <section className="sidebar-section" aria-label="Live agent">
         <h3>Agent</h3>
         {active === undefined ? (
-          <p className="empty">This chat has no agent in the roster.</p>
+          <p className="empty">
+            {agentId === undefined
+              ? "Open a chat to see the agent behind it."
+              : "This chat's agent is not in the roster."}
+          </p>
         ) : (
           <dl className="sidebar-kv">
             <dt>Name</dt>
