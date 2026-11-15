@@ -24,17 +24,40 @@ describe("mcp permission category", () => {
 });
 
 describe("mcp server params", () => {
-  it("defaults args, env, and enabled on create", () => {
+  it("defaults args, env, headers, and the stdio transport on create", () => {
     const parsed = McpServerCreateParams.parse({ name: "sqlite", command: "npx" });
-    expect(parsed).toEqual({ name: "sqlite", command: "npx", args: [], env: {}, enabled: true });
+    expect(parsed).toEqual({
+      name: "sqlite",
+      transport: "stdio",
+      command: "npx",
+      args: [],
+      env: {},
+      headers: {},
+      enabled: true,
+    });
   });
 
   it("rejects a server name with illegal characters", () => {
     expect(() => McpServerCreateParams.parse({ name: "sqlite server", command: "npx" })).toThrow();
   });
 
-  it("rejects an empty command", () => {
-    expect(() => McpServerCreateParams.parse({ name: "sqlite", command: "" })).toThrow();
+  // An empty command is only wrong for stdio and a missing url only wrong for http, so the schema
+  // cannot decide: it must not invent the half the transport does not use. `McpService` rejects.
+  it("carries only the half of a server its transport uses", () => {
+    const parsed = McpServerCreateParams.parse({
+      name: "remote",
+      transport: "http",
+      url: "https://example.test/mcp",
+    });
+    expect(parsed).toEqual({
+      name: "remote",
+      transport: "http",
+      url: "https://example.test/mcp",
+      args: [],
+      env: {},
+      headers: {},
+      enabled: true,
+    });
   });
 
   it("keeps id optional fields sparse on update", () => {
@@ -46,7 +69,13 @@ describe("mcp server params", () => {
 describe("mcp test params", () => {
   it("parses a probe configuration with env", () => {
     const parsed = McpTestParams.parse({ command: "node", args: ["server.mjs"], env: { DB: "x" } });
-    expect(parsed).toEqual({ command: "node", args: ["server.mjs"], env: { DB: "x" } });
+    expect(parsed).toEqual({
+      transport: "stdio",
+      command: "node",
+      args: ["server.mjs"],
+      env: { DB: "x" },
+      headers: {},
+    });
   });
 });
 
