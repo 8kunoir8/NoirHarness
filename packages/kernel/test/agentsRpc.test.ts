@@ -1,10 +1,10 @@
 import { once } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import WebSocket from "ws";
-import { AgentArchiveResult, AgentListResult, AgentRosterResult, AgentView, ErrorCodes } from "@noir/protocol";
+import { AgentArchiveResult, AgentListResult, AgentRolesResult, AgentRosterResult, AgentView, ErrorCodes } from "@noir/protocol";
 import { startKernel } from "./support.js";
 
 const dirs: string[] = [];
@@ -50,7 +50,9 @@ it("creates, lists, updates, and archives an agent over the socket", async () =>
     expect(duplicate.error.code).toBe(ErrorCodes.conflict);
 
     const listed = AgentListResult.parse((await call(kernel.port, kernel.token, "agent.list", {})).result);
-    expect(listed.agents.map((a) => a.id)).toEqual([agent.id]);
+    expect(listed.agents.map((a) => a.id)).toEqual([agent.id, listed.defaultAgentId]);
+    // The default profile exists before the first chat, so the picker can always name it.
+    expect(listed.agents.find((a) => a.id === listed.defaultAgentId)?.name).toBe("Noir");
 
     const updated = AgentView.parse(
       (await call(kernel.port, kernel.token, "agent.update", { id: agent.id, role: "Review" })).result,
@@ -60,12 +62,14 @@ it("creates, lists, updates, and archives an agent over the socket", async () =>
 
     const archived = await call(kernel.port, kernel.token, "agent.archive", { id: agent.id, archived: true });
     expect(AgentArchiveResult.parse(archived.result)).toEqual({ ok: true });
-    expect(AgentListResult.parse((await call(kernel.port, kernel.token, "agent.list", {})).result).agents).toEqual([]);
+    expect(
+      AgentListResult.parse((await call(kernel.port, kernel.token, "agent.list", {})).result).agents.map((a) => a.id),
+    ).toEqual([listed.defaultAgentId]);
 
     const all = AgentListResult.parse(
       (await call(kernel.port, kernel.token, "agent.list", { includeArchived: true })).result,
     );
-    expect(all.agents.map((a) => a.id)).toEqual([agent.id]);
+    expect(all.agents.map((a) => a.id)).toEqual([agent.id, listed.defaultAgentId]);
     expect(all.agents[0]?.archivedAt).toEqual(expect.any(Number));
   } finally {
     await kernel.close();
@@ -97,12 +101,56 @@ it("rejects an unknown policy key and a non-string id with invalidParams", async
 it("serves a roster snapshot and rejects unknown params", async () => {
   const kernel = await startKernel({ dataDir: tempDir("noir agents rpc ") });
   try {
+    // A fresh kernel has exactly one profile: the default a chat that names no agent runs as.
     const roster = AgentRosterResult.parse((await call(kernel.port, kernel.token, "agent.roster", {})).result);
-    expect(roster.agents).toEqual([]);
+    expect(roster.agents).toMatchObject([{ agentId: "default", name: "Noir", role: "Generalist", status: "idle" }]);
     expect(roster.generatedAt).toEqual(expect.any(Number));
 
     const typed = await call(kernel.port, kernel.token, "agent.roster", { includeArchived: true });
     expect(typed.error.code).toBe(ErrorCodes.invalidParams);
+  } finally {
+    await kernel.close();
+  }
+});
+
+it("derives the role catalog from the workspace's skills and MCP servers", async () => {
+  const projectRoot = tempDir("noir roles project ");
+  const skills: ReadonlyArray<readonly [string, string]> = [
+    ["release-notes", "Write the changelog entry for a release"],
+    ["wobble", "Balance the wobble in a folk dance"],
+  ];
+  for (const [name, description] of skills) {
+    mkdirSync(join(projectRoot, ".noir", "skills", name), { recursive: true });
+    writeFileSync(join(projectRoot, ".noir", "skills", name, "SKILL.md"), `---\nname: ${name}\ndescription: ${description}\n---\n`);
+  }
+  const kernel = await startKernel({ dataDir: tempDir("noir agents rpc ") });
+  try {
+    const project = await call(kernel.port, kernel.token, "project.add", { path: projectRoot });
+    const workspaceId = (await call(kernel.port, kernel.token, "workspace.create", { projectId: project.result.id }))
+      .result.id as string;
+    await call(kernel.port, kernel.token, "mcp.create", { name: "postgres", command: "npx meow-postgres-mcp" });
+
+    const { roles } = AgentRolesResult.parse((await call(kernel.port, kernel.token, "agent.roles", { workspaceId })).result);
+    expect(roles[0]?.id).toBe("generalist");
+    expect(roles.find((role) => role.id === "writer")?.skills).toEqual(["release-notes"]);
+    expect(roles.find((role) => role.id === "analyst")?.mcpServerIds).toHaveLength(1);
+    // A skill no vocabulary claims still shows up, named after itself.
+    expect(roles.find((role) => role.id === "derived:skill:wobble")).toMatchObject({
+      name: "Wobble",
+      skills: ["wobble"],
+      derived: true,
+    });
+  } finally {
+    await kernel.close();
+  }
+});
+
+it("refuses to archive the default agent a chat falls back to", async () => {
+  const kernel = await startKernel({ dataDir: tempDir("noir agents rpc ") });
+  try {
+    const archived = await call(kernel.port, kernel.token, "agent.archive", { id: "default", archived: true });
+    expect(archived.error.code).toBe(ErrorCodes.conflict);
+    expect(archived.error.message).toMatch(/default agent/);
   } finally {
     await kernel.close();
   }

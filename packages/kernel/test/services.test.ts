@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentCreateParams, ErrorCodes, RpcFault, reduceSession, type SessionState } from "@noir/protocol";
 import { AgentService } from "../src/agents.js";
 import { openDb } from "../src/db.js";
+import { DEFAULT_AGENT_ID } from "../src/defaultAgent.js";
 import { EventStore } from "../src/eventStore.js";
 import { ModelService } from "../src/models.js";
 import { ProjectService } from "../src/projects.js";
@@ -374,15 +375,19 @@ describe("SessionService agent start", () => {
     expect(sessions.snapshot(session.id)).toMatchObject({ agentId: agent.id, modelId: model.id, permissionPolicy: { shell: "allow" } });
   });
 
-  it("keeps the legacy profile row for a session created without an agent", () => {
+  it("reuses one default profile for every session created without an agent", () => {
     const { db, sessions, ws } = fixture();
-    const session = sessions.create(ws.id);
-    expect(db.prepare("SELECT name, role, engine_id FROM agents WHERE id = ?").get(session.agentId)).toEqual({
-      name: "Agent",
-      role: "default",
+    const first = sessions.create(ws.id);
+    const second = sessions.create(ws.id);
+    expect(first.agentId).toBe(DEFAULT_AGENT_ID);
+    expect(second.agentId).toBe(DEFAULT_AGENT_ID);
+    expect(db.prepare("SELECT name, role, engine_id FROM agents WHERE id = ?").get(DEFAULT_AGENT_ID)).toEqual({
+      name: "Noir",
+      role: "Generalist",
       engine_id: "acp",
     });
-    expect(session.modelId).toBeNull();
+    expect(db.prepare("SELECT COUNT(*) FROM agents").pluck().get()).toBe(1);
+    expect(first.modelId).toBeNull();
   });
 
   it("rejects an archived agent", () => {

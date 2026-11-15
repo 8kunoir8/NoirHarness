@@ -58,8 +58,8 @@ test("paints two agents, surfaces an approval, restores desks, and opens chat fr
   try {
     app = await launchApp(harness);
     let page = await app.firstWindow();
-    // No chat from the harness: `session.create` without an agent inserts its own "Agent" row and
-    // the office would paint three characters.
+    // No chat from the harness: the kernel already created the default profile, so the office paints
+    // it beside the two agents this spec staffs.
     await setupWorkspace(page, mock, harness.workspacePath);
 
     // Alpha: a real session on the mock provider, streaming long enough to be working on screen.
@@ -77,7 +77,8 @@ test("paints two agents, surfaces an approval, restores desks, and opens chat fr
     await showAgents(page);
     const canvas = page.locator(".office-canvas");
     await expect(canvas).toHaveAttribute("data-office-ready", "true", { timeout: 30_000 });
-    await expect(canvas).toHaveAttribute("data-office-count", "2");
+    // Alpha, Beta, and the default profile the kernel created at startup.
+    await expect(canvas).toHaveAttribute("data-office-count", "3");
     await expect(canvas).toHaveAttribute("aria-hidden", "true");
     await expect(page.getByText("Office unavailable")).toHaveCount(0);
 
@@ -108,13 +109,14 @@ test("paints two agents, surfaces an approval, restores desks, and opens chat fr
     await showAgents(page);
     await expect(rosterRow(page, "Alpha").locator(".agents-row-bubble")).toHaveCount(0);
 
-    // Desk assignment is a pure hash of the agent id, so a cold start must seat both agents at the
-    // exact desks they had before. The hook is the scene's own view of that assignment, and this
+    // Desk assignment is a pure hash of the agent id, so a cold start must seat every agent at the
+    // exact desk it had before. The hook is the scene's own view of that assignment, and this
     // Agents view is a fresh mount: wait for its boot rather than reading a half-rendered wrapper.
     await expect(canvas).toHaveAttribute("data-office-ready", "true", { timeout: 30_000 });
     const desksBefore = await canvas.getAttribute("data-office-desks");
     expect(desksBefore).not.toBeNull();
-    expect(Object.keys(JSON.parse(desksBefore ?? "{}"))).toHaveLength(2);
+    // Alpha, Beta, and the default profile the kernel created at startup.
+    expect(Object.keys(JSON.parse(desksBefore ?? "{}"))).toHaveLength(3);
 
     await closeWindow(app);
     app = undefined;
@@ -126,7 +128,7 @@ test("paints two agents, surfaces an approval, restores desks, and opens chat fr
     await showAgents(page);
     const restoredCanvas = page.locator(".office-canvas");
     await expect(restoredCanvas).toHaveAttribute("data-office-ready", "true", { timeout: 30_000 });
-    await expect(restoredCanvas).toHaveAttribute("data-office-count", "2");
+    await expect(restoredCanvas).toHaveAttribute("data-office-count", "3");
     await expect(restoredCanvas).toHaveAttribute("data-office-desks", desksBefore ?? "");
 
     // List view: the canvas leaves the DOM, every roster row stays operable.

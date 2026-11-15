@@ -18,6 +18,13 @@ async function addMcpServer(page: Page): Promise<void> {
   await expect(panel.getByText("calc", { exact: true })).toBeVisible();
 }
 
+/** One roster row by its agent name: the default profile is always present, so `.first()` is a guess. */
+function rosterRow(page: Page, name: string) {
+  return page
+    .getByRole("listitem")
+    .filter({ has: page.getByRole("button", { name: `Select ${name}`, exact: true }) });
+}
+
 /**
  * Setup → MCP server → agent binding → native turn: the probe proves the process speaks MCP, and the
  * turn proves the broker routes the provider's `mcp__calc__add` through the approval card and back.
@@ -52,8 +59,9 @@ test("brokers an MCP tool call from a bound agent through the approval card", as
     // The policy row stays on `ask`, so the turn must stop at the approval card.
     await inspector.getByRole("button", { name: "Save" }).click();
 
-    const roster = page.getByRole("region", { name: "Agents" });
-    await roster.getByRole("button", { name: "Start", exact: true }).first().click();
+    // The roster is sorted by name, so a bare `.first()` would start `Broker` or the default `Noir`
+    // depending on the sort: name the row this turn belongs to.
+    await rosterRow(page, "Broker").getByRole("button", { name: "Start", exact: true }).click();
     await expect(page.getByLabel("Prompt", { exact: true })).toBeVisible({ timeout: 20_000 });
     await page.getByLabel("Prompt", { exact: true }).fill("mtool");
     await page.getByRole("button", { name: "Send" }).click();

@@ -67,7 +67,9 @@ function agentRequest(overrides: Partial<Record<string, (params?: unknown) => un
     if (override !== undefined) return override(params);
     switch (method) {
       case "agent.list":
-        return { agents: [] };
+        return { agents: [], defaultAgentId: "default" };
+      case "agent.roles":
+        return { roles: [] };
       case "agent.roster":
         return { agents: [], generatedAt: 1 };
       case "model.list":

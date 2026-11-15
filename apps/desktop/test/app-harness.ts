@@ -60,9 +60,10 @@ export async function closeWindow(app: ElectronApplication | undefined): Promise
 }
 
 /**
- * Registers provider, model, project and workspace, then lands on `view`. It stops short of
- * creating a chat because `session.create` without an agent also inserts an "Agent" profile:
- * a spec that counts the roster must own every agent it expects.
+ * Registers provider, model, project and workspace, then lands on `view`. It stops short of creating a
+ * chat: that needs a prompt, and a spec that counts the roster wants to own what it staffs. The
+ * kernel's default profile (`Noir`) already exists by then, and a chat that names no agent reuses it
+ * rather than adding a row.
  */
 export async function setupWorkspace(
   page: Page,

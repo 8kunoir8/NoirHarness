@@ -21,6 +21,7 @@ export const Methods = {
   agentUpdate: "agent.update",
   agentArchive: "agent.archive",
   agentRoster: "agent.roster",
+  agentRoles: "agent.roles",
   sessionSubscribe: "session.subscribe",
   modelCreate: "model.create",
   modelList: "model.list",
@@ -300,8 +301,35 @@ export const AgentArchiveResult = z.object({ ok: z.literal(true) });
 export type AgentArchiveResult = z.infer<typeof AgentArchiveResult>;
 export const AgentListParams = z.object({ includeArchived: z.boolean().optional() });
 export type AgentListParams = z.infer<typeof AgentListParams>;
-export const AgentListResult = z.object({ agents: z.array(AgentView) });
+export const AgentListResult = z.object({
+  agents: z.array(AgentView),
+  /** The profile a chat that names no agent runs as; its id is fixed, so a rename does not move it. */
+  defaultAgentId: z.string(),
+});
 export type AgentListResult = z.infer<typeof AgentListResult>;
+
+/**
+ * A role is a capability preset, not a permission: it names the workspace skills it is for and the
+ * MCP servers it binds. Roles are derived from what exists, so the list changes as skills and servers
+ * come and go — a skill or server that matches no preset gets a role of its own.
+ */
+export const AgentRoleView = z.object({
+  /** Stable within a session of the catalog: a preset key, or `derived:<kind>:<slug>`. */
+  id: z.string(),
+  name: z.string(),
+  description: z.string(),
+  /** Enabled skills in the workspace this role is for; skills stay workspace-wide either way. */
+  skills: z.array(z.string()),
+  /** Enabled MCP servers the role binds, by id. */
+  mcpServerIds: z.array(z.string()),
+  /** True when the role exists only because a skill or a server matched no preset. */
+  derived: z.boolean(),
+});
+export type AgentRoleView = z.infer<typeof AgentRoleView>;
+export const AgentRolesParams = z.object({ workspaceId: z.string().optional() });
+export type AgentRolesParams = z.infer<typeof AgentRolesParams>;
+export const AgentRolesResult = z.object({ roles: z.array(AgentRoleView) });
+export type AgentRolesResult = z.infer<typeof AgentRolesResult>;
 
 export const AgentRosterEntry = z.object({
   agentId: z.string(),

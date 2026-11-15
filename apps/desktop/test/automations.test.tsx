@@ -39,7 +39,7 @@ function requestWith(overrides: Record<string, (params: unknown) => unknown> = {
     const override = overrides[method];
     if (override !== undefined) return override(params);
     if (method === "schedule.list") return { schedules: [schedule] };
-    if (method === "agent.list") return { agents: [agent] };
+    if (method === "agent.list") return { agents: [agent], defaultAgentId: agent.id };
     if (method === "schedule.runs") return { runs: [], nextBefore: null };
     throw new Error(method);
   };
@@ -185,7 +185,7 @@ describe("Automations", () => {
     try {
       let running = false;
       const handler = vi.fn(async (method: string): Promise<unknown> => {
-        if (method === "agent.list") return { agents: [agent] };
+        if (method === "agent.list") return { agents: [agent], defaultAgentId: agent.id };
         if (method === "schedule.list") {
           return { schedules: [{ ...schedule, running, nextRunAt: schedule.nextRunAt + (running ? 86_400_000 : 0) }] };
         }

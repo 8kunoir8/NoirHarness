@@ -379,6 +379,18 @@ creates a session from the agent, freezing its engine, model, and policy, and op
 Saving the form sends only the fields that changed, so an agent that still references a deleted model
 can be edited without first clearing that model.
 
+**Roles are a capability catalog, not a permission tier.** `agent.roles` answers with what this
+workspace can actually staff: every preset that recognises at least one enabled skill or MCP server,
+a role of its own for anything no preset recognises (named after the skill or the server), and
+`Generalist` first, which claims nothing and is always valid. Picking a role in the inspector shows
+the skills it is for and ticks the MCP servers it binds; the user can still change any box. Skills
+stay workspace-wide — the role explains a choice, it does not restrict one.
+
+**Noir is the default agent.** It is created once at kernel startup with a fixed id, so a chat that
+picks no agent reuses that row instead of minting a profile per chat; renaming it keeps it, and the
+kernel refuses to archive it because `session.create` resolves it whenever the caller names none. The
+new-chat row above the session list picks both the agent and the model, and preselects `Noir`.
+
 The roster refreshes for live events (`session.status`, `turn.*`, `tool.*`, `permission.*`,
 `usage.updated`) with a trailing 250 ms debounce, and applies snapshots in request order, so a slow
 answer cannot overwrite a newer one. An approval that needs you shows as a `Needs you` row carrying

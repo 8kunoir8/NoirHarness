@@ -12,6 +12,7 @@ import {
   type AgentView,
 } from "@noir/protocol";
 import type { EventStore } from "./eventStore.js";
+import { DEFAULT_AGENT_ID } from "./defaultAgent.js";
 import type { ModelService } from "./models.js";
 import { parsePermissionPolicy } from "./policy.js";
 import type { SessionService } from "./sessions.js";
@@ -201,13 +202,20 @@ export class AgentService {
     return this.view(params.id);
   }
 
-  /** Idempotent in both directions; archiving frees the name for a new non-archived agent. */
+  /**
+   * Idempotent in both directions; archiving frees the name for a new non-archived agent. The default
+   * profile is the exception: `session.create` resolves it whenever a chat names no agent, so archiving
+   * it would leave that call with nothing to start.
+   */
   archive(id: string, archived: boolean): void {
     const row = this.db.prepare("SELECT name, archived_at FROM agents WHERE id = ?").get(id) as
       | { name: string; archived_at: number | null }
       | undefined;
     if (row === undefined) throw new RpcFault(ErrorCodes.notFound, "Agent not found");
     if ((row.archived_at !== null) === archived) return;
+    if (id === DEFAULT_AGENT_ID && archived) {
+      throw new RpcFault(ErrorCodes.conflict, "The default agent cannot be archived");
+    }
     // Unarchiving into a name taken meanwhile would break the uniqueness invariant.
     if (!archived) this.assertNameAvailable(row.name, id);
     this.db.prepare("UPDATE agents SET archived_at = ? WHERE id = ?").run(archived ? Date.now() : null, id);

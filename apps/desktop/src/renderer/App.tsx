@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  AgentListResult,
   ModelListResult,
   ScheduleListResult,
   SESSION_STATUS_FACTS,
@@ -136,6 +137,11 @@ export function App() {
   const [sessions, setSessions] = useState<SessionView[]>([]);
   const [workspaceId, setWorkspaceId] = useState("");
   const [newChatModelId, setNewChatModelId] = useState("");
+  // A chat that picks no agent still runs as one: the kernel resolves its default profile, and the
+  // picker names it here so a second profile is never invented by accident.
+  const [agents, setAgents] = useState<AgentListResult["agents"]>([]);
+  const [defaultAgentId, setDefaultAgentId] = useState("");
+  const [newChatAgentId, setNewChatAgentId] = useState("");
   const [tabState, setTabState] = useState<TabsState>(() =>
     loadTabs(loadJson<unknown>(TABS_KEY, loadJson<unknown>("noir.tabs.v2", loadJson<unknown>("noir.tabs", null)))),
   );
@@ -169,6 +175,8 @@ export function App() {
   const { roster } = useRoster(request, { subscribe: true, initial: true });
   // The Office header's Configure button and the `C` command both focus the inspector it names.
   const agentConfigRef = useRef<HTMLElement | null>(null);
+  // An archived or deleted pick falls back to the default instead of making the next chat fail.
+  const chatAgentId = agents.some((agent) => agent.id === newChatAgentId) ? newChatAgentId : defaultAgentId;
 
   const activeTab = tabState.tabs.find((tab) => tab.id === tabState.active);
   // Opening a file leaves the chat subscription alone: the last chat that was actually active stays
@@ -351,21 +359,25 @@ export function App() {
       const health = SystemHealthResult.parse(await request("system.health"));
       setStatus("kernel ok");
       setEngineDir(health.engineDir);
-      const [projectResult, workspaceResult, modelResult, sessionList] = await Promise.all([
+      const [projectResult, workspaceResult, modelResult, sessionList, agentResult] = await Promise.all([
         request<{ projects: ProjectView[] }>("project.list"),
         request<{ workspaces: WorkspaceView[] }>("workspace.list"),
         request<ModelListResult>("model.list"),
         request<SessionListResult>("session.list", sessionListQuery({ filter: "all", query: "", workspaceId: "" })),
+        request<AgentListResult>("agent.list", {}),
       ]);
       setProjects(projectResult.projects);
       setWorkspaces(workspaceResult.workspaces);
       setModels(modelResult.models);
+      setAgents(agentResult.agents);
+      setDefaultAgentId(agentResult.defaultAgentId);
       sessionsLoaded.current = true;
       nextCursor.current = sessionList.nextCursor;
       setHasMore(sessionList.nextCursor !== null);
       setSessionTotal(sessionList.total);
       setSessions(sessionList.sessions);
       setNewChatModelId((current) => (current !== "" ? current : (modelResult.models[0]?.id ?? "")));
+      setNewChatAgentId((current) => (current !== "" ? current : agentResult.defaultAgentId));
       setWorkspaceId((current) => current !== "" ? current : (workspaceResult.workspaces[0]?.id ?? ""));
       setView((current) =>
         current === "setup" && modelResult.models.length > 0 ? "chats" : current,
@@ -763,8 +775,9 @@ export function App() {
     }
     setError(undefined);
     try {
-      const params: { workspaceId: string; modelId?: string } = { workspaceId };
+      const params: { workspaceId: string; modelId?: string; agentId?: string } = { workspaceId };
       if (newChatModelId !== "") params.modelId = newChatModelId;
+      if (chatAgentId !== "") params.agentId = chatAgentId;
       const created = await request<SessionView>("session.create", params);
       await loadSessions();
       openSession(created);
@@ -1237,6 +1250,20 @@ export function App() {
             ) : (
               <section aria-label="Sessions" className="sessions-region">
                 <div className="new-chat-row">
+                  <label>
+                    New chat agent
+                    <select
+                      aria-label="New chat agent"
+                      value={chatAgentId}
+                      onChange={(event) => setNewChatAgentId(event.target.value)}
+                    >
+                      {agents.map((agent) => (
+                        <option key={agent.id} value={agent.id}>
+                          {agent.id === defaultAgentId ? `${agent.name} (default)` : agent.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                   <label>
                     New chat model
                     <select

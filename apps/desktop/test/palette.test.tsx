@@ -81,6 +81,8 @@ function stubApp({ models = [MODEL], sessions = [] }: { models?: readonly unknow
         return { workspaces: [{ id: "w1", projectId: "p1", path: "C:/ws", branch: null, kind: "git", status: "clean" }] };
       case "model.list":
         return { models };
+      case "agent.list":
+        return { agents: [], defaultAgentId: "default" };
       case "session.list":
         return { sessions: listed, total: listed.length, nextCursor: null };
       case "session.subscribe":

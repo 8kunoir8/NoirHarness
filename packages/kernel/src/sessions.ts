@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { v7 as uuidv7 } from "uuid";
 import { canTransition, ErrorCodes, LIVE_STATUSES, statusSqlList, RpcFault, type EngineKind, type PermissionPolicy, type SessionStatus, type SessionView } from "@noir/protocol";
+import { DEFAULT_AGENT_ID, ensureDefaultAgent } from "./defaultAgent.js";
 import type { EventStore } from "./eventStore.js";
 import type { ModelService } from "./models.js";
 import { parsePermissionPolicy } from "./policy.js";
@@ -91,39 +92,33 @@ export class SessionService {
   ) {}
 
   /**
-   * Starts a session. Without an `agentId` this keeps the M1 behaviour: a fresh `"Agent"` profile row
-   * (role `"default"`, engine `"acp"`) and no model, so the kernel default applies at start.
+   * Starts a session. Without an `agentId` it runs as the default profile (`ensureDefaultAgent`), so a
+   * chat that picks nothing reuses one row instead of minting a profile per chat.
    *
-   * With an agent, the profile's engine and model are read once and frozen into `config_snapshot_json`;
-   * an explicit `modelId` wins and decides the engine, matching the spec's model resolution order.
-   * A null model still means "the kernel default at start", which `engineRegistry` resolves per turn.
+   * The profile's engine and model are read once and frozen into `config_snapshot_json`; an explicit
+   * `modelId` wins and decides the engine, matching the spec's model resolution order. A null model
+   * still means "the kernel default at start", which `engineRegistry` resolves per turn.
    */
   create(workspaceId: string, opts: SessionCreateOptions = {}): SessionRow {
     const ws = this.db.prepare("SELECT id FROM workspaces WHERE id = ?").get(workspaceId);
     if (!ws) throw new RpcFault(ErrorCodes.notFound, "Workspace not found");
 
-    let agentId = opts.agentId;
-    let modelId = opts.modelId;
-    let engine: EngineKind;
-    let permissionPolicy: PermissionPolicy = {};
-
-    if (agentId === undefined) {
-      engine = modelId === undefined ? "acp" : this.requireEnabledModel(modelId).engine;
-      agentId = uuidv7();
-      this.db.prepare("INSERT INTO agents (id, name, role, engine_id) VALUES (?,?,?,?)").run(agentId, "Agent", "default", "acp");
-    } else {
-      const agent = this.agentForStart(agentId);
-      modelId = modelId ?? agent.model_ref ?? undefined;
-      engine = modelId === undefined ? agent.engine_id : this.requireEnabledModel(modelId).engine;
-      // A native session without a model still runs the kernel default per turn, so that default must
-      // speak the native protocol; the session row keeps `model_id` NULL and resolves it at start.
-      if (engine === "native" && modelId === undefined) this.assertNativeDefault();
-      permissionPolicy = parsePermissionPolicy(agent.permission_policy);
-    }
+    // `session.create` has to stay total: a database a test opened by hand predates the startup pass.
+    if (opts.agentId === undefined) ensureDefaultAgent(this.db);
+    const agentId = opts.agentId ?? DEFAULT_AGENT_ID;
+    const agent = this.agentForStart(agentId);
+    const modelId = opts.modelId ?? agent.model_ref ?? undefined;
+    const engine: EngineKind = modelId === undefined ? agent.engine_id : this.requireEnabledModel(modelId).engine;
+    // A native session without a model still runs the kernel default per turn, so that default must
+    // speak the native protocol; the session row keeps `model_id` NULL and resolves it at start.
+    if (engine === "native" && modelId === undefined) this.assertNativeDefault();
+    const permissionPolicy = parsePermissionPolicy(agent.permission_policy);
 
     const snapshot = JSON.stringify({ agentId, engine, modelId: modelId ?? null, permissionPolicy });
     const row: SessionRow = { id: uuidv7(), workspaceId, agentId, engine, title: "", status: "starting", modelId: modelId ?? null, createdAt: Date.now() };
-    this.db.prepare("INSERT INTO sessions (id, workspace_id, agent_id, engine, status, created_at, model_id, schedule_id, config_snapshot_json) VALUES (?,?,?,?,?,?,?,?,?)").run(
+    this.db.prepare(
+      "INSERT INTO sessions (id, workspace_id, agent_id, engine, status, created_at, model_id, schedule_id, config_snapshot_json) VALUES (?,?,?,?,?,?,?,?,?)",
+    ).run(
       row.id, row.workspaceId, row.agentId, row.engine, row.status, row.createdAt, row.modelId, opts.scheduleId ?? null, snapshot,
     );
     this.events.append({

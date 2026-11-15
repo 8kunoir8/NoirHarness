@@ -9,6 +9,8 @@ import {
 } from "react";
 import {
   type AgentListResult,
+  type AgentRolesResult,
+  type AgentRoleView,
   type AgentRosterEntry,
   type AgentRosterResult,
   type AgentView,
@@ -119,6 +121,8 @@ interface ConfigFormProps {
   workspaces: readonly WorkspaceView[];
   mcpServers: readonly McpServerView[];
   skills: readonly SkillView[];
+  /** What this workspace can staff: the picker's options, and what a role binds when it is picked. */
+  roles: readonly AgentRoleView[];
   error: string | undefined;
   busy: boolean;
   /** The office header's Configure action and the `C` command both focus this region. */
@@ -138,6 +142,7 @@ function AgentConfigForm({
   workspaces,
   mcpServers,
   skills,
+  roles,
   error,
   busy,
   configRef,
@@ -145,7 +150,8 @@ function AgentConfigForm({
   onArchive,
 }: ConfigFormProps) {
   const [name, setName] = useState(agent?.name ?? "");
-  const [role, setRole] = useState(agent?.role ?? "Coder");
+  // A role is a catalog name, so one saved before this list existed stays visible and unchanged.
+  const [role, setRole] = useState(agent?.role ?? roles[0]?.name ?? "");
   const [engineId, setEngineId] = useState<AgentView["engineId"]>(agent?.engineId ?? "acp");
   const [modelRef, setModelRef] = useState(agent?.modelRef ?? "");
   const [defaultWorkspaceId, setDefaultWorkspaceId] = useState(agent?.defaultWorkspaceId ?? "");
@@ -158,6 +164,7 @@ function AgentConfigForm({
   // instead of silently showing another model as the current one.
   const storedModelMissing = modelRef !== "" && !enabledModels.some((model) => model.id === modelRef);
   const availableSkills = skills.filter((skill) => skill.enabled);
+  const selectedRole = roles.find((candidate) => candidate.name === role);
 
   function submit(event: FormEvent): void {
     event.preventDefault();
@@ -170,7 +177,7 @@ function AgentConfigForm({
     const roleText = role.trim();
     onSave({
       name: trimmed,
-      role: roleText === "" ? "Coder" : roleText,
+      role: roleText === "" ? (roles[0]?.name ?? "Generalist") : roleText,
       engineId,
       modelRef,
       defaultWorkspaceId,
@@ -204,8 +211,38 @@ function AgentConfigForm({
         </label>
         <label>
           Role
-          <input value={role} disabled={busy} onChange={(event) => setRole(event.target.value)} />
+          <select
+            aria-label="Role"
+            value={role}
+            disabled={busy}
+            onChange={(event) => {
+              const picked = roles.find((candidate) => candidate.name === event.target.value);
+              setRole(event.target.value);
+              // A role is what binds servers: picking one fills the bindings it is for, and the user
+              // can still tick or untick any box afterwards.
+              if (picked !== undefined) setMcpServerIds(picked.mcpServerIds);
+            }}
+          >
+            {role === "" || roles.some((candidate) => candidate.name === role) ? null : (
+              <option value={role}>{role} (saved)</option>
+            )}
+            {roles.map((candidate) => (
+              <option key={candidate.id} value={candidate.name}>
+                {candidate.name}
+              </option>
+            ))}
+          </select>
         </label>
+        {selectedRole === undefined ? null : (
+          <div className="agents-role">
+            <p className="agents-hint">{selectedRole.description}</p>
+            <p className="agents-hint">
+              {selectedRole.skills.length === 0
+                ? "No workspace skill is specific to this role."
+                : `Skills this role is for: ${selectedRole.skills.join(", ")}`}
+            </p>
+          </div>
+        )}
         <label>
           Engine
           <select
@@ -359,6 +396,7 @@ export function Agents({ workspaceId, request, onOpenChat, configRef }: AgentsPr
   const [models, setModels] = useState<ModelView[]>([]);
   const [workspaces, setWorkspaces] = useState<WorkspaceView[]>([]);
   const [mcpServers, setMcpServers] = useState<McpServerView[]>([]);
+  const [roles, setRoles] = useState<AgentRoleView[]>([]);
   const [skills, setSkills] = useState<SkillView[]>([]);
   const [includeArchived, setIncludeArchived] = useState(false);
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
@@ -386,7 +424,7 @@ export function Agents({ workspaceId, request, onOpenChat, configRef }: AgentsPr
     const run = ++loadSeq.current;
     const rosterSnapshot = nextSnapshot();
     try {
-      const [agentResult, rosterResult, modelResult, workspaceResult, skillResult, mcpResult] =
+      const [agentResult, rosterResult, modelResult, workspaceResult, skillResult, mcpResult, roleResult] =
         await Promise.all([
           request<AgentListResult>("agent.list", { includeArchived }),
           request<AgentRosterResult>("agent.roster", {}),
@@ -394,6 +432,7 @@ export function Agents({ workspaceId, request, onOpenChat, configRef }: AgentsPr
           request<{ workspaces: WorkspaceView[] }>("workspace.list"),
           request<SkillListResult>("skill.list", workspaceId === "" ? {} : { workspaceId }),
           request<{ servers: McpServerView[] }>("mcp.list"),
+          request<AgentRolesResult>("agent.roles", workspaceId === "" ? {} : { workspaceId }),
         ]);
       if (run !== loadSeq.current) return;
       setAgents(agentResult.agents);
@@ -402,6 +441,7 @@ export function Agents({ workspaceId, request, onOpenChat, configRef }: AgentsPr
       setWorkspaces(workspaceResult.workspaces);
       setSkills(skillResult.skills);
       setMcpServers(mcpResult.servers);
+      setRoles(roleResult.roles);
       setListError(undefined);
     } catch (loadError) {
       if (run !== loadSeq.current) return;
@@ -799,6 +839,7 @@ export function Agents({ workspaceId, request, onOpenChat, configRef }: AgentsPr
           workspaces={workspaces}
           mcpServers={mcpServers}
           skills={skills}
+          roles={roles}
           error={formError}
           busy={busy}
           configRef={configTargetRef}

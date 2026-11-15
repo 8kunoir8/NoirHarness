@@ -1,7 +1,16 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
-import type { AgentEvent, AgentRosterEntry, AgentView, ModelView, SessionView, SkillView } from "@noir/protocol";
+import type {
+  AgentEvent,
+  AgentRoleView,
+  AgentRosterEntry,
+  AgentView,
+  McpServerView,
+  ModelView,
+  SessionView,
+  SkillView,
+} from "@noir/protocol";
 import type { RequestFn } from "../src/renderer/api.js";
 import type { WorkspaceView } from "../src/renderer/WorkspacePanel.js";
 
@@ -128,6 +137,40 @@ const SKILL: SkillView = {
   enabled: true,
 };
 
+const MCP_SERVER: McpServerView = {
+  id: "srv-1",
+  name: "postgres",
+  transport: "stdio",
+  command: "npx meow-postgres-mcp",
+  args: [],
+  env: {},
+  url: "",
+  headers: {},
+  enabled: true,
+  createdAt: 1,
+  updatedAt: 1,
+};
+
+/** The catalog the kernel derives; a stored role missing from it must still render. */
+const ROLES: AgentRoleView[] = [
+  {
+    id: "generalist",
+    name: "Generalist",
+    description: "No specialism selected.",
+    skills: [],
+    mcpServerIds: [],
+    derived: false,
+  },
+  {
+    id: "analyst",
+    name: "Analyst",
+    description: "Answers questions from warehouses.",
+    skills: ["sql-warehouse"],
+    mcpServerIds: ["srv-1"],
+    derived: false,
+  },
+];
+
 /** The five `agent.*` fields plus the lists every panel reads; each test overrides what it asserts. */
 function makeRequest(overrides: Partial<Record<string, (params?: unknown) => unknown>> = {}): RequestMock {
   const request = vi.fn(async (method: string, params?: unknown): Promise<unknown> => {
@@ -135,9 +178,11 @@ function makeRequest(overrides: Partial<Record<string, (params?: unknown) => unk
     if (override !== undefined) return override(params);
     switch (method) {
       case "agent.list":
-        return { agents: [] };
+        return { agents: [], defaultAgentId: "default" };
       case "agent.roster":
         return { agents: [], generatedAt: 1 };
+      case "agent.roles":
+        return { roles: ROLES };
       case "model.list":
         return { models: [] };
       case "workspace.list":
@@ -358,15 +403,53 @@ describe("Agents", () => {
 
     await userEvent.click(await within(roster()).findByRole("button", { name: "Select Scout" }));
     const inspector = config();
-    const roleInput = within(inspector).getByLabelText("Role");
-    await userEvent.clear(roleInput);
-    await userEvent.type(roleInput, "Reviewer");
+    await userEvent.selectOptions(within(inspector).getByLabelText("Role"), "Analyst");
     await userEvent.click(within(inspector).getByRole("button", { name: "Save" }));
 
     await waitFor(() =>
-      expect(request).toHaveBeenCalledWith("agent.update", { id: "a-1", role: "Reviewer" }),
+      // The role also prefills the servers it binds, so only the identity and the role are pinned here.
+      expect(request).toHaveBeenCalledWith(
+        "agent.update",
+        expect.objectContaining({ id: "a-1", role: "Analyst" }),
+      ),
     );
     expect(within(inspector).queryByRole("alert")).toBeNull();
+  });
+
+  it("shows a stored role the catalog no longer lists instead of silently replacing it", async () => {
+    const request = makeRequest({ "agent.list": () => ({ agents: [AGENT] }) });
+    renderAgents(request);
+
+    await userEvent.click(await within(roster()).findByRole("button", { name: "Select Scout" }));
+    const role = within(config()).getByLabelText("Role") as HTMLSelectElement;
+    expect(role.value).toBe("Coder");
+    expect(within(role).getByRole("option", { name: "Coder (saved)" })).toBeTruthy();
+  });
+
+  it("binds the servers a picked role is for", async () => {
+    const request = makeRequest({
+      "agent.list": () => ({ agents: [AGENT] }),
+      "mcp.list": () => ({ servers: [MCP_SERVER] }),
+      "agent.update": (params) => ({ ...AGENT, ...(params as Partial<AgentView>) }),
+    });
+    renderAgents(request);
+
+    await userEvent.click(await within(roster()).findByRole("button", { name: "Select Scout" }));
+    const inspector = config();
+    await userEvent.selectOptions(within(inspector).getByLabelText("Role"), "Analyst");
+
+    // The role names the skills it is for, and its servers arrive already ticked.
+    expect(within(inspector).getByText(/Skills this role is for: sql-warehouse/)).toBeTruthy();
+    const postgres = within(inspector).getByRole("checkbox", { name: "postgres" }) as HTMLInputElement;
+    expect(postgres.checked).toBe(true);
+
+    await userEvent.click(within(inspector).getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith(
+        "agent.update",
+        expect.objectContaining({ id: "a-1", role: "Analyst", mcpServerIds: ["srv-1"] }),
+      ),
+    );
   });
 
   it("sends modelRef null when the default model is cleared", async () => {
@@ -637,7 +720,9 @@ describe("App agents rail", () => {
         case "session.list":
           return { sessions: [] };
         case "agent.list":
-          return { agents: [AGENT] };
+          return { agents: [AGENT], defaultAgentId: "default" };
+        case "agent.roles":
+          return { roles: ROLES };
         case "agent.roster":
           return { agents: roster, generatedAt: 1 };
         case "skill.list":

@@ -7,6 +7,7 @@ import {
   AgentArchiveParams,
   AgentCreateParams,
   AgentListParams,
+  AgentRolesParams,
   AgentUpdateParams,
   AnnotationAddParams,
   AnnotationDeleteParams,
@@ -68,10 +69,12 @@ import {
 } from "@noir/protocol";
 import { dataDir as defaultDataDir } from "./appdata.js";
 import { AgentService } from "./agents.js";
+import { buildRoles } from "./agentRoles.js";
 import { addAnnotation, deleteAnnotation, listAnnotations } from "./annotations.js";
 import { buildIdOf } from "./buildId.js";
 import { CheckpointService } from "./checkpoints.js";
 import { openDb } from "./db.js";
+import { DEFAULT_AGENT_ID, ensureDefaultAgent } from "./defaultAgent.js";
 import { EngineManager } from "./engineManager.js";
 import { EventStore } from "./eventStore.js";
 import { findFiles, listDirectory, readArtifact, readFileText, writeFileText } from "./fsService.js";
@@ -240,6 +243,8 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; o
       const sessions = new SessionService(db, events, models);
       const providers = new ProviderService(db, opts.secrets ?? new KeyringSecrets());
       for (const key of providers.secretValues()) redactor.addSecret(key);
+      // The picker names one profile for chats that choose none, so the row exists before the first chat.
+      ensureDefaultAgent(db);
       const agents = new AgentService(db, models, sessions, events);
       // Task 5 shares this instance with EngineManager so enabled flags match what is materialized.
       const skills = new SkillService(database, dir);
@@ -433,7 +438,21 @@ export async function startKernel(opts: { dataDir?: string; secrets?: Secrets; o
         [Methods.sessionList]: async (params) => sessions.list(SessionListParams.parse(params ?? {})),
         [Methods.agentList]: async (params) => ({
           agents: agents.list(AgentListParams.parse(params ?? {}).includeArchived ?? false),
+          // A fixed row id, not a name: the picker preselects it and a rename never breaks the link.
+          defaultAgentId: DEFAULT_AGENT_ID,
         }),
+        [Methods.agentRoles]: async (params) => {
+          const { workspaceId } = AgentRolesParams.parse(params ?? {});
+          // Without a workspace there are no project skills to scan and no enabled flags to honour.
+          const listed =
+            workspaceId === undefined ? { skills: [] } : await skills.list(workspaceId, workspaceRoot(workspaceId));
+          return {
+            roles: buildRoles({
+              skills: listed.skills.filter((skill) => skill.enabled),
+              servers: mcp.list().filter((server) => server.enabled),
+            }),
+          };
+        },
         [Methods.agentCreate]: async (params) => agents.create(AgentCreateParams.parse(params)),
         [Methods.agentUpdate]: async (params) => agents.update(AgentUpdateParams.parse(params)),
         [Methods.agentArchive]: async (params) => {

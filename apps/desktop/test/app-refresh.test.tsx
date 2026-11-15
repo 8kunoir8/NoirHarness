@@ -65,6 +65,8 @@ describe("App file-event refresh", () => {
           return { workspaces: [WORKSPACE] };
         case "model.list":
           return { models: [] };
+        case "agent.list":
+          return { agents: [], defaultAgentId: "default" };
         case "session.list":
           return { sessions: [], total: 0, nextCursor: null };
         case "session.subscribe":
