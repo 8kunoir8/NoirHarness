@@ -51,6 +51,7 @@ function filterIds(sessions: readonly SessionView[], filter: SessionFilter, read
 describe("matchesFilter", () => {
   const sessions = [
     session("idle"),
+    session("fresh", { status: "starting" }),
     session("running", { status: "running", lastEventSeq: 4 }),
     session("waiting", { status: "waiting" }),
     session("approval", { status: "waiting", pendingApproval: true, lastEventSeq: 2 }),
@@ -59,15 +60,16 @@ describe("matchesFilter", () => {
   ];
 
   it("separates the buckets", () => {
-    expect(filterIds(sessions, "all")).toHaveLength(6);
+    expect(filterIds(sessions, "all")).toHaveLength(7);
     expect(filterIds(sessions, "needs")).toEqual(["approval", "error"]);
+    // A chat nobody has prompted is `starting` and has no turn to work on, so it is not Working.
     expect(filterIds(sessions, "working")).toEqual(["running", "waiting"]);
     expect(filterIds(sessions, "done")).toEqual(["closed"]);
   });
 
   it("treats a session as unread until the read watermark reaches its newest event", () => {
-    expect(filterIds(sessions, "unread")).toEqual(["idle", "running", "waiting", "approval", "error"]);
-    expect(filterIds(sessions, "unread", { idle: 1, running: 4, waiting: 1, approval: 2, error: 1 })).toEqual([]);
+    expect(filterIds(sessions, "unread")).toEqual(["idle", "fresh", "running", "waiting", "approval", "error"]);
+    expect(filterIds(sessions, "unread", { idle: 1, fresh: 1, running: 4, waiting: 1, approval: 2, error: 1 })).toEqual([]);
     // Closed chats never resurface as unread.
     expect(filterIds(sessions, "unread", {})).not.toContain("closed");
   });

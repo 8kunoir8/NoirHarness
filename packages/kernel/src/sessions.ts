@@ -6,6 +6,16 @@ import type { EventStore } from "./eventStore.js";
 import type { ModelService } from "./models.js";
 import { parsePermissionPolicy } from "./policy.js";
 
+/**
+ * Turn statuses that mean "accepted, not finished". `queued` covers the engine still coming up for
+ * the turn, `running` covers delivery: together they are the only honest answer to "is work
+ * happening here", which the session status cannot give — a session is born `starting` and, until
+ * its first turn lands, an empty chat is indistinguishable from one about to run.
+ */
+const EXECUTING_TURN_STATUSES = ["queued", "running"] as const;
+const executingTurnSql = EXECUTING_TURN_STATUSES.map((status) => `'${status}'`).join(",");
+const EXECUTING_TURNS = `EXISTS (SELECT 1 FROM turns t WHERE t.session_id = sessions.id AND t.status IN (${executingTurnSql}))`;
+
 function assertTransition(from: SessionStatus, to: SessionStatus): void {
   if (!canTransition(from, to)) throw new RpcFault(ErrorCodes.conflict, `Invalid session transition ${from} -> ${to}`);
 }
@@ -250,6 +260,19 @@ export class SessionService {
   }
 
   /**
+   * The sessions a turn is in flight for, in one query. The Working filter above answers the same
+   * question in SQL; the roster needs it for every session at once, and a chat nobody has prompted
+   * is absent from both — which is the point, since it is also absent from its agent's work.
+   */
+  executingIds(): Set<string> {
+    const rows = this.db
+      .prepare(`SELECT DISTINCT session_id FROM turns WHERE status IN (${executingTurnSql})`)
+      .pluck()
+      .all() as string[];
+    return new Set(rows);
+  }
+
+  /**
    * One page of sessions, newest first. The filters are answered here rather than in the window:
    * a filter that only sees the current page would quietly hide matches on the pages below it.
    */
@@ -268,9 +291,11 @@ export class SessionService {
         where.push("status = 'closed'");
         break;
       case "working":
-        // "Working" for a filter is live-but-not-awaiting-you: an approval wait is live and must not
-        // hide under the Working tab, which has its own Needs-you tab.
-        where.push(`status IN (${statusSqlList(LIVE_STATUSES)})`);
+        // Working means a turn in flight, which the status alone cannot say: every session is born
+        // `starting` and keeps it until its first turn lands, so an empty chat would sit in this tab
+        // with nothing running. An approval wait is live and belongs under Needs-you instead, and a
+        // `waiting` session whose approval was rewound away is working again.
+        where.push(`status IN (${statusSqlList(LIVE_STATUSES)}) AND (status <> 'starting' OR ${EXECUTING_TURNS})`);
         if (pendingIds.length > 0) {
           where.push(`id NOT IN (${placeholders})`);
           args.push(...pendingIds);

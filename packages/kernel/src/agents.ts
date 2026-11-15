@@ -5,7 +5,6 @@ import {
   PayloadSchemas,
   PermissionCategory,
   RpcFault,
-  SESSION_STATUS_FACTS,
   type AgentCreateParams,
   type AgentRosterEntry,
   type AgentUpdateParams,
@@ -238,6 +237,9 @@ export class AgentService {
     const sessions = this.sessions.all();
     // One batched lookup for every open session: the cost stays flat as the roster grows.
     const state = this.openSessionState();
+    // Work is a turn in flight, not a status: a chat created a second ago is `starting` too, and an
+    // agent with nothing to run must read idle rather than look busy on an empty conversation.
+    const executing = this.sessions.executingIds();
     const entries = this.list().map((agent): AgentRosterEntry => {
       const mine = sessions.filter((session) => session.agentId === agent.id);
       // `created_at` is millisecond-granular, so a tie needs the id to stay deterministic.
@@ -251,7 +253,7 @@ export class AgentService {
         role: agent.role,
         status: mine.some((session) => session.pendingApproval)
           ? "needs_you"
-          : mine.some((session) => SESSION_STATUS_FACTS[session.status].working)
+          : mine.some((session) => session.status !== "waiting" && executing.has(session.id))
             ? "working"
             : mine.some((session) => session.status === "error")
               ? "error"

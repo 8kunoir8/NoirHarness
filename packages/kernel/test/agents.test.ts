@@ -92,6 +92,16 @@ function addModel(services: TestServices, apiKind: ApiKind = "openai-completions
   });
 }
 
+/**
+ * The row the engine writes when it accepts a prompt. The roster reads work from these and not from
+ * the status, so a test that wants an agent to look busy has to give it something to run.
+ */
+function executing(services: TestServices, sessionId: string, status: "queued" | "running" = "running"): void {
+  services.db
+    .prepare("INSERT INTO turns (id, session_id, idx, status, started_at) VALUES (?,?,?,?,?)")
+    .run(`turn-${sessionId}`, sessionId, 0, status, Date.now());
+}
+
 function expectFault(fn: () => unknown, code: number, message: RegExp): void {
   try {
     fn();
@@ -392,6 +402,7 @@ describe("AgentService.roster", () => {
     const agent = services.agents.create(agentInput({ name: "Rewound" }));
     const session = services.sessions.create(workspaceId, { agentId: agent.id });
     services.sessions.setStatus(session.id, "running");
+    executing(services, session.id);
     const tool = services.events.append({
       sessionId: session.id,
       agentId: agent.id,
@@ -505,17 +516,37 @@ describe("AgentService.roster", () => {
     });
   });
 
-  it("reports working for starting and running sessions", () => {
+  it("reports working for a turn in flight, not for a chat nobody has prompted", () => {
     const services = setup();
     const workspaceId = workspaceFor(services);
-    const starting = services.agents.create(agentInput({ name: "Starting" }));
-    const running = services.agents.create(agentInput({ name: "Running" }));
-    services.sessions.create(workspaceId, { agentId: starting.id });
-    const runningSession = services.sessions.create(workspaceId, { agentId: running.id });
-    services.sessions.setStatus(runningSession.id, "running");
+    const idle = services.agents.create(agentInput({ name: "Idle" }));
+    const busy = services.agents.create(agentInput({ name: "Busy" }));
+    const fresh = services.agents.create(agentInput({ name: "Fresh" }));
+    const emptyChat = services.sessions.create(workspaceId, { agentId: idle.id });
+    const prompted = services.sessions.create(workspaceId, { agentId: busy.id });
+    const spawning = services.sessions.create(workspaceId, { agentId: fresh.id });
+    services.sessions.setStatus(prompted.id, "running");
+    // The engine writes the turn row when it accepts a prompt, before the engine is up: that row is
+    // what "working" means, and a session with none of them is idle no matter its status.
+    executing(services, prompted.id);
+    executing(services, spawning.id, "queued");
 
-    expect(entryFor(services, starting.id).status).toBe("working");
-    expect(entryFor(services, running.id).status).toBe("working");
+    expect(entryFor(services, idle.id)).toMatchObject({ status: "idle", activeSessionId: emptyChat.id });
+    expect(entryFor(services, busy.id).status).toBe("working");
+    // A first turn the engine is still coming up for is already work.
+    expect(entryFor(services, fresh.id).status).toBe("working");
+
+    // An approval wait keeps its turn row and is not work: nothing runs until it is answered.
+    services.sessions.setStatus(prompted.id, "waiting");
+    expect(entryFor(services, busy.id).status).toBe("idle");
+
+    // A finished turn leaves nothing in flight, so both agents go back to idle.
+    const finish = services.db.prepare("UPDATE turns SET status = 'completed', ended_at = ? WHERE id = ?");
+    finish.run(Date.now(), `turn-${prompted.id}`);
+    finish.run(Date.now(), `turn-${spawning.id}`);
+    services.sessions.setStatus(prompted.id, "idle");
+    expect(entryFor(services, fresh.id).status).toBe("idle");
+    expect(entryFor(services, busy.id).status).toBe("idle");
   });
 
   it("reports error for an agent whose only session errored", () => {
@@ -554,6 +585,7 @@ describe("AgentService.roster", () => {
     services.sessions.setStatus(errored.id, "error");
     const running = services.sessions.create(workspaceId, { agentId: agent.id });
     services.sessions.setStatus(running.id, "running");
+    executing(services, running.id);
 
     expect(entryFor(services, agent.id)).toMatchObject({ status: "working", sessionCount: 2 });
   });
@@ -615,7 +647,9 @@ describe("AgentService.roster", () => {
     try {
       services.agents.roster();
       const baseline = calls;
-      expect(baseline).toBe(7); // session list (4), agent list (1), batched event query (1), rewind marker scan (1)
+      // Session list (4), agent list (1), batched event query (1), rewind marker scan (1), and the
+      // batched turn lookup that decides who is working (1). Flat, whatever the roster's size.
+      expect(baseline).toBe(8);
 
       for (let index = 0; index < 8; index += 1) {
         const extra = services.agents.create(agentInput({ name: `Extra ${index}` }));
@@ -736,7 +770,9 @@ describe("AgentService.roster", () => {
     services.sessions.setStatus(betaSession.id, "error");
     const alphaSession = services.sessions.create(workspaceId, { agentId: alpha.id });
     services.sessions.setStatus(alphaSession.id, "idle");
-    services.sessions.create(workspaceId, { agentId: zulu.id }); // starting -> working
+    const zuluSession = services.sessions.create(workspaceId, { agentId: zulu.id });
+    services.sessions.setStatus(zuluSession.id, "running");
+    executing(services, zuluSession.id);
     const aardvarkSession = services.sessions.create(workspaceId, { agentId: aardvark.id });
     services.sessions.setStatus(aardvarkSession.id, "idle");
 

@@ -38,15 +38,26 @@ describe("session status facts", () => {
 
   it("derives the status lists from the facts rather than from a second literal", () => {
     expect([...LIVE_STATUSES]).toEqual(["starting", "running", "waiting"]);
-    expect([...WORKING_STATUSES]).toEqual(["starting", "running"]);
+    // `starting` is a birth, not work: a session no turn has reached has nothing executing.
+    expect([...WORKING_STATUSES]).toEqual(["running"]);
     expect([...INTERRUPTIBLE_STATUSES]).toEqual(["running", "waiting"]);
+  });
+
+  it("does not call a session that has never run a turn working", () => {
+    expect(SESSION_STATUS_FACTS.starting).toEqual({
+      live: true,
+      working: false,
+      interruptible: false,
+      terminal: false,
+    });
+    expect(SESSION_STATUS_FACTS.running.working).toBe(true);
   });
 
   it("interpolates the lists as SQL literals, in enum order", () => {
     // Pinned exactly: these strings are spliced into `status IN (…)` queries, so a change here is a
     // change to every query at once and must be deliberate.
     expect(statusSqlList(LIVE_STATUSES)).toBe("'starting','running','waiting'");
-    expect(statusSqlList(WORKING_STATUSES)).toBe("'starting','running'");
+    expect(statusSqlList(WORKING_STATUSES)).toBe("'running'");
     expect(statusSqlList([])).toBe("");
   });
 });

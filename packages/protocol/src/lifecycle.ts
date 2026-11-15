@@ -23,7 +23,10 @@ export interface SessionStatusFacts {
 
 export const SESSION_STATUS_FACTS: Readonly<Record<SessionStatus, SessionStatusFacts>> = {
   idle: { live: false, working: false, interruptible: false, terminal: false },
-  starting: { live: true, working: true, interruptible: false, terminal: false },
+  // `starting` is what a session is born as: the row exists, no turn has ever reached it. It says
+  // nothing about work — a chat created a second ago and one whose engine is coming up for its first
+  // turn both carry it — so "a turn is in flight" is a `turns` row, which only the kernel can read.
+  starting: { live: true, working: false, interruptible: false, terminal: false },
   running: { live: true, working: true, interruptible: true, terminal: false },
   waiting: { live: true, working: false, interruptible: true, terminal: false },
   error: { live: false, working: false, interruptible: false, terminal: false },

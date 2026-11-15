@@ -66,6 +66,12 @@ test("paints two agents, surfaces an approval, restores desks, and opens chat fr
     await showAgents(page);
     await createAgent(page, "Alpha", harness.workspacePath);
     await startSession(page);
+    // The chat is open and empty. A session is born `starting` and has no turn, so the agent it
+    // belongs to reads Idle: a status is not work.
+    await showAgents(page);
+    await expect(rosterRow(page, "Alpha").locator(".agents-status")).toHaveText("Idle", { timeout: 20_000 });
+    await page.getByRole("button", { name: "Select Alpha", exact: true }).click();
+    await page.getByRole("button", { name: "Open chat" }).click();
     await sendPrompt(page, "slow");
 
     // Beta: the same path in a second workspace session, so the office has to paint two characters.

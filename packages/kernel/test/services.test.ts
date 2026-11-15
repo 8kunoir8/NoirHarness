@@ -294,6 +294,26 @@ describe("SessionService", () => {
     expect(needsYou.total).toBe(1);
   });
 
+  it("keeps a chat nobody has prompted out of the Working tab", () => {
+    const { db, projects, workspaces, sessions } = setup();
+    const ws = workspaces.createLocal(projects.add(tempDir()).id);
+    const empty = sessions.create(ws.id);
+    const prompted = sessions.create(ws.id);
+    // Every session is born `starting`; only a turn row says the engine has work to do.
+    expect(sessions.list({ filter: "working" }).sessions).toEqual([]);
+
+    db.prepare("INSERT INTO turns (id, session_id, idx, status, started_at) VALUES (?,?,?,?,?)").run(
+      "t-working",
+      prompted.id,
+      0,
+      "queued",
+      Date.now(),
+    );
+    expect(sessions.list({ filter: "working" }).sessions.map((row) => row.id)).toEqual([prompted.id]);
+    expect(sessions.executingIds()).toEqual(new Set([prompted.id]));
+    expect(empty.status).toBe("starting");
+  });
+
   it("switches the model and rejects unknown or disabled models", () => {
     const { db, projects, workspaces, sessions, providers, models } = setup();
     const provider = providers.create({ name: "P", baseUrl: "http://localhost:1/v1", apiKind: "openai-completions", apiKey: "k", enabled: true });

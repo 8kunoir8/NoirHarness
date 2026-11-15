@@ -22,9 +22,12 @@ export function matchesFilter(session: SessionView, filter: SessionFilter, read:
     case "needs":
       return session.pendingApproval || session.status === "error";
     case "working":
-      // The kernel's own `working` filter: live, and not waiting on the user. This copy exists only
-      // because `unread` cannot be answered server-side; the rest must not answer differently.
-      return SESSION_STATUS_FACTS[session.status].live && !session.pendingApproval;
+      // The kernel's own `working` filter: live, past birth, and not waiting on the user. `starting`
+      // is the state a session is born in, and a chat nobody has prompted is not work — the kernel
+      // also asks its turn rows, which the window cannot see, so a first turn still spawning joins
+      // this bucket on the next refresh. This copy exists for the same reason `unread` does: the
+      // rest of the filter must not answer differently.
+      return SESSION_STATUS_FACTS[session.status].live && session.status !== "starting" && !session.pendingApproval;
     case "unread":
       return !SESSION_STATUS_FACTS[session.status].terminal && session.lastEventSeq > (read[session.id] ?? 0);
     case "done":
@@ -63,10 +66,15 @@ export function groupSessions(sessions: readonly SessionView[], now: number): Se
   return groups.filter((group) => group.sessions.length > 0);
 }
 
+/**
+ * The row's one-word state. `starting` is not "working": it is the state a session is born in and
+ * keeps until its first turn reaches the engine, so an empty chat reads Idle here, exactly as its
+ * agent reads idle in the office and as the Working tab — which the kernel answers from its turn
+ * rows — leaves it out.
+ */
 export function sessionStatusLabel(session: SessionView): string {
   if (session.pendingApproval) return "Needs you";
   switch (session.status) {
-    case "starting":
     case "running":
       return "Working";
     case "waiting":
@@ -83,7 +91,6 @@ export function sessionStatusLabel(session: SessionView): string {
 export function sessionStatusTone(session: SessionView): "neutral" | "accent" | "warn" | "danger" | "muted" {
   if (session.pendingApproval) return "warn";
   switch (session.status) {
-    case "starting":
     case "running":
       return "accent";
     case "error":
