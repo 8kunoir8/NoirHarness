@@ -1,15 +1,50 @@
 # NoirHarness
 
-Local-first desktop agent harness. This repository contains three milestones' worth of app: the
-chat shell and editor, a native engine beside the `omp` ACP adapter, an artifact viewer, and the
-agents dashboard with its pixel office. Kernel, protocol, provider registry, both engine adapters,
-the Electron shell, the workspace editor (file tree, Monaco, quick open, diffs with line notes), and
-the JSON/CSV/PDF preview surfaces all live here.
+A desktop app for running a coding agent on your own machine: one window holds the providers, the
+models, the workspaces, the chats, the agents, and the pixel office they walk around in, while a
+separate kernel process owns SQLite, the event log, and every engine, so two windows never disagree
+about what happened.
 
-The app talks to the real `omp` binary over ACP by default, or to any OpenAI-compatible endpoint
-through its own engine when a model asks for it; NoirHarness owns the provider registry, the model
-selection, the workspaces, the agents, and the chat surface. Nothing leaves the machine except the
-provider calls the engine makes.
+Two engines behind one contract: the real `omp` binary over ACP (against its own generated profile,
+never your `~/.omp`), or a built-in chat-completions engine that speaks SSE to any OpenAI-compatible
+endpoint and runs its own tools. Nothing leaves the machine except the provider calls the engine
+makes.
+
+Windows installer: [the latest release](../../releases/latest). To build it from source, see
+[Develop](#develop) and [Installer](#installer).
+
+[![The chat shell: a streamed answer with a GFM table and a workspace image](docs/images/chat.png)](docs/images/chat.png)
+
+## Things to try
+
+- **Ask, then approve.** Every tool call stops on a card; `1`–`9` answers by position, `Esc` rejects.
+  The agent's policy (`allow` / `ask` / `reject` per category) decides which calls even ask.
+- **Open a file beside the chat.** `⌘P`, type a path, edit, `⌘S`; a stale write is refused instead of
+  clobbering the file the agent just touched.
+- **Preview instead of downloading.** A `.md`, `.csv`, or `.pdf` in the tree renders in a tab; a
+  relative Markdown link opens the next one.
+- **Rewind a turn.** Hover a prompt, `Rewind to before this prompt`, and the workspace files the turn
+  wrote go back with it.
+- **Fork a chat** from the palette so a wrong turn becomes a side branch and the original stands.
+- **Give an agent a role**, tick the MCP servers it may use, and watch it work in the office; click a
+  character to open the chat behind it.
+- **Schedule a review.** Automations fire from the kernel with no window open, and the run lands in
+  Chats like any other session.
+- **Pair a phone.** Setup → Devices issues a one-time link over TLS; revoke it from the same panel.
+
+## Screenshots
+
+Every shot is the shipped app, captured by `apps/desktop/test/screenshot-tour.spec.ts` against a
+local OpenAI-compatible endpoint; the demo workspace and its history are throwaway. Regenerate them
+with `NOIR_CAPTURE=1 pnpm --filter @noir/desktop exec playwright test test/screenshot-tour.spec.ts`.
+
+| | |
+| --- | --- |
+| **Setup** — provider, model, MCP servers<br><a href="docs/images/setup.png"><img src="docs/images/setup.png" width="420"></a> | **Approval** — a tool waits for you<br><a href="docs/images/approval.png"><img src="docs/images/approval.png" width="420"></a> |
+| **Artifacts** — Markdown, CSV and PDF render in place<br><a href="docs/images/artifacts.png"><img src="docs/images/artifacts.png" width="420"></a> | **Editor** — Monaco over the workspace tree<br><a href="docs/images/editor.png"><img src="docs/images/editor.png" width="420"></a> |
+| **Diff** — uncommitted change, reviewed in a tab<br><a href="docs/images/diff.png"><img src="docs/images/diff.png" width="420"></a> | **Source control** — stage, unstage, commit<br><a href="docs/images/source.png"><img src="docs/images/source.png" width="420"></a> |
+| **Office** — agents, roles, and the pixel room<br><a href="docs/images/office.png"><img src="docs/images/office.png" width="420"></a> | **Automations** — a schedule the kernel fires<br><a href="docs/images/automations.png"><img src="docs/images/automations.png" width="420"></a> |
+| **Help** — the keyboard map, generated from the command registry<br><a href="docs/images/help.png"><img src="docs/images/help.png" width="420"></a> | |
 
 ## Requirements
 
@@ -168,10 +203,11 @@ The window is one grid: a top bar, a horizontal nav strip, and four columns unde
 
 - **Top bar** — brand, the workspace's branch and chat count, `⌘K` (`Commands`), and `Inspector`
   while chats are on screen.
-- **Nav strip** — `Chats`, `Agents`, `Skills`, `Automations`, `Setup`, each carrying its live count
-  (chats with an unread badge, agents in the roster, project skills, armed schedules), then the
-  kernel state, the clock, and the theme toggle. Entering `Chats` reloads providers, models,
-  workspaces, and sessions, so setup changes show up without a restart.
+- **Nav strip** — `Chats`, `Agents`, `Skills`, `Automations`, `Source`, `Help`, `Setup`, each
+  carrying its live count where one exists (chats with an unread badge, agents in the roster, project
+  skills, armed schedules, uncommitted files), then the projects and chats column toggles, the kernel
+  state, the clock, and the theme toggle. Entering `Chats` reloads providers, models, workspaces, and
+  sessions, so setup changes show up without a restart.
 - **Rail** — the `Chats` filters, then `Projects`: each project is a collapsible row over its
   workspace, `+` adds one folder (also from the OS picker), and the active workspace is marked.
 - **List pane** — the file tree, or `Sessions`: the new-chat model picker, `New chat`, a search box,
@@ -185,9 +221,11 @@ The window is one grid: a top bar, a horizontal nav strip, and four columns unde
   plan, and pending approvals.
 - **Status bar** — kernel health, turns running, approvals waiting, and the engine directory in use.
 
-The sidebar is never collapsed: the office is the point of the column, so the inspector opens inside
-it rather than covering the transcript. Narrow windows shrink the rail, the list, and the sidebar,
-and keep all four reachable.
+The two left columns collapse: `▤` hides the rail and `☰` hides the list, both remembered across
+restarts (`noir.columns`), and an unmounted column leaves no focus stop behind for `Tab` to land on.
+The right sidebar never collapses — the office is the point of that column, so the inspector opens
+inside it rather than covering the transcript. Narrow windows shrink the rail, the list, and the
+sidebar, and keep all four reachable.
 
 The list is a page of a hundred, newest first, with *Load older chats* when the kernel holds more;
 the filter buttons and the search box are answered by the kernel, so a filter never hides a match on
@@ -204,6 +242,15 @@ an errored session); `Working` (starting, running, or waiting without an approva
 session's newest event is past the last event its tab rendered); `Done` (closed). Search matches the
 session title, with untitled chats matching `untitled chat`.
 
+**Renaming.** The chat header's title is the rename control: click it, type, `Enter` commits, `Esc`
+cancels, and a blank or unchanged edit writes nothing. The same edit is on every list row behind
+`?` on hover. Both travel as one `session.updated` event, so every window and the tab strip agree.
+
+**Context menus.** A transcript message offers `Copy text`, `Quote in composer` (fenced with its
+source and turn), `Fork from here`, and `Rewind to before this prompt`; a file offers `Open`, `Diff`,
+`Copy path`, and `Reveal in Explorer`; a tab offers close, close others, and close to the right.
+`⇧F10` (or the menu key) opens the same menu from the focused row, so nothing needs a right-click.
+
 ### Shortcuts
 
 | Shortcut | Action |
@@ -217,7 +264,13 @@ session title, with untitled chats matching `untitled chat`.
 | `⌘J` / `Ctrl+J` | Focus the composer |
 | `⌘.` / `Ctrl+.` | Interrupt the running turn |
 | `⌘,` / `Ctrl+,` | Open setup |
+| `⌘⇧A` / `Ctrl+Shift+A` | Open agents |
+| `⌘⇧G` / `Ctrl+Shift+G` | Open source control |
+| `⌘⇧1` / `Ctrl+Shift+1` | Show or hide the projects column |
+| `⌘⇧2` / `Ctrl+Shift+2` | Show or hide the chats column |
 | `⌘⇧T` / `Ctrl+Shift+T` | Switch `paper` / `ink` theme |
+| `F1` | Open help |
+| `C` | Configure the selected agent, on the Agents view |
 
 The palette lists available commands with their shortcut, filters on label and keywords as you type,
 and greys out commands whose preconditions are unmet (no workspace, no active chat, no running turn).
@@ -278,14 +331,40 @@ truncation for the root only today — a read at 2 MiB (larger files are refused
 at 5 000 000 characters, and quick open at 5 000 files. Files that are not UTF-8 text and symlinks
 are refused or skipped rather than rendered.
 
+## Source control
+
+`Source` is local git, not a second client: `git.status` for the branch, divergence, and per-file
+counts, plus the three mutations the kernel serializes per workspace (`git.stage`, `git.unstage`,
+`git.commit`). Every mutation answers with the fresh status, so the pane shows what the index holds
+rather than what the click hoped for, and a click on a path opens that file's diff tab. There is no
+push, no pull, and no branch switch — this is the commit step of the loop, not a replacement for a
+git client. A workspace that is not a repository reports that instead of an empty list.
+
+## Updates
+
+The kernel checks the remote's tags with `git ls-remote --tags` once a day, from its own process, so
+the answer does not depend on a window being open. `Help` shows the current version, the latest tag,
+when it last asked, and `Check now`; an available release adds `What's new`, and dismissing it is
+remembered per tag. Only the greatest tag that parses as `v?<major>.<minor>.<patch>[-pre]` counts, a
+tag that fails to parse is ignored rather than treated as newest, and a failed check leaves the
+cached answer on screen with the reason beside it. `NOIR_UPDATE_URL` points the check at another
+remote.
+
+**Releasing.** A release is a commit that bumps `version` in `apps/desktop`, `apps/kernel`, and
+`packages/kernel`, plus a tag `v<version>` on it, pushed. Without the tag the check correctly says
+up to date; with it, a running app offers the new release on its next check.
+
 ## Artifacts
 
-A preview tab opens from a `Preview` button in the file tree, from the inspector's changed files, from
-quick open (restricted to previewable files and labelled `Preview file`), and from a link inside a
-rendered Markdown artifact: a relative `other.md` link opens another preview, `other.md#usage` splits
-the fragment off before resolving, and anything that is not previewable opens in an editor tab. The
-viewer reads through `artifact.read`, so the kernel — not the renderer — decides what may be read:
-text is capped at 2 MiB, PDF at 32 MiB, and the path is resolved inside the workspace first.
+A file row's own click opens it in the editor — the source, not the rendering. `Preview` is the
+trailing control on the row (it appears on hover, so it never sits under a click meant for the file),
+and the same preview opens from the inspector's changed files, from quick open (restricted to
+previewable files and labelled `Preview file`), and from a link inside a rendered Markdown artifact: a
+relative `other.md` link opens another preview, `other.md#usage` splits the fragment off before
+resolving, and anything that is not previewable opens in an editor tab. The viewer reads through
+`artifact.read`, so the kernel — not the renderer — decides what may be read: text is capped at 2 MiB,
+PDF at 32 MiB, and the path is resolved inside the workspace first. The one exception is a PDF row:
+Monaco cannot render it, so its default click is the preview.
 
 - **Markdown** renders GFM tables and highlights code, and drops raw HTML (a `skipHtml` pass plus a
   sanitizing one), so a hostile `notes.md` shows its text and runs nothing. The static CSP in
@@ -559,10 +638,12 @@ rule that stops matching fails the check instead of quietly reporting a clean tr
 (`.github/workflows/ci.yml`) runs `lint`, `lint:proof`, `typecheck` and `test`; the Playwright suite
 stays a local pre-push check because it needs a real Electron app and a kernel process.
 
-`test:e2e` builds the app and drives Electron with Playwright against a local mock provider. Fifteen
-specs, twenty-one tests: `smoke` (2) — boot, process spawn, health, and a provider surviving an app
-restart; `chat` (4) — a streamed reply, a permission-approved tool call, a GFM table with a decoded
-workspace image, and deleting a chat from the list; `shell` (1) — a tool turn
+`test:e2e` builds the app and drives Electron with Playwright against a local mock provider. Twenty-five
+specs, thirty-six tests, plus the screenshot capture that stays skipped unless asked for: `smoke` (2) —
+boot, process spawn, health, and a provider surviving an app
+restart; `chat` (5) — a streamed reply, a permission-approved tool call, a GFM table with a decoded
+workspace image, deleting a chat from the list, and the first prompt of a new chat going out on
+`Enter`; `shell` (1) — a tool turn
 that survives the restart, a prompt queued behind a slow turn, an interrupt, the queued turn draining
 after it, and a restart that replays the transcript; `editor` (2) — open a file, edit it, save
 through the kernel, assert the file on disk, check the diff stats and `Show diff` from the
@@ -585,7 +666,13 @@ window closes, and a relaunch reattaching to the same pid; `daemon-fire` (1) —
 no window open at all, observed over the kernel socket and only then seen in the reopened panel;
 `remote` (1) — a browser with no Electron behind it, paired by code over TLS, running the harness
 over the LAN listener with a `Secure` cookie, then revoked and refused on the next load (needs
-`pnpm exec playwright install chromium`).
+`pnpm exec playwright install chromium`); `layout` (2) — both left columns collapsing and staying
+collapsed across a relaunch; `rename` (1) — a chat renamed from its list row and from its header;
+`projects` (1) — a folder added as a project and its workspace in one action; `source` (2) — the
+status, stage, and commit round trip; `menus` (2) — the file tree and transcript context menus,
+including a menu chord; `update` (1) — the update check against a fake remote; `window` (2) — the
+shutdown sequence and the window's own title bar; `help` (1) — the keyboard map generated from the
+registry; `agent-roles` (2) — the capability catalog and an agent started from a role.
 Each spec gets its own temporary data directory and its own Electron profile
 (`--user-data-dir` inside that directory), so engine state and restored tabs stay inside it. Since
 the daemon outlives the app, each spec's teardown asks it to stop through `/shutdown` before the
