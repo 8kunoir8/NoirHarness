@@ -638,10 +638,11 @@ rule that stops matching fails the check instead of quietly reporting a clean tr
 (`.github/workflows/ci.yml`) runs `lint`, `lint:proof`, `typecheck` and `test`; the Playwright suite
 stays a local pre-push check because it needs a real Electron app and a kernel process.
 
-`test:e2e` builds the app and drives Electron with Playwright against a local mock provider. Twenty-five
-specs, thirty-six tests, plus the screenshot capture that stays skipped unless asked for: `smoke` (2) —
-boot, process spawn, health, and a provider surviving an app
-restart; `chat` (5) — a streamed reply, a permission-approved tool call, a GFM table with a decoded
+`test:e2e` builds the app and drives Electron with Playwright against a local mock provider.
+Twenty-six specs, thirty-seven tests, plus two that stay skipped unless their prerequisite exists —
+the screenshot capture (a display and port 1234) and the packaged build (`release/win-unpacked`).
+`smoke` (2) — boot, process spawn, health, and a provider surviving an app restart;
+`chat` (5) — a streamed reply, a permission-approved tool call, a GFM table with a decoded
 workspace image, deleting a chat from the list, and the first prompt of a new chat going out on
 `Enter`; `shell` (1) — a tool turn
 that survives the restart, a prompt queued behind a slow turn, an interrupt, the queued turn draining
@@ -672,16 +673,17 @@ collapsed across a relaunch; `rename` (1) — a chat renamed from its list row a
 status, stage, and commit round trip; `menus` (2) — the file tree and transcript context menus,
 including a menu chord; `update` (1) — the update check against a fake remote; `window` (2) — the
 shutdown sequence and the window's own title bar; `help` (1) — the keyboard map generated from the
-registry; `agent-roles` (2) — the capability catalog and an agent started from a role.
+registry; `agent-roles` (2) — the capability catalog and an agent started from a role; `packaged` (1) —
+the built app out of `release/win-unpacked`: the packaged manifest's version, a PDF page painted by the
+worker loaded from `app.asar`, and the office's atlas resolving over `file://`.
 Each spec gets its own temporary data directory and its own Electron profile
 (`--user-data-dir` inside that directory), so engine state and restored tabs stay inside it. Since
 the daemon outlives the app, each spec's teardown asks it to stop through `/shutdown` before the
 directory is removed.
 
-The packaged app is checked separately: `_electron.launch({ executablePath })` against
-`release/win-unpacked/NoirHarness.exe` asserts a rendered PDF page and the office's `data-office-*`
-hooks, which is the only way to prove the pdf.js worker, the Phaser chunk, and the PNG atlases
-resolve from `app.asar` under `file://`.
+`packaged` launches `release/win-unpacked/NoirHarness.exe` through `_electron.launch({ executablePath })`
+and reads the rendered pixels, which is the only way to prove the pdf.js worker, the Phaser chunk, and
+the PNG atlases resolve from `app.asar` under `file://`.
 
 ## Installer
 
