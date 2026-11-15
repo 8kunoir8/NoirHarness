@@ -92,8 +92,12 @@ export async function createRpcListener(opts: ListenerOptions): Promise<RpcListe
     };
     ws.on("close", forget);
     ws.on("error", forget);
-    // `ws` ignores the return value, so the handler must swallow its own failure: an unhandled
-    // rejection here would take the kernel down rather than answer the caller.
+    // `ws` throws the handler's promise away, so the handler owns its own failure. Everything that
+    // can throw is inside the `try`, and both calls in the `catch` are total (`sendJson` returns
+    // early unless the socket is open and swallows a failed write; `toRpcFailure` cannot throw), so
+    // the promise this body returns cannot reject today. The trailing `terminate` is the last
+    // resort for a later edit that moves work outside the `try`: an unhandled rejection would take
+    // the kernel down, while a closed socket only costs this client one reconnect.
     ws.on("message", (raw) => {
       void (async (): Promise<void> => {
         let id: string | number = 0;
@@ -110,7 +114,9 @@ export async function createRpcListener(opts: ListenerOptions): Promise<RpcListe
             : error;
           sendJson(ws, toRpcFailure(id, fault));
         }
-      })();
+      })().catch(() => {
+        ws.terminate();
+      });
     });
   };
 
