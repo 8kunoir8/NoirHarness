@@ -1,6 +1,6 @@
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import { bootstrap, closeWindow, createDirs, launchApp } from "./app-harness.js";
-import { deleteProviderThroughKernel, removeDir, stopKernel } from "./helpers.js";
+import { appVersion, deleteProviderThroughKernel, removeDir, stopKernel } from "./helpers.js";
 import { startMockProvider } from "./mock-provider.js";
 
 /** One launched app, torn down the way the chat specs do it. */
@@ -34,7 +34,7 @@ test("reaches Help by nav and by F1, and lists the keys this build dispatches", 
     await expect(help).toBeVisible();
 
     // The running build, from `system.health`, not from a workspace file.
-    await expect(help.getByRole("region", { exact: true, name: "Running this build" })).toContainText("0.1.0");
+    await expect(help.getByRole("region", { exact: true, name: "Running this build" })).toContainText(appVersion());
 
     // The table is generated from the command registry, so a key that moves moves here with it.
     const keys = help.getByRole("region", { exact: true, name: "Keyboard" });

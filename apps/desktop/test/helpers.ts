@@ -51,6 +51,15 @@ export function runtimePid(dataDir: string): number | undefined {
   return readRuntime(join(dataDir, "runtime", "kernel.json"))?.pid;
 }
 
+/** The version the packaged app reports: `app.getVersion()` reads this manifest at launch. */
+export function appVersion(): string {
+  const parsed: unknown = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8"));
+  if (typeof parsed !== "object" || parsed === null || !("version" in parsed) || typeof parsed.version !== "string") {
+    throw new Error("apps/desktop/package.json has no version");
+  }
+  return parsed.version;
+}
+
 /**
  * Waits until the kernel recorded in `<dataDir>/runtime/kernel.json` is dead.
  * The kernel unlinks the file before it exits, so an absent file alone does not prove the

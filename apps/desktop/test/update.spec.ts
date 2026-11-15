@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import { bootstrap, closeWindow, createDirs, launchApp } from "./app-harness.js";
-import { deleteProviderThroughKernel, removeDir, stopKernel } from "./helpers.js";
+import { appVersion, deleteProviderThroughKernel, removeDir, stopKernel } from "./helpers.js";
 import { startMockProvider } from "./mock-provider.js";
 
 /**
@@ -68,7 +68,7 @@ test("badges Help and shows one toast for a newer tag, and remembers a dismissal
 
     await help.click();
     const row = page.getByTestId("update-row");
-    await expect(row).toContainText("0.1.0");
+    await expect(row).toContainText(appVersion());
     await expect(row).toContainText("v9.9.9");
 
     // A dismissal is the kernel's, so it survives the window: no toast, no badge, after a reload.
