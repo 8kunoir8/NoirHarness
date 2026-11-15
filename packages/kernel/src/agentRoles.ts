@@ -210,17 +210,32 @@ export function buildRoles(inputs: RoleInputs): AgentRoleView[] {
     })),
   ];
   // A role name is what a profile stores (`role` is capped at 40 characters), and it has to stay
-  // distinct from the presets above or the picker would hold two options with the same value.
-  const taken = new Set(roles.map((role) => role.name.toLowerCase()));
+  // distinct from the presets above or the picker would hold two options with the same value. Ids need
+  // the same care: `quux-one`, `quux_one` and `Quux.One` are three skills that slug alike, so the
+  // suffix and then an ordinal make both unique.
+  const takenNames = new Set([GENERALIST.name.toLowerCase(), ...roles.map((role) => role.name.toLowerCase())]);
+  const takenIds = new Set<string>();
   const derived: AgentRoleView[] = [];
   for (const item of loose) {
     const words = item.title.split(/[^a-zA-Z0-9]+/).filter((word) => word !== "");
     const titled = words.map((word) => (word[0] ?? "").toUpperCase() + word.slice(1)).join(" ") || item.title;
+    // An id keeps the item's own kind so it stays stable across releases; the name says "server"
+    // because that is the word the inspector uses for one.
+    const label = item.kind === "skill" ? "skill" : "server";
+    // Three skills can slug alike and be titled alike, so the suffix alone is not unique either:
+    // fall back to an ordinal until both the name and the id are free.
     let name = titled.slice(0, ROLE_NAME_MAX);
-    if (taken.has(name.toLowerCase())) name = `${name} (${item.kind === "skill" ? "skill" : "server"})`.slice(0, ROLE_NAME_MAX);
-    taken.add(name.toLowerCase());
+    for (let ordinal = 2; takenNames.has(name.toLowerCase()); ordinal += 1) {
+      const tag = (ordinal === 2 ? ` (${label})` : ` (${label} ${String(ordinal)})`).slice(0, ROLE_NAME_MAX);
+      name = `${titled.slice(0, ROLE_NAME_MAX - tag.length)}${tag}`;
+    }
+    takenNames.add(name.toLowerCase());
+    const slug = `derived:${item.kind}:${words.map((word) => word.toLowerCase()).join("-") || "item"}`;
+    let id = slug;
+    for (let ordinal = 2; takenIds.has(id); ordinal += 1) id = `${slug}-${String(ordinal)}`;
+    takenIds.add(id);
     derived.push({
-      id: `derived:${item.kind}:${words.map((word) => word.toLowerCase()).join("-") || "item"}`,
+      id,
       name,
       description: item.description,
       skills: item.skills,

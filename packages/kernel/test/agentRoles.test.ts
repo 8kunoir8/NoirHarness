@@ -53,18 +53,27 @@ describe("buildRoles", () => {
     expect(roles.find((role) => role.id === "derived:mcp:alpha-connector")?.mcpServerIds).toEqual(["m-1"]);
   });
 
-  it("keeps a derived role distinct from a preset and inside the profile's role cap", () => {
+  it("keeps every derived role's name and id unique and inside the profile's role cap", () => {
     const roles = buildRoles({
-      // "refactor" makes the Engineer preset real, so a skill named "engineer" must be named apart
-      // from it; the server name alone would overflow the profile's 40-character role field.
+      // "refactor" makes the Engineer preset real, so a skill named "engineer" must be named apart from
+      // it; the three "quux" spellings slug alike; the long names overflow the 40-character field.
       skills: [
         { name: "refactor", description: "Rewrite code without changing behaviour" },
         { name: "engineer", description: "Unplaceable" },
+        { name: "quux-one", description: "" },
+        { name: "quux_one", description: "" },
+        { name: "Quux.One", description: "" },
+        { name: "a-really-long-skill-name-that-is-way-over-the-cap", description: "" },
       ],
-      servers: [{ id: "m-9", name: "a-really-long-connector-name-that-overflows-the-field", command: "", url: "" }],
+      servers: [
+        { id: "m-9", name: "quux one", command: "", url: "" },
+        { id: "m-8", name: "a-really-long-connector-name-that-overflows-the-field", command: "", url: "" },
+      ],
     });
     const names = roles.map((role) => role.name);
-    expect(new Set(names).size).toBe(names.length);
+    const ids = roles.map((role) => role.id);
+    expect(new Set(names.map((name) => name.toLowerCase())).size).toBe(names.length);
+    expect(new Set(ids).size).toBe(ids.length);
     expect(names).toContain("Engineer (skill)");
     for (const name of names) expect(name.length).toBeLessThanOrEqual(40);
   });
