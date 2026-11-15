@@ -339,6 +339,9 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; colo
   display: flex;
   flex-direction: column;
   gap: 12px;
+  /* A view's breakpoints follow the room it actually has: the rail, list, and sidebar can leave
+     this pane less than half the window's width, so a viewport media query guesses wrong. */
+  container-type: inline-size;
 }
 
 .shell-sidebar {
